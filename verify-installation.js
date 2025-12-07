@@ -58,8 +58,7 @@ const requiredFiles = [
   'lib/data/single-skus.ts',
   'lib/data/combo-skus.ts',
   'components/InventoryDashboard.tsx',
-  'components/OrderProcessor.tsx',
-  'components/ProcurementUpdate.tsx',
+  'components/RecentOrders.tsx',
   'types/inventory.ts',
 ];
 
@@ -72,8 +71,10 @@ requiredFiles.forEach(file => {
   }
 });
 
-// Check 5: Environment file
+// Check 5: Environment file (optional for Vercel/production)
 console.log('🔐 Checking environment configuration...');
+const isProduction = process.env.VERCEL || process.env.NODE_ENV === 'production';
+
 if (fs.existsSync('.env')) {
   checks.push('✅ .env file exists');
   
@@ -89,6 +90,8 @@ if (fs.existsSync('.env')) {
     warnings.push('⚠️  .env file exists but may be missing required variables');
     warnings.push('   Required: WOOCOMMERCE_STORE_URL, WOOCOMMERCE_CONSUMER_KEY, WOOCOMMERCE_CONSUMER_SECRET');
   }
+} else if (isProduction) {
+  checks.push('✅ Production environment (environment variables expected from platform)');
 } else {
   warnings.push('⚠️  .env file not found');
   warnings.push('   Copy .env.example to .env and add your credentials');
@@ -99,9 +102,7 @@ console.log('🔌 Checking API routes...');
 const apiRoutes = [
   'app/api/inventory/route.ts',
   'app/api/orders/route.ts',
-  'app/api/orders/process/route.ts',
   'app/api/products/route.ts',
-  'app/api/procurement/update/route.ts',
   'app/api/stock/update/route.ts',
 ];
 
