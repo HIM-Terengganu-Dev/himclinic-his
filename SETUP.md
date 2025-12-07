@@ -111,3 +111,4 @@ NEXT_PUBLIC_BASE_URL=https://your-domain.vercel.app
 
 Refer to full documentation in `README.md` for detailed information.
 
+

@@ -1,0 +1,232 @@
+'use client';
+
+import { useState } from 'react';
+import { TrendingUp, Plus, CheckCircle, XCircle } from 'lucide-react';
+import { SINGLE_SKUS } from '@/lib/data/single-skus';
+
+interface ProcurementUpdateProps {
+  onStockUpdated: () => void;
+}
+
+export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateProps) {
+  const [selectedSku, setSelectedSku] = useState('');
+  const [quantity, setQuantity] = useState('');
+  const [operation, setOperation] = useState<'add' | 'set'>('add');
+  const [updating, setUpdating] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleUpdate = async () => {
+    if (!selectedSku || !quantity) {
+      setError('Please select a SKU and enter quantity');
+      return;
+    }
+
+    const qty = parseInt(quantity);
+    if (isNaN(qty) || qty < 0) {
+      setError('Please enter a valid quantity');
+      return;
+    }
+
+    setUpdating(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const response = await fetch('/api/procurement/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sku: selectedSku,
+          quantity: qty,
+          operation,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setResult(data);
+        onStockUpdated();
+        setQuantity('');
+      } else {
+        setError(data.error || 'Failed to update stock');
+      }
+    } catch (err) {
+      setError('Network error. Please try again.');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+          <TrendingUp className="w-5 h-5" />
+          Procurement Stock Update
+        </h2>
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+          <p className="text-sm text-blue-800">
+            <strong>💡 Manual Stock Updates:</strong> Use this section to manually add or set stock quantities
+            for single SKUs. System will automatically update combo SKU availability in WooCommerce.
+          </p>
+        </div>
+      </div>
+
+      {/* Update Form */}
+      <div className="bg-white border border-gray-200 rounded-lg p-6">
+        <div className="space-y-4">
+          {/* SKU Selection */}
+          <div>
+            <label htmlFor="sku" className="block text-sm font-medium text-gray-700 mb-2">
+              Select Single SKU
+            </label>
+            <select
+              id="sku"
+              value={selectedSku}
+              onChange={(e) => setSelectedSku(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={updating}
+            >
+              <option value="">-- Select a SKU --</option>
+              {SINGLE_SKUS.map((sku) => (
+                <option key={sku.sku} value={sku.sku}>
+                  {sku.sku} - {sku.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Operation Selection */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Operation</label>
+            <div className="flex gap-4">
+              <label className="flex items-center">
+                <input
+                  type="radio"
+                  value="add"
+                  checked={operation === 'add'}
+                  onChange={(e) => setOperation(e.target.value as 'add')}
+                  className="mr-2"
+                  disabled={updating}
+                />
+                <span className="text-sm text-gray-700">Add to existing stock</span>
+              </label>
+              <label className="flex items-center">
+                <input
+                  type="radio"
+                  value="set"
+                  checked={operation === 'set'}
+                  onChange={(e) => setOperation(e.target.value as 'set')}
+                  className="mr-2"
+                  disabled={updating}
+                />
+                <span className="text-sm text-gray-700">Set stock to specific amount</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Quantity Input */}
+          <div>
+            <label htmlFor="quantity" className="block text-sm font-medium text-gray-700 mb-2">
+              Quantity
+            </label>
+            <input
+              type="number"
+              id="quantity"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              placeholder="Enter quantity"
+              min="0"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={updating}
+            />
+          </div>
+
+          {/* Submit Button */}
+          <button
+            onClick={handleUpdate}
+            disabled={updating || !selectedSku || !quantity}
+            className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+          >
+            {updating ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                Updating...
+              </>
+            ) : (
+              <>
+                <Plus className="w-4 h-4" />
+                Update Stock
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Error Message */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <div className="flex items-center gap-2">
+            <XCircle className="w-5 h-5 text-red-600" />
+            <p className="text-sm text-red-800 font-medium">{error}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Success Result */}
+      {result && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <CheckCircle className="w-6 h-6 text-green-600" />
+            <h3 className="text-lg font-semibold text-green-900">Stock Updated Successfully!</h3>
+          </div>
+
+          <div className="space-y-4">
+            <div className="bg-white border border-gray-200 rounded-lg p-4">
+              <h4 className="font-semibold text-gray-900 mb-2">Updated Single SKU</h4>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-gray-700">{result.sku}</span>
+                <span className="text-lg font-bold text-green-600">{result.newLocalQuantity} units</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                {result.singleSkuUpdatedInWooCommerce ? (
+                  <>
+                    <CheckCircle className="w-4 h-4 text-green-600" />
+                    <span className="text-green-700">Synced to WooCommerce ✓</span>
+                  </>
+                ) : (
+                  <>
+                    <XCircle className="w-4 h-4 text-yellow-600" />
+                    <span className="text-yellow-700">Local only (WooCommerce sync failed)</span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {result.affectedComboSKUs && result.affectedComboSKUs.length > 0 && (
+              <div className="bg-white border border-gray-200 rounded-lg p-4">
+                <h4 className="font-semibold text-gray-900 mb-3">
+                  Affected Combo SKUs (Updated in WooCommerce)
+                </h4>
+                <div className="space-y-2">
+                  {result.affectedComboSKUs.map((combo: any) => (
+                    <div key={combo.sku} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{combo.sku}</p>
+                        <p className="text-xs text-gray-500">{combo.name}</p>
+                      </div>
+                      <span className="text-sm font-bold text-blue-600">{combo.newStock} available</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+

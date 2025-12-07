@@ -445,3 +445,4 @@ NEXT_PUBLIC_BASE_URL=https://your-domain.com
 
 *🎉 Congratulations on your new inventory management system!*
 
+
