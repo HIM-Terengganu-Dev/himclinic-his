@@ -120,42 +120,50 @@ export default function Home() {
           </div>
         )}
 
-        {/* Stats Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">Total Single SKU Stock</p>
-                <p className="text-3xl font-bold text-gray-900 mt-2">{totalSingleSkuStock}</p>
+        {/* Stats Overview + Recent Orders Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 mb-6">
+          {/* Left side: Stats cards (takes 1/3 of space) */}
+          <div className="lg:col-span-4 space-y-3">
+            <div className="bg-white rounded-lg shadow-md p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-medium text-gray-600">Total Single SKU Stock</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{totalSingleSkuStock}</p>
+                </div>
+                <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                  <Package className="w-5 h-5 text-blue-600" />
+                </div>
               </div>
-              <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
-                <Package className="w-6 h-6 text-blue-600" />
+            </div>
+
+            <div className="bg-white rounded-lg shadow-md p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-medium text-gray-600">Combo SKUs Available</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-1">{totalComboAvailable}</p>
+                </div>
+                <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                  <Package className="w-5 h-5 text-green-600" />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg shadow-md p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-medium text-gray-600">Low Stock Items</p>
+                  <p className="text-2xl font-bold text-red-600 mt-1">{lowStockItems}</p>
+                </div>
+                <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">Combo SKUs Available</p>
-                <p className="text-3xl font-bold text-gray-900 mt-2">{totalComboAvailable}</p>
-              </div>
-              <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
-                <Package className="w-6 h-6 text-green-600" />
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">Low Stock Items</p>
-                <p className="text-3xl font-bold text-red-600 mt-2">{lowStockItems}</p>
-              </div>
-              <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
-                <AlertTriangle className="w-6 h-6 text-red-600" />
-              </div>
-            </div>
+          {/* Right side: Recent Orders (takes 2/3 of space) */}
+          <div className="lg:col-span-8">
+            <RecentOrders orders={recentOrders} />
           </div>
         </div>
 
@@ -203,17 +211,11 @@ export default function Home() {
 
           <div className="p-6">
             {activeTab === 'dashboard' ? (
-              <div className="space-y-6">
-                {/* Recently Processed Orders */}
-                <RecentOrders orders={recentOrders} />
-
-                {/* Inventory Dashboard */}
-                <InventoryDashboard
-                  inventory={inventory}
-                  comboAvailability={comboAvailability}
-                  loading={loading}
-                />
-              </div>
+              <InventoryDashboard
+                inventory={inventory}
+                comboAvailability={comboAvailability}
+                loading={loading}
+              />
             ) : (
               <ProcurementUpdate onStockUpdated={fetchInventory} />
             )}
