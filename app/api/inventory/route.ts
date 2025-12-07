@@ -154,8 +154,6 @@ export async function GET() {
     try {
       const wooOrders = await getOrders({
         per_page: 10,
-        orderby: 'date',
-        order: 'desc',
       });
 
       // Convert WooCommerce orders to ProcessedOrder format
