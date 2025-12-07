@@ -48,13 +48,13 @@ export default function Home() {
     fetchInventory();
   }, []);
 
-  // Auto-refresh every 30 seconds
+  // Auto-refresh every 5 minutes
   useEffect(() => {
     if (!autoRefresh) return;
 
     const interval = setInterval(() => {
       fetchInventory();
-    }, 30000); // 30 seconds
+    }, 300000); // 5 minutes (300 seconds)
 
     return () => clearInterval(interval);
   }, [autoRefresh]);
@@ -163,7 +163,7 @@ export default function Home() {
           <div className="flex items-center justify-between mb-4">
             <p className="text-sm text-gray-600">
               Last updated: {lastUpdated.toLocaleTimeString()}
-              {autoRefresh && <span className="ml-2 text-green-600">(Auto-checking for orders every 30s)</span>}
+              {autoRefresh && <span className="ml-2 text-green-600">(Auto-checking for orders every 5 minutes)</span>}
             </p>
           </div>
         )}
