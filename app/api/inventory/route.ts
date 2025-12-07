@@ -10,6 +10,7 @@ import {
 } from '@/lib/utils/inventory';
 import { getProducts, getOrders } from '@/lib/services/woocommerce';
 import { InventoryStock, ProcessedOrder } from '@/types/inventory';
+import { COMBO_SKUS } from '@/lib/data/combo-skus';
 
 // In-memory inventory store (in production, use a database)
 let inventoryStore = initializeInventory(10);
@@ -148,6 +149,61 @@ export async function GET() {
     // Check for and process new orders
     const newlyProcessed = await checkAndProcessNewOrders();
     
+    // Always fetch last 10 completed/processing orders from WooCommerce for display
+    let allRecentOrders: ProcessedOrder[] = [];
+    try {
+      const wooOrders = await getOrders({
+        per_page: 10,
+        orderby: 'date',
+        order: 'desc',
+      });
+
+      // Convert WooCommerce orders to ProcessedOrder format
+      const wooOrdersFormatted: ProcessedOrder[] = wooOrders.map(order => {
+        const totalDeductions: InventoryStock = {};
+        
+        // Calculate what would be deducted (for display only)
+        order.line_items.forEach(item => {
+          if (item.sku) {
+            if (isSingleSKU(item.sku)) {
+              totalDeductions[item.sku] = (totalDeductions[item.sku] || 0) + item.quantity;
+            } else if (isComboSKU(item.sku)) {
+              // Estimate deductions for combos (for display)
+              const combo = require('@/lib/data/combo-skus').COMBO_SKUS.find((c: any) => c.sku === item.sku);
+              if (combo) {
+                totalDeductions[combo.component_1] = (totalDeductions[combo.component_1] || 0) + (combo.component_1_qty * item.quantity);
+                if (combo.component_2) {
+                  totalDeductions[combo.component_2] = (totalDeductions[combo.component_2] || 0) + (combo.component_2_qty * item.quantity);
+                }
+              }
+            }
+          }
+        });
+
+        return {
+          orderId: order.id,
+          orderDate: order.date_created,
+          processedAt: order.date_created, // Use order date as fallback
+          items: order.line_items.map(item => ({
+            sku: item.sku || 'unknown',
+            name: item.name,
+            quantity: item.quantity,
+          })),
+          totalDeductions,
+        };
+      });
+
+      // Merge: In-memory orders (most recent, detailed) + WooCommerce orders (historical)
+      const memoryOrderIds = new Set(recentlyProcessedOrders.map(o => o.orderId));
+      const wooOrdersNotInMemory = wooOrdersFormatted.filter(o => !memoryOrderIds.has(o.orderId));
+      
+      allRecentOrders = [...recentlyProcessedOrders, ...wooOrdersNotInMemory].slice(0, 15);
+    } catch (error) {
+      console.error('Error fetching recent orders from WooCommerce:', error);
+      // Fallback to in-memory only
+      allRecentOrders = recentlyProcessedOrders;
+    }
+    
     const comboAvailability = calculateAllComboAvailability(inventoryStore);
 
     return NextResponse.json({
@@ -156,7 +212,7 @@ export async function GET() {
       comboAvailability,
       initializedFromWooCommerce: isInitialized,
       newOrdersProcessed: newlyProcessed,
-      recentlyProcessedOrders: recentlyProcessedOrders,
+      recentlyProcessedOrders: allRecentOrders,
     });
   } catch (error) {
     console.error('Error getting inventory:', error);
