@@ -208,12 +208,3 @@ export async function POST(request: Request) {
   }
 }
 
-// Export the inventory store for other modules
-export function getInventoryStore() {
-  return inventoryStore;
-}
-
-export function setInventoryStore(newInventory: typeof inventoryStore) {
-  inventoryStore = newInventory;
-}
-
