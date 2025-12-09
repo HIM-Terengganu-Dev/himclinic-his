@@ -73,8 +73,15 @@ export default function AuthErrorPage() {
                                         Contact your system administrator to request access to the inventory management system.
                                     </p>
                                     <div className="bg-black/20 rounded p-2 mt-2">
-                                        <p className="text-blue-300 text-xs">
-                                            📧 Your admin needs to add your email to the <span className="font-mono bg-blue-500/20 px-1">ALLOWED_EMAILS</span> environment variable
+                                        <p className="text-blue-300 text-xs mb-2">
+                                            📧 Your admin needs to add your account to the database:
+                                        </p>
+                                        <code className="text-xs bg-blue-500/20 px-2 py-1 rounded block text-blue-200 font-mono">
+                                            INSERT INTO inventory_management.users (google_id, email, name, picture, role)<br/>
+                                            VALUES ('your-google-id', 'your-email@gmail.com', 'Your Name', 'picture-url', 'user');
+                                        </code>
+                                        <p className="text-blue-300 text-xs mt-2">
+                                            Or ask them to use the admin panel to add you.
                                         </p>
                                     </div>
                                 </div>

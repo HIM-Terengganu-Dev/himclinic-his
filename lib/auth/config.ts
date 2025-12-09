@@ -1,12 +1,6 @@
 import GoogleProvider from 'next-auth/providers/google';
 import type { NextAuthOptions } from 'next-auth';
-
-// WHITELIST: Only these emails can access the system
-// Add your team's emails here
-const ALLOWED_EMAILS = process.env.ALLOWED_EMAILS?.split(',').map(e => e.trim()) || [];
-
-// ADMIN EMAILS: Users with admin privileges
-const ADMIN_EMAILS = process.env.ADMIN_EMAILS?.split(',').map(e => e.trim()) || [];
+import { getUserByGoogleId, getUserByEmail, createUser, updateLastLogin } from '@/lib/db/queries';
 
 export const authOptions: NextAuthOptions = {
     providers: [
@@ -16,33 +10,66 @@ export const authOptions: NextAuthOptions = {
         }),
     ],
     callbacks: {
-        async signIn({ user }) {
-            const email = user.email;
-            
-            if (!email) {
-                console.log('❌ Sign in denied: No email provided');
-                return false;
-            }
+        async signIn({ user, account }) {
+            if (account?.provider === 'google') {
+                const googleId = account.providerAccountId;
+                const email = user.email!;
 
-            // Check if email is in the whitelist
-            const isAllowed = ALLOWED_EMAILS.includes(email);
-            
-            if (isAllowed) {
-                console.log(`✅ Sign in allowed: ${email}`);
-                return true;
-            } else {
-                console.log(`❌ Sign in denied: ${email} is not in the whitelist`);
-                return false; // This will redirect to the error page
+                if (!email) {
+                    console.log('❌ Sign in denied: No email provided');
+                    return false;
+                }
+
+                try {
+                    // Check if user exists by Google ID
+                    let dbUser = await getUserByGoogleId(googleId);
+
+                    // If not, try by email (in case they previously signed up differently)
+                    if (!dbUser) {
+                        dbUser = await getUserByEmail(email);
+                    }
+
+                    // If user doesn't exist in database, deny access
+                    if (!dbUser) {
+                        console.log(`❌ Sign in denied: ${email} is not registered in the database`);
+                        return false; // This will redirect to the error page
+                    }
+
+                    // Update last login timestamp
+                    await updateLastLogin(dbUser.id);
+
+                    console.log(`✅ Sign in allowed: ${email} (role: ${dbUser.role})`);
+                    return true;
+                } catch (error) {
+                    console.error('Error during sign in:', error);
+                    return false;
+                }
             }
+            return true;
         },
-        async session({ session }) {
+        async session({ session, token }) {
             if (session.user?.email) {
-                // Determine user role based on email
-                const isAdmin = ADMIN_EMAILS.includes(session.user.email);
-                session.user.role = isAdmin ? 'admin' : 'staff';
+                // Fetch user from database to get role and ID
+                try {
+                    const dbUser = await getUserByEmail(session.user.email);
+                    if (dbUser) {
+                        session.user.id = dbUser.id;
+                        session.user.role = dbUser.role; // 'admin' or 'user' from database
+                        session.user.image = dbUser.picture || session.user.image;
+                    }
+                } catch (error) {
+                    console.error('Error fetching user for session:', error);
+                }
             }
             return session;
         },
+        async jwt({ token, user, account }) {
+            // Pass initial user data to token
+            if (user) {
+                token.id = user.id;
+            }
+            return token;
+        }
     },
     pages: {
         signIn: '/', // Redirect to home (will show LoginPage if not authenticated)

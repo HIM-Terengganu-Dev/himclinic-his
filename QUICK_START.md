@@ -45,16 +45,20 @@ GOOGLE_CLIENT_ID=your-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
 ```
 
-#### ✅ Whitelist Your Email
+#### 🗄️ Database Setup (Required)
 
-**IMPORTANT:** Add YOUR Gmail address here:
+**IMPORTANT:** Users are stored in the database, not environment variables!
 
-```env
-ALLOWED_EMAILS=your-email@gmail.com,team@himclinic.com
-ADMIN_EMAILS=your-email@gmail.com
+1. Set up your PostgreSQL database (Neon DB recommended)
+2. Run the schema: `psql $DATABASE_URL -f database/schema.sql`
+3. Add your first user to the database:
+
+```sql
+INSERT INTO inventory_management.users (google_id, email, name, picture, role)
+VALUES ('your-google-id-from-oauth', 'your-email@gmail.com', 'Your Name', 'picture-url', 'admin');
 ```
 
-> Only emails in `ALLOWED_EMAILS` can log in!
+> Only users in the `users` table can log in!
 
 ### Step 3: Start the Server
 
@@ -87,11 +91,11 @@ User tries to login
     ↓
 Google Authentication
     ↓
-Check if email in ALLOWED_EMAILS
+Check if user exists in database (by Google ID or email)
     ↓
-  YES → Dashboard ✅
+  EXISTS → Update last_login → Dashboard ✅
     ↓
-  NO → Access Denied ❌ (/auth/error)
+  NOT FOUND → Access Denied ❌ (/auth/error)
 ```
 
 ---
@@ -100,13 +104,14 @@ Check if email in ALLOWED_EMAILS
 
 ### "Access Denied" after login?
 
-**Fix:** Add your email to `ALLOWED_EMAILS` in `.env.local`:
+**Fix:** Add your user to the database:
 
-```env
-ALLOWED_EMAILS=your-actual-email@gmail.com,other@email.com
+```sql
+INSERT INTO inventory_management.users (google_id, email, name, picture, role)
+VALUES ('your-google-id', 'your-email@gmail.com', 'Your Name', 'picture-url', 'user');
 ```
 
-Then restart: `npm run dev`
+To get your Google ID, check the error logs or use Google OAuth debugger.
 
 ### "Configuration Error"?
 
@@ -126,7 +131,7 @@ http://localhost:3000/api/auth/callback/google
 
 ## Admin vs Staff Access
 
-### Admin Users (in `ADMIN_EMAILS`):
+### Admin Users (role = 'admin' in database):
 - ✅ All features
 - ✅ SKU Management tab
 - ✅ Future admin-only features
@@ -143,12 +148,14 @@ http://localhost:3000/api/auth/callback/google
 
 When deploying to Vercel:
 
-1. Add all environment variables in Vercel dashboard
+1. Add all environment variables in Vercel dashboard (including `DATABASE_URL`)
 2. Change `NEXTAUTH_URL` to your domain
 3. Update Google OAuth redirect URI to production URL
+4. Ensure database is set up and users are added
 
 Example:
 ```env
+DATABASE_URL=postgresql://user:pass@host/db?sslmode=require
 NEXTAUTH_URL=https://inventory.himclinic.com
 ```
 

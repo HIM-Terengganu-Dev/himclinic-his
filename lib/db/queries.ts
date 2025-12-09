@@ -1,4 +1,4 @@
-import { query } from './connection';
+import { query, pool } from './connection';
 
 /**
  * USER OPERATIONS
