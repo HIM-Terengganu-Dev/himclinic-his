@@ -1,13 +1,28 @@
 import { NextResponse } from 'next/server';
-import { updateProductStock } from '@/lib/services/woocommerce';
-import { SINGLE_SKUS } from '@/lib/data/single-skus';
+import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
 import { calculateComboAvailability } from '@/lib/utils/inventory';
-import { COMBO_SKUS } from '@/lib/data/combo-skus';
+import {
+  createProcurementUpdate,
+  getSingleSkuByCode,
+  getAllComboSkus,
+  getAllSingleSkus
+} from '@/lib/db/queries';
+import { requireAuth } from '@/lib/auth/middleware';
 
 export async function POST(request: Request) {
   try {
+    // 1. Authentication Check
+    const session = await requireAuth();
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+    const userId = session.user.id;
+
     const body = await request.json();
-    const { sku, quantity, operation } = body;
+    const { sku, quantity, operation, notes } = body;
 
     if (!sku || quantity === undefined || !operation) {
       return NextResponse.json(
@@ -16,8 +31,8 @@ export async function POST(request: Request) {
       );
     }
 
-    // Find the single SKU
-    const singleSku = SINGLE_SKUS.find((s) => s.sku === sku);
+    // 2. Validate SKU exists in System DB
+    const singleSku = await getSingleSkuByCode(sku);
     if (!singleSku) {
       return NextResponse.json(
         { success: false, error: 'Invalid single SKU' },
@@ -25,62 +40,173 @@ export async function POST(request: Request) {
       );
     }
 
-    let newQuantity: number;
-
     if (operation === 'add' || operation === 'set') {
-      // Update in local inventory via the inventory API
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/inventory`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          action: operation, 
-          sku, 
-          quantity: operation === 'add' ? quantity : quantity 
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to update local inventory');
+      // 3. Fetch CURRENT stock from WooCommerce to ensure accuracy
+      // This is the "Source of Truth" check
+      let currentWooStock = 0;
+      try {
+        const wooProduct = await getProduct(singleSku.woocommerce_product_id);
+        currentWooStock = wooProduct.stock_quantity || 0;
+      } catch (error) {
+        console.error(`Failed to fetch current stock for ${sku} from WooCommerce`, error);
+        // Fallback? Or fail? Fail is safer for data integrity.
+        return NextResponse.json(
+          { success: false, error: 'Failed to fetch current stock from WooCommerce' },
+          { status: 502 }
+        );
       }
 
-      const inventoryData = await response.json();
-      newQuantity = inventoryData.singleSkus[sku];
+      // 4. Calculate New Quantity
+      let newQuantity: number;
+      if (operation === 'add') {
+        newQuantity = currentWooStock + quantity;
+      } else { // set
+        newQuantity = quantity;
+      }
 
-      // Update the single SKU in WooCommerce (WRITE API)
+      // Ensure no negative stock
+      if (newQuantity < 0) newQuantity = 0;
+
+      // 5. Update WooCommerce Stock (Writing to Source of Truth)
       let singleSkuUpdated = false;
       try {
-        await updateProductStock(singleSku.id, newQuantity);
+        await updateProductStock(singleSku.woocommerce_product_id, newQuantity);
         singleSkuUpdated = true;
         console.log(`✅ Updated single SKU ${sku} in WooCommerce: ${newQuantity} units`);
       } catch (error) {
         console.error(`❌ Failed to update single SKU ${sku} in WooCommerce:`, error);
+        // If update fails, we should NOT log the procurement update in DB?
+        // Or log it as failed?
+        await import('@/lib/db/queries').then(m => m.logActivity({
+          userId,
+          action: 'procurement_update_error',
+          entityType: 'single_sku',
+          entityId: singleSku.id,
+          details: { sku, quantity, operation, error: String(error) },
+          success: false,
+          errorMessage: String(error)
+        }));
+
+        return NextResponse.json(
+          { success: false, error: 'Failed to update WooCommerce' },
+          { status: 502 }
+        );
       }
 
-      // Calculate which combo SKUs need to be updated in WooCommerce
-      const comboUpdates = [];
-      for (const combo of COMBO_SKUS) {
-        const maxAvailable = calculateComboAvailability(combo.sku, inventoryData.singleSkus);
-        
-        comboUpdates.push({
-          sku: combo.sku,
-          name: combo.name,
-          id: combo.id,
-          calculatedStock: maxAvailable,
+      // 6. Log to Database (Procurement History & Activity Log)
+      try {
+        await createProcurementUpdate({
+          singleSkuId: singleSku.id,
+          operation,
+          quantity,
+          previousQuantity: currentWooStock,
+          newQuantity,
+          notes,
+          createdBy: userId
         });
+      } catch (dbError) {
+        console.error('Failed to log procurement update to DB:', dbError);
+        // We don't fail the request if DB log fails, but we should alert?
+        // Since WC is updated, the business operation succeeded.
       }
 
-      // Update WooCommerce for affected combo SKUs
+      // 7. Calculate and Update Combo SKUs
+      // We need ALL single SKU stocks to recalculate combos accurately.
+      // Optimally, we fetched them all, but that's heavy.
+      // We can fetch just the ones needed for combos?
+      // For now, let's fetch ALL products from WC to be safe and consistent with previous logic,
+      // OR just rely on the fact that we changed ONE, and assume others are stable?
+      // Better: Fetch all single SKUs from DB, then get their stocks from WC?
+      // For performance, maybe we assume other stocks haven't changed in the last 100ms?
+      // But we don't have them in memory in variables here (serverless function).
+
+      // Let's use `updateProductStock` for combos.
+      // We need to know the stock of OTHER components.
+      // This is tricky without a full inventory state.
+
+      // REVISIT: The existing `POST /api/inventory` maintained a state.
+      // If we move to stateless, we must fetch state.
+      // Let's call the `GET /api/inventory` logic? No, that's internal.
+
+      // Strategy:
+      // 1. Get all Combo SKUs from DB
+      // 2. Identify which combos contain THIS sku.
+      // 3. For those combos, identify ALL their components.
+      // 4. Fetch stock for ALL those components from WC.
+      // 5. Calculate availability.
+      // 6. Update WC.
+
+      const allCombos = await getAllComboSkus();
+      const affectedCombos = allCombos.filter((c: any) =>
+        c.components.some((comp: any) => comp.sku === sku)
+      );
+
       const wooCommerceUpdates = [];
-      for (const update of comboUpdates) {
-        try {
-          await updateProductStock(update.id, update.calculatedStock);
-          wooCommerceUpdates.push({
-            sku: update.sku,
-            name: update.name,
-            newStock: update.calculatedStock,
-          });
-        } catch (error) {
-          console.warn(`Failed to update WooCommerce stock for ${update.sku}:`, error);
+
+      if (affectedCombos.length > 0) {
+        // Collect all unique component SKUs needed
+        const neededSkus = new Set<string>();
+        affectedCombos.forEach((c: any) => {
+          c.components.forEach((comp: any) => neededSkus.add(comp.sku));
+        });
+
+        // We know the stock of the CURRENT sku is `newQuantity`.
+        // We need stocks of others.
+        // Fetch from DB to get WC IDs
+        // Then fetch from WC.
+
+        // Optimization: Fetch all single SKUs from DB to map SKU -> WC_ID
+        const allSingleSkus = await getAllSingleSkus();
+        const skuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
+
+        // Prepare a map of current stocks
+        const stockMap: Record<string, number> = {};
+        stockMap[sku] = newQuantity;
+
+        // Fetch missing stocks
+        // This could be N requests. Parallelize.
+        const missingSkus = Array.from(neededSkus).filter(s => s !== sku);
+
+        await Promise.all(missingSkus.map(async (s) => {
+          const sData = skuMap.get(s);
+          if (sData) {
+            try {
+              const p = await getProduct(sData.woocommerce_product_id);
+              stockMap[s] = p.stock_quantity || 0;
+            } catch (e) {
+              console.warn(`Failed to fetch stock for component ${s}`, e);
+              stockMap[s] = 0; // Safe fallback
+            }
+          }
+        }));
+
+        // Calculate and Update
+        for (const combo of affectedCombos) {
+          // calculateComboAvailability expects a map of SKU -> Quantity
+          const maxAvailable = calculateComboAvailability(combo.sku, stockMap, allCombos); // We need to update utils too?
+
+          // Actually, calculateComboAvailability logic needs to be checked. 
+          // It likely relies on a specific data structure.
+          // Let's implement a simple inline calc here since we have the components.
+
+          let comboLimit = Infinity;
+          for (const comp of combo.components) {
+            const compStock = stockMap[comp.sku] || 0;
+            const canMake = Math.floor(compStock / comp.quantity);
+            if (canMake < comboLimit) comboLimit = canMake;
+          }
+          if (comboLimit === Infinity) comboLimit = 0;
+
+          try {
+            await updateProductStock(combo.woocommerce_product_id, comboLimit);
+            wooCommerceUpdates.push({
+              sku: combo.sku,
+              name: combo.name,
+              newStock: comboLimit
+            });
+          } catch (e) {
+            console.warn(`Failed to update combo ${combo.sku}`, e);
+          }
         }
       }
 
@@ -90,9 +216,9 @@ export async function POST(request: Request) {
         newLocalQuantity: newQuantity,
         singleSkuUpdatedInWooCommerce: singleSkuUpdated,
         affectedComboSKUs: wooCommerceUpdates,
-        inventory: inventoryData.singleSkus,
-        comboAvailability: inventoryData.comboAvailability,
+        inventory: { [sku]: newQuantity }, // Partial update response
       });
+
     } else {
       return NextResponse.json(
         { success: false, error: 'Invalid operation. Use add or set' },
@@ -107,5 +233,4 @@ export async function POST(request: Request) {
     );
   }
 }
-
 

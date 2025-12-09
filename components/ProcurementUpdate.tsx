@@ -1,20 +1,50 @@
 'use client';
 
-import { useState } from 'react';
-import { TrendingUp, Plus, CheckCircle, XCircle } from 'lucide-react';
-import { SINGLE_SKUS } from '@/lib/data/single-skus';
+import { useState, useEffect } from 'react';
+import { TrendingUp, Plus, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+
+interface SingleSku {
+  id: number;
+  sku: string;
+  name: string;
+  woocommerce_product_id: number;
+}
 
 interface ProcurementUpdateProps {
   onStockUpdated: () => void;
 }
 
 export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateProps) {
+  const [singleSkus, setSingleSkus] = useState<SingleSku[]>([]);
+  const [loadingSkus, setLoadingSkus] = useState(false);
+
   const [selectedSku, setSelectedSku] = useState('');
   const [quantity, setQuantity] = useState('');
   const [operation, setOperation] = useState<'add' | 'set'>('add');
+  const [notes, setNotes] = useState('');
+
   const [updating, setUpdating] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchSingleSkus();
+  }, []);
+
+  const fetchSingleSkus = async () => {
+    setLoadingSkus(true);
+    try {
+      const res = await fetch('/api/skus/single');
+      const data = await res.json();
+      if (data.skus) {
+        setSingleSkus(data.skus);
+      }
+    } catch (error) {
+      console.error('Failed to fetch SKUs', error);
+    } finally {
+      setLoadingSkus(false);
+    }
+  };
 
   const handleUpdate = async () => {
     if (!selectedSku || !quantity) {
@@ -40,6 +70,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
           sku: selectedSku,
           quantity: qty,
           operation,
+          notes // Included notes
         }),
       });
 
@@ -49,6 +80,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
         setResult(data);
         onStockUpdated();
         setQuantity('');
+        setNotes('');
       } else {
         setError(data.error || 'Failed to update stock');
       }
@@ -79,22 +111,32 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
         <div className="space-y-4">
           {/* SKU Selection */}
           <div>
-            <label htmlFor="sku" className="block text-sm font-medium text-gray-700 mb-2">
-              Select Single SKU
-            </label>
+            <div className="flex justify-between items-center mb-2">
+              <label htmlFor="sku" className="block text-sm font-medium text-gray-700">
+                Select Single SKU
+              </label>
+              <button onClick={fetchSingleSkus} className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1">
+                <RefreshCw size={12} className={loadingSkus ? 'animate-spin' : ''} /> Refresh List
+              </button>
+            </div>
+
             <select
               id="sku"
               value={selectedSku}
               onChange={(e) => setSelectedSku(e.target.value)}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              disabled={updating}
+              disabled={updating || loadingSkus}
             >
               <option value="">-- Select a SKU --</option>
-              {SINGLE_SKUS.map((sku) => (
-                <option key={sku.sku} value={sku.sku}>
-                  {sku.sku} - {sku.name}
-                </option>
-              ))}
+              {singleSkus.length > 0 ? (
+                singleSkus.map((sku) => (
+                  <option key={sku.sku} value={sku.sku}>
+                    {sku.sku} - {sku.name}
+                  </option>
+                ))
+              ) : (
+                <option disabled>Loading SKUs...</option>
+              )}
             </select>
           </div>
 
@@ -102,7 +144,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Operation</label>
             <div className="flex gap-4">
-              <label className="flex items-center">
+              <label className="flex items-center cursor-pointer">
                 <input
                   type="radio"
                   value="add"
@@ -113,7 +155,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
                 />
                 <span className="text-sm text-gray-700">Add to existing stock</span>
               </label>
-              <label className="flex items-center">
+              <label className="flex items-center cursor-pointer">
                 <input
                   type="radio"
                   value="set"
@@ -139,6 +181,22 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
               onChange={(e) => setQuantity(e.target.value)}
               placeholder="Enter quantity"
               min="0"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={updating}
+            />
+          </div>
+
+          {/* Notes Input */}
+          <div>
+            <label htmlFor="notes" className="block text-sm font-medium text-gray-700 mb-2">
+              Notes (Optional)
+            </label>
+            <textarea
+              id="notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Reason for update (e.g., Restock from supplier, Adjustment)"
+              rows={2}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               disabled={updating}
             />
@@ -229,5 +287,4 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
     </div>
   );
 }
-
 

@@ -63,6 +63,19 @@ export async function updateProductStock(
 }
 
 /**
+ * Create a new product (WRITE access)
+ */
+export async function createProduct(data: any): Promise<WooCommerceProduct> {
+  try {
+    const response = await wooCommerce.post('products', data);
+    return response.data;
+  } catch (error) {
+    console.error('Error creating product:', error);
+    throw error;
+  }
+}
+
+/**
  * Fetch orders from WooCommerce
  */
 export async function getOrders(params?: {
@@ -119,6 +132,7 @@ export async function getRecentOrders(limit: number = 50): Promise<WooCommerceOr
 }
 
 export default wooCommerce;
+
 
 
 
