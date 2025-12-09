@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useSession } from 'next-auth/react';
-import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { useSession, signOut } from 'next-auth/react';
+import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User } from 'lucide-react';
 import InventoryDashboard from '@/components/InventoryDashboard';
 import RecentOrders from '@/components/RecentOrders';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
@@ -70,6 +70,27 @@ export default function Home() {
     setAutoRefresh(!autoRefresh);
   };
 
+  const handleLogout = async () => {
+    await signOut({ callbackUrl: '/' });
+  };
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setShowUserMenu(false);
+      }
+    };
+
+    if (showUserMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showUserMenu]);
+
   if (status === 'loading') {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -135,16 +156,51 @@ export default function Home() {
 
                 <div className="h-8 w-px bg-gray-200 mx-1"></div>
 
-                <div className="flex items-center gap-3 pl-1">
-                  {session?.user?.image ? (
-                    <img
-                      src={session.user.image}
-                      alt={session.user.name || 'User'}
-                      className="w-9 h-9 rounded-full border-2 border-white shadow-sm"
-                    />
-                  ) : (
-                    <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">
-                      {session?.user?.name?.charAt(0) || 'U'}
+                {/* User Profile Dropdown */}
+                <div className="relative" ref={userMenuRef}>
+                  <button
+                    onClick={() => setShowUserMenu(!showUserMenu)}
+                    className="flex items-center gap-2 pl-1 hover:opacity-80 transition-opacity"
+                  >
+                    {session?.user?.image ? (
+                      <img
+                        src={session.user.image}
+                        alt={session.user.name || 'User'}
+                        className="w-9 h-9 rounded-full border-2 border-white shadow-sm cursor-pointer"
+                      />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold cursor-pointer hover:bg-blue-200 transition-colors">
+                        {session?.user?.name?.charAt(0) || 'U'}
+                      </div>
+                    )}
+                  </button>
+
+                  {/* Dropdown Menu */}
+                  {showUserMenu && (
+                    <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                      {/* User Info */}
+                      <div className="px-4 py-3 border-b border-gray-100">
+                        <p className="text-sm font-semibold text-gray-900">
+                          {session?.user?.name || 'User'}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {session?.user?.email}
+                        </p>
+                        {session?.user?.role && (
+                          <span className="inline-block mt-2 px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700">
+                            {session.user.role === 'admin' ? 'Administrator' : 'Staff'}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Logout Button */}
+                      <button
+                        onClick={handleLogout}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        Sign Out
+                      </button>
                     </div>
                   )}
                 </div>
