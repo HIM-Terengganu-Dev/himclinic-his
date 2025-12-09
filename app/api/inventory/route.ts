@@ -23,6 +23,9 @@ let lastOrderCheckTime = new Date(Date.now() - 60 * 60 * 1000);
 // Store recently processed orders (last 20)
 let recentlyProcessedOrders: ProcessedOrder[] = [];
 
+// Track which order IDs have been processed (to prevent duplicates)
+let processedOrderIds = new Set<number>();
+
 /**
  * Initialize inventory from WooCommerce on first request
  */
@@ -62,6 +65,12 @@ async function checkAndProcessNewOrders() {
 
     for (const order of orders) {
       try {
+        // Skip if this order was already processed
+        if (processedOrderIds.has(order.id)) {
+          console.log(`⏭️  Skipping order #${order.id} - already processed`);
+          continue;
+        }
+
         // Process each line item
         let currentInventory = { ...inventoryStore };
         const totalDeductions: InventoryStock = {};
@@ -118,18 +127,34 @@ async function checkAndProcessNewOrders() {
             totalDeductions,
           };
 
-          processedThisCheck.push(processedOrder);
-          console.log(`✅ Processed order #${order.id}`);
+          // Mark this order as processed
+          processedOrderIds.add(order.id);
+          
+          // Only add to list if not already there
+          const alreadyInList = recentlyProcessedOrders.some(o => o.orderId === order.id);
+          if (!alreadyInList) {
+            processedThisCheck.push(processedOrder);
+            console.log(`✅ Processed order #${order.id}`);
+          } else {
+            console.log(`⏭️  Order #${order.id} already in recent orders list`);
+          }
         }
       } catch (error) {
         console.error(`Error processing order ${order.id}:`, error);
       }
     }
 
-    // Add to recently processed list (keep last 20)
+    // Add to recently processed list (keep last 20, no duplicates)
     if (processedThisCheck.length > 0) {
-      recentlyProcessedOrders = [...processedThisCheck, ...recentlyProcessedOrders].slice(0, 20);
+      // Filter out any duplicates before adding
+      const existingIds = new Set(recentlyProcessedOrders.map(o => o.orderId));
+      const newOrders = processedThisCheck.filter(o => !existingIds.has(o.orderId));
+      recentlyProcessedOrders = [...newOrders, ...recentlyProcessedOrders].slice(0, 20);
     }
+    
+    // Clean up processedOrderIds set (keep only IDs from recent orders to prevent memory bloat)
+    const recentIds = new Set(recentlyProcessedOrders.map(o => o.orderId));
+    processedOrderIds = new Set(recentIds);
 
     // Update last check timestamp
     lastOrderCheckTime = new Date();
