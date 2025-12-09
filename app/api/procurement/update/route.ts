@@ -180,15 +180,9 @@ export async function POST(request: Request) {
           }
         }));
 
-        // Calculate and Update
+        // Calculate and Update combo stock in WooCommerce
         for (const combo of affectedCombos) {
-          // calculateComboAvailability expects a map of SKU -> Quantity
-          const maxAvailable = calculateComboAvailability(combo.sku, stockMap, allCombos); // We need to update utils too?
-
-          // Actually, calculateComboAvailability logic needs to be checked. 
-          // It likely relies on a specific data structure.
-          // Let's implement a simple inline calc here since we have the components.
-
+          // Calculate max available based on component stock
           let comboLimit = Infinity;
           for (const comp of combo.components) {
             const compStock = stockMap[comp.sku] || 0;
