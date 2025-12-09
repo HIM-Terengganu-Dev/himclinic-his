@@ -20,7 +20,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [newOrdersCount, setNewOrdersCount] = useState(0);
+  // Removed: newOrdersCount - orders are read-only, no notifications needed
 
   const fetchInventory = async () => {
     try {
@@ -34,11 +34,9 @@ export default function Home() {
         setRecentOrders(data.recentlyProcessedOrders || []);
         setLastUpdated(new Date());
 
-        // Show notification if new orders were processed
-        if (data.newOrdersProcessed && data.newOrdersProcessed.length > 0) {
-          setNewOrdersCount(data.newOrdersProcessed.length);
-          setTimeout(() => setNewOrdersCount(0), 5000);
-        }
+        // Note: We don't show notifications for orders anymore
+        // Orders are read-only from WooCommerce - we just track them locally
+        // System only WRITES: manual stock updates and new products
       }
     } catch (error) {
       console.error('Error fetching inventory:', error);
@@ -159,20 +157,7 @@ export default function Home() {
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
-        {/* Helper Notification */}
-        {newOrdersCount > 0 && (
-          <div className="fixed bottom-8 right-8 z-50 animate-bounce-in">
-            <div className="bg-white border-l-4 border-green-500 shadow-xl rounded-r-lg p-4 flex items-center gap-4 pr-8">
-              <div className="bg-green-100 p-2 rounded-full">
-                <Bell className="w-5 h-5 text-green-600" />
-              </div>
-              <div>
-                <h4 className="font-bold text-gray-900">New Orders Processed!</h4>
-                <p className="text-sm text-gray-600">{newOrdersCount} orders have been handled automatically.</p>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Orders are read-only from WooCommerce - no notifications */}
 
         {/* Top Stats Cards */}
         {activeTab === 'dashboard' && (

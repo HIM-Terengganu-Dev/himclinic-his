@@ -209,7 +209,7 @@ export async function GET() {
       singleSkus: inventoryStore,
       comboAvailability,
       initializedFromWooCommerce: isInitialized,
-      newOrdersProcessed: newlyProcessed,
+      // Note: newOrdersProcessed removed - orders are read-only, no need to notify
       recentlyProcessedOrders: allRecentOrders,
     });
   } catch (error) {
