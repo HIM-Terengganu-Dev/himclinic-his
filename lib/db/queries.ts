@@ -108,7 +108,11 @@ export async function createProcurementUpdate(data: {
     createdBy: number;
 }) {
     // Start transaction
-    const client = await import('./connection').then(m => m.pool.connect());
+    const { pool } = await import('./connection');
+    if (!pool) {
+        throw new Error('Database not configured. Please set DATABASE_URL in .env.local');
+    }
+    const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
