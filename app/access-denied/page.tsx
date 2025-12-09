@@ -1,9 +1,10 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense } from 'react';
 import { AlertTriangle, ArrowLeft, Mail, Shield } from 'lucide-react';
 
-export default function AccessDeniedPage() {
+function AccessDeniedContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const error = searchParams.get('error');
@@ -80,6 +81,18 @@ export default function AccessDeniedPage() {
                 </div>
             </div>
         </div>
+    );
+}
+
+export default function AccessDeniedPage() {
+    return (
+        <Suspense fallback={
+            <div className="min-h-screen bg-gradient-to-br from-red-900 via-gray-900 to-slate-900 flex items-center justify-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white"></div>
+            </div>
+        }>
+            <AccessDeniedContent />
+        </Suspense>
     );
 }
 

@@ -2,9 +2,9 @@
 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertTriangle, ArrowLeft, Mail, Shield } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 
-export default function AuthErrorPage() {
+function AuthErrorContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const [error, setError] = useState<string | null>(null);
@@ -108,6 +108,18 @@ export default function AuthErrorPage() {
                 </div>
             </div>
         </div>
+    );
+}
+
+export default function AuthErrorPage() {
+    return (
+        <Suspense fallback={
+            <div className="min-h-screen bg-gradient-to-br from-red-900 via-gray-900 to-slate-900 flex items-center justify-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white"></div>
+            </div>
+        }>
+            <AuthErrorContent />
+        </Suspense>
     );
 }
 
