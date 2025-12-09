@@ -51,14 +51,13 @@ export default function Home() {
     }
   }, [status]);
 
-  // Auto-refresh every 30 seconds (was 5 mins in previous code, but Requirements say 30s)
-  // Reverting to 30s as per original requirements
+  // Auto-refresh every 5 minutes
   useEffect(() => {
     if (!autoRefresh || status !== 'authenticated') return;
 
     const interval = setInterval(() => {
       fetchInventory();
-    }, 30000); // 30 seconds
+    }, 300000); // 5 minutes (5 * 60 * 1000)
 
     return () => clearInterval(interval);
   }, [autoRefresh, status]);
