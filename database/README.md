@@ -154,10 +154,8 @@ SELECT id, email, role FROM inventory_management.users;
 ```sql
 CREATE TABLE inventory_management.users (
     id SERIAL PRIMARY KEY,
-    google_id VARCHAR(255) UNIQUE NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     name VARCHAR(255),
-    picture TEXT,
     role VARCHAR(50) DEFAULT 'user',  -- 'admin' or 'user'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP

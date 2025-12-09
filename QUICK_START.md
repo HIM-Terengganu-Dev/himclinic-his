@@ -54,8 +54,8 @@ GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
 3. Add your first user to the database:
 
 ```sql
-INSERT INTO inventory_management.users (google_id, email, name, picture, role)
-VALUES ('your-google-id-from-oauth', 'your-email@gmail.com', 'Your Name', 'picture-url', 'admin');
+INSERT INTO inventory_management.users (email, name, role)
+VALUES ('your-email@gmail.com', 'Your Name', 'admin');
 ```
 
 > Only users in the `users` table can log in!
@@ -107,8 +107,8 @@ Check if user exists in database (by Google ID or email)
 **Fix:** Add your user to the database:
 
 ```sql
-INSERT INTO inventory_management.users (google_id, email, name, picture, role)
-VALUES ('your-google-id', 'your-email@gmail.com', 'Your Name', 'picture-url', 'user');
+INSERT INTO inventory_management.users (email, name, role)
+VALUES ('your-email@gmail.com', 'Your Name', 'user');
 ```
 
 To get your Google ID, check the error logs or use Google OAuth debugger.

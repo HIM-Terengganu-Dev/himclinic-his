@@ -16,19 +16,15 @@ CREATE SCHEMA IF NOT EXISTS inventory_management;
 -- Stores Google OAuth user information and roles
 CREATE TABLE IF NOT EXISTS inventory_management.users (
     id SERIAL PRIMARY KEY,
-    google_id VARCHAR(255) UNIQUE NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     name VARCHAR(255),
-    picture TEXT,
     role VARCHAR(50) DEFAULT 'user' CHECK (role IN ('admin', 'user')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT users_google_id_key UNIQUE (google_id),
     CONSTRAINT users_email_key UNIQUE (email)
 );
 
 -- Indexes for users table
-CREATE INDEX IF NOT EXISTS idx_users_google_id ON inventory_management.users(google_id);
 CREATE INDEX IF NOT EXISTS idx_users_email ON inventory_management.users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON inventory_management.users(role);
 

@@ -4,14 +4,6 @@ import { query, pool } from './connection';
  * USER OPERATIONS
  */
 
-export async function getUserByGoogleId(googleId: string) {
-    const result = await query(
-        'SELECT * FROM inventory_management.users WHERE google_id = $1',
-        [googleId]
-    );
-    return result.rows[0];
-}
-
 export async function getUserByEmail(email: string) {
     const result = await query(
         'SELECT * FROM inventory_management.users WHERE email = $1',
@@ -21,16 +13,15 @@ export async function getUserByEmail(email: string) {
 }
 
 export async function createUser(user: {
-    googleId: string;
     email: string;
     name: string;
-    picture: string
+    role?: string;
 }) {
     const result = await query(
-        `INSERT INTO inventory_management.users (google_id, email, name, picture)
-     VALUES ($1, $2, $3, $4)
+        `INSERT INTO inventory_management.users (email, name, role)
+     VALUES ($1, $2, $3)
      RETURNING *`,
-        [user.googleId, user.email, user.name, user.picture]
+        [user.email, user.name, user.role || 'user']
     );
     return result.rows[0];
 }
@@ -185,7 +176,7 @@ export async function getActivityLogs(filters: {
     type?: string;
 }) {
     let sql = `
-    SELECT al.*, u.name as user_name, u.email as user_email, u.picture as user_picture
+    SELECT al.*, u.name as user_name, u.email as user_email
     FROM inventory_management.activity_logs al
     LEFT JOIN inventory_management.users u ON al.user_id = u.id
     WHERE 1=1
