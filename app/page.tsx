@@ -347,19 +347,8 @@ export default function Home() {
                 {activeTab === 'procurement' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
 
-              <button
-                onClick={() => setActiveTab('activity')}
-                className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'activity'
-                  ? 'text-blue-600 bg-blue-50/50'
-                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
-                  }`}
-              >
-                <History size={18} />
-                Activity Log
-                {activeTab === 'activity' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
-              </button>
-
-              {isAdmin && (
+              {/* SKU Management tab hidden from UI but backend code remains */}
+              {/* {isAdmin && (
                 <button
                   onClick={() => setActiveTab('sku')}
                   className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'sku'
@@ -371,7 +360,19 @@ export default function Home() {
                   SKU Management
                   {activeTab === 'sku' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-600" />}
                 </button>
-              )}
+              )} */}
+
+              <button
+                onClick={() => setActiveTab('activity')}
+                className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'activity'
+                  ? 'text-blue-600 bg-blue-50/50'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+              >
+                <History size={18} />
+                Activity Log
+                {activeTab === 'activity' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
+              </button>
             </nav>
           </div>
 

@@ -100,7 +100,7 @@ export async function createComboSku(data: {
 
 export async function createProcurementUpdate(data: {
     singleSkuId: number;
-    operation: 'add' | 'set';
+    operation: 'add' | 'subtract' | 'set';
     quantity: number;
     previousQuantity?: number;
     newQuantity?: number;
@@ -178,11 +178,20 @@ export async function getActivityLogs(filters: {
     limit?: number;
     offset?: number;
     type?: string;
+    sku?: string;
+    dateFrom?: string;
+    dateTo?: string;
 }) {
     let sql = `
-    SELECT al.*, u.name as user_name, u.email as user_email
+    SELECT 
+        al.*, 
+        u.name as user_name, 
+        u.email as user_email,
+        ss.sku as affected_sku
     FROM inventory_management.activity_logs al
     LEFT JOIN inventory_management.users u ON al.user_id = u.id
+    LEFT JOIN inventory_management.procurement_updates pu ON al.entity_type = 'procurement_update' AND al.entity_id = pu.id
+    LEFT JOIN inventory_management.single_skus ss ON pu.single_sku_id = ss.id
     WHERE 1=1
   `;
     const params: any[] = [];
@@ -196,6 +205,21 @@ export async function getActivityLogs(filters: {
     if (filters.type) {
         sql += ` AND al.action = $${pIdx++}`;
         params.push(filters.type);
+    }
+
+    if (filters.sku) {
+        sql += ` AND ss.sku = $${pIdx++}`;
+        params.push(filters.sku);
+    }
+
+    if (filters.dateFrom) {
+        sql += ` AND al.created_at >= $${pIdx++}`;
+        params.push(filters.dateFrom);
+    }
+
+    if (filters.dateTo) {
+        sql += ` AND al.created_at <= $${pIdx++}`;
+        params.push(filters.dateTo);
     }
 
     sql += ` ORDER BY al.created_at DESC`;

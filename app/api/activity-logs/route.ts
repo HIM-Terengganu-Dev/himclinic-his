@@ -16,12 +16,18 @@ export async function GET(req: NextRequest) {
         const offset = parseInt(searchParams.get('offset') || '0');
         const type = searchParams.get('type') || undefined;
         const userId = searchParams.get('userId') ? parseInt(searchParams.get('userId')!) : undefined;
+        const sku = searchParams.get('sku') || undefined;
+        const dateFrom = searchParams.get('dateFrom') || undefined;
+        const dateTo = searchParams.get('dateTo') || undefined;
 
         const logs = await getActivityLogs({
             userId,
             limit,
             offset,
-            type
+            type,
+            sku,
+            dateFrom,
+            dateTo
         });
 
         return NextResponse.json({ logs });

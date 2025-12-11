@@ -31,6 +31,14 @@ export async function POST(request: Request) {
       );
     }
 
+    // Notes are required for Reconciliation (set operation)
+    if (operation === 'set' && !notes?.trim()) {
+      return NextResponse.json(
+        { success: false, error: 'Notes are required for Reconciliation' },
+        { status: 400 }
+      );
+    }
+
     // 2. Validate SKU exists in System DB
     const singleSku = await getSingleSkuByCode(sku);
     if (!singleSku) {
@@ -40,7 +48,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (operation === 'add' || operation === 'set') {
+    if (operation === 'add' || operation === 'subtract' || operation === 'set') {
       // 3. Fetch CURRENT stock from WooCommerce to ensure accuracy
       // This is the "Source of Truth" check
       let currentWooStock = 0;
@@ -60,6 +68,8 @@ export async function POST(request: Request) {
       let newQuantity: number;
       if (operation === 'add') {
         newQuantity = currentWooStock + quantity;
+      } else if (operation === 'subtract') {
+        newQuantity = currentWooStock - quantity;
       } else { // set
         newQuantity = quantity;
       }
@@ -215,7 +225,7 @@ export async function POST(request: Request) {
 
     } else {
       return NextResponse.json(
-        { success: false, error: 'Invalid operation. Use add or set' },
+        { success: false, error: 'Invalid operation. Use add, subtract, or set' },
         { status: 400 }
       );
     }

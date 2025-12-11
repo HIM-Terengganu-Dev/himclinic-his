@@ -20,7 +20,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
 
   const [selectedSku, setSelectedSku] = useState('');
   const [quantity, setQuantity] = useState('');
-  const [operation, setOperation] = useState<'add' | 'set'>('add');
+  const [operation, setOperation] = useState<'add' | 'subtract' | 'set'>('add');
   const [notes, setNotes] = useState('');
 
   const [updating, setUpdating] = useState(false);
@@ -55,6 +55,12 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
     const qty = parseInt(quantity);
     if (isNaN(qty) || qty < 0) {
       setError('Please enter a valid quantity');
+      return;
+    }
+
+    // Notes are required for Reconciliation (set operation)
+    if (operation === 'set' && !notes.trim()) {
+      setError('Notes are required for Reconciliation');
       return;
     }
 
@@ -143,7 +149,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
           {/* Operation Selection */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Operation</label>
-            <div className="flex gap-4">
+            <div className="flex flex-col gap-3">
               <label className="flex items-center cursor-pointer">
                 <input
                   type="radio"
@@ -153,7 +159,18 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
                   className="mr-2"
                   disabled={updating}
                 />
-                <span className="text-sm text-gray-700">Add to existing stock</span>
+                <span className="text-sm text-gray-700">Manual stock in</span>
+              </label>
+              <label className="flex items-center cursor-pointer">
+                <input
+                  type="radio"
+                  value="subtract"
+                  checked={operation === 'subtract'}
+                  onChange={(e) => setOperation(e.target.value as 'subtract')}
+                  className="mr-2"
+                  disabled={updating}
+                />
+                <span className="text-sm text-gray-700">Manual stock out</span>
               </label>
               <label className="flex items-center cursor-pointer">
                 <input
@@ -164,7 +181,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
                   className="mr-2"
                   disabled={updating}
                 />
-                <span className="text-sm text-gray-700">Set stock to specific amount</span>
+                <span className="text-sm text-gray-700">Reconciliation</span>
               </label>
             </div>
           </div>
@@ -189,23 +206,26 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
           {/* Notes Input */}
           <div>
             <label htmlFor="notes" className="block text-sm font-medium text-gray-700 mb-2">
-              Notes (Optional)
+              Notes {operation === 'set' ? <span className="text-red-500">*</span> : '(Optional)'}
             </label>
             <textarea
               id="notes"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Reason for update (e.g., Restock from supplier, Adjustment)"
+              placeholder={operation === 'set' ? "Reason for reconciliation (required)" : "Reason for update (e.g., Restock from supplier, Adjustment)"}
               rows={2}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                operation === 'set' && !notes.trim() ? 'border-red-300' : 'border-gray-300'
+              }`}
               disabled={updating}
+              required={operation === 'set'}
             />
           </div>
 
           {/* Submit Button */}
           <button
             onClick={handleUpdate}
-            disabled={updating || !selectedSku || !quantity}
+            disabled={updating || !selectedSku || !quantity || (operation === 'set' && !notes.trim())}
             className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
           >
             {updating ? (
@@ -287,5 +307,6 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
     </div>
   );
 }
+
 
 

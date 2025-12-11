@@ -15,6 +15,7 @@ interface ActivityLogEntry {
     success: boolean;
     error_message?: string;
     created_at: string;
+    affected_sku?: string;
 }
 
 export default function ActivityLog({ limit = 20, compact = false }: { limit?: number, compact?: boolean }) {
@@ -23,6 +24,22 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [filterType, setFilterType] = useState('');
+    const [filterSku, setFilterSku] = useState('');
+    const [filterDateFrom, setFilterDateFrom] = useState('');
+    const [filterDateTo, setFilterDateTo] = useState('');
+    const [singleSkus, setSingleSkus] = useState<Array<{ sku: string; name: string }>>([]);
+
+    useEffect(() => {
+        // Fetch single SKUs for filter dropdown
+        fetch('/api/skus/single')
+            .then(res => res.json())
+            .then(data => {
+                if (data.skus) {
+                    setSingleSkus(data.skus.map((s: any) => ({ sku: s.sku, name: s.name })));
+                }
+            })
+            .catch(err => console.error('Failed to fetch SKUs:', err));
+    }, []);
 
     const fetchLogs = async () => {
         try {
@@ -30,6 +47,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             const queryParams = new URLSearchParams();
             if (limit) queryParams.append('limit', limit.toString());
             if (filterType) queryParams.append('type', filterType);
+            if (filterSku) queryParams.append('sku', filterSku);
+            if (filterDateFrom) queryParams.append('dateFrom', filterDateFrom);
+            if (filterDateTo) queryParams.append('dateTo', filterDateTo);
 
             const res = await fetch(`/api/activity-logs?${queryParams.toString()}`);
             if (!res.ok) throw new Error('Failed to fetch logs');
@@ -46,16 +66,17 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
 
     useEffect(() => {
         fetchLogs();
-    }, [filterType]);
+    }, [filterType, filterSku, filterDateFrom, filterDateTo]);
 
     const handleExport = () => {
-        const headers = ['Timestamp', 'User', 'Action', 'Success', 'Details', 'Error'];
+        const headers = ['Timestamp', 'User', 'Action', 'SKU', 'Success', 'Details', 'Error'];
         const csvContent = [
             headers.join(','),
             ...logs.map(log => [
                 `"${format(new Date(log.created_at), 'yyyy-MM-dd HH:mm:ss')}"`,
                 `"${log.user_name || log.user_email}"`,
                 `"${log.action}"`,
+                `"${log.affected_sku || ''}"`,
                 log.success ? 'Yes' : 'No',
                 `"${JSON.stringify(log.details).replace(/"/g, '""')}"`,
                 `"${log.error_message || ''}"`
@@ -97,7 +118,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         <p className="text-sm text-gray-500 mt-1">Audit trail of all manual system changes</p>
                     </div>
 
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                         <button
                             onClick={fetchLogs}
                             disabled={refreshing}
@@ -119,6 +140,38 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                             </select>
                             <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                         </div>
+
+                        <div className="relative">
+                            <select
+                                value={filterSku}
+                                onChange={(e) => setFilterSku(e.target.value)}
+                                className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white"
+                            >
+                                <option value="">All SKUs</option>
+                                {singleSkus.map((sku) => (
+                                    <option key={sku.sku} value={sku.sku}>
+                                        {sku.sku}
+                                    </option>
+                                ))}
+                            </select>
+                            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                        </div>
+
+                        <input
+                            type="date"
+                            value={filterDateFrom}
+                            onChange={(e) => setFilterDateFrom(e.target.value)}
+                            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                            placeholder="From Date"
+                        />
+
+                        <input
+                            type="date"
+                            value={filterDateTo}
+                            onChange={(e) => setFilterDateTo(e.target.value)}
+                            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                            placeholder="To Date"
+                        />
 
                         <button
                             onClick={handleExport}
@@ -143,6 +196,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 <th className="px-6 py-4">Time</th>
                                 <th className="px-6 py-4">User</th>
                                 <th className="px-6 py-4">Action</th>
+                                <th className="px-6 py-4">SKU</th>
                                 <th className="px-6 py-4">Details</th>
                                 <th className="px-6 py-4">Status</th>
                             </tr>
@@ -179,10 +233,19 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                             </span>
                                         </td>
                                         <td className="px-6 py-4">
+                                            {log.affected_sku ? (
+                                                <span className="font-mono text-sm font-medium text-gray-900 bg-gray-50 px-2 py-1 rounded">
+                                                    {log.affected_sku}
+                                                </span>
+                                            ) : (
+                                                <span className="text-gray-400 text-xs">—</span>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4">
                                             <div className="max-w-xs truncate text-gray-600">
                                                 {log.action === 'procurement_update' && log.details ? (
                                                     <span>
-                                                        {log.details.operation === 'add' ? 'Added' : 'Set to'} <strong>{log.details.quantity}</strong> units
+                                                        {log.details.operation === 'add' ? 'Added' : log.details.operation === 'subtract' ? 'Deducted' : 'Set to'} <strong>{log.details.quantity}</strong> units
                                                         {log.details.notes && <span className="text-gray-400 ml-1">- {log.details.notes}</span>}
                                                     </span>
                                                 ) : (
@@ -207,7 +270,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 ))
                             ) : (
                                 <tr>
-                                    <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
+                                    <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
                                         No activity logs found matching your filters.
                                     </td>
                                 </tr>

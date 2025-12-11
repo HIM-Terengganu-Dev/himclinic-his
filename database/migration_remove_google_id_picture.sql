@@ -24,3 +24,4 @@ WHERE table_schema = 'inventory_management'
 ORDER BY ordinal_position;
 
 
+
