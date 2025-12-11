@@ -4,29 +4,39 @@ const GMT8_OFFSET_MS = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
 
 /**
  * Convert date to GMT+8 timezone for display
- * PostgreSQL queries now return timestamps with +08:00 timezone indicator.
- * JavaScript's Date() will parse these correctly, but we need to format them
- * in GMT+8 for display. Since the date already has timezone info, we just
- * need to format it correctly.
+ * PostgreSQL queries return timestamps with +08:00 timezone indicator.
+ * When JavaScript parses "2025-12-11T16:18:00+08:00", it creates a Date object
+ * representing that exact moment in time (which is correct).
+ * However, when formatting, we need to display it as if it's in GMT+8.
+ * Since the string already represents GMT+8 time, we parse it and format the
+ * components directly, or adjust for display.
  */
 export function toGMT8(date: Date | string): Date {
-  const dateObj = typeof date === 'string' ? new Date(date) : date;
-  
-  // If the date string has +08:00 or similar GMT+8 timezone, JavaScript will parse it correctly
-  // and the Date object will represent the correct time. We just return it.
-  if (typeof date === 'string' && /\+08:00/.test(date)) {
-    // Already has GMT+8 timezone, parse as-is
-    return dateObj;
-  }
-  
-  // If it has UTC timezone (Z), convert to GMT+8
-  if (typeof date === 'string' && date.endsWith('Z')) {
+  if (typeof date === 'string') {
+    // Check if string has +08:00 timezone (GMT+8 from database)
+    if (/\+08:00/.test(date)) {
+      // Parse the string - JavaScript will create correct Date object
+      const dateObj = new Date(date);
+      // The Date object is in UTC internally, but represents the GMT+8 time
+      // We need to format it as GMT+8, so we extract the components from the string
+      // or adjust the Date object to show GMT+8 time
+      // Since the string is already in GMT+8, we can parse and use directly
+      return dateObj;
+    }
+    
+    // If it has UTC timezone (Z), convert to GMT+8
+    if (date.endsWith('Z')) {
+      const dateObj = new Date(date);
+      return new Date(dateObj.getTime() + GMT8_OFFSET_MS);
+    }
+    
+    // If no timezone, assume UTC and add 8 hours
+    const dateObj = new Date(date);
     return new Date(dateObj.getTime() + GMT8_OFFSET_MS);
   }
   
-  // If no timezone info, assume it's UTC and add 8 hours
-  // (This handles legacy data or data without timezone conversion)
-  return new Date(dateObj.getTime() + GMT8_OFFSET_MS);
+  // For Date objects, assume UTC and add 8 hours
+  return new Date(date.getTime() + GMT8_OFFSET_MS);
 }
 
 /**
