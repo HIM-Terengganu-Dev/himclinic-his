@@ -187,7 +187,8 @@ export async function getActivityLogs(filters: {
         al.*, 
         u.name as user_name, 
         u.email as user_email,
-        ss.sku as affected_sku
+        ss.sku as affected_sku,
+        to_char(al.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
     FROM inventory_management.activity_logs al
     LEFT JOIN inventory_management.users u ON al.user_id = u.id
     LEFT JOIN inventory_management.procurement_updates pu ON al.entity_type = 'procurement_update' AND al.entity_id = pu.id
@@ -235,7 +236,13 @@ export async function getActivityLogs(filters: {
     }
 
     const result = await query(sql, params);
-    return result.rows;
+    // Replace created_at with GMT+8 version if available
+    return result.rows.map(row => {
+        if (row.created_at_gmt8) {
+            row.created_at = row.created_at_gmt8;
+        }
+        return row;
+    });
 }
 
 /**
@@ -262,7 +269,9 @@ export async function getStockTakeByMonth(month: number, year: number) {
     const result = await query(
         `SELECT st.*, 
                 u1.name as created_by_name, u1.email as created_by_email,
-                u2.name as completed_by_name, u2.email as completed_by_email
+                u2.name as completed_by_name, u2.email as completed_by_email,
+                st.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur' as created_at_gmt8,
+                st.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur' as completed_at_gmt8
          FROM inventory_management.stock_takes st
          LEFT JOIN inventory_management.users u1 ON st.created_by = u1.id
          LEFT JOIN inventory_management.users u2 ON st.completed_by = u2.id
@@ -271,7 +280,13 @@ export async function getStockTakeByMonth(month: number, year: number) {
          LIMIT 1`,
         [month, year]
     );
-    return result.rows[0] || null;
+    const row = result.rows[0];
+    if (row) {
+        // Use GMT+8 timestamps if available, otherwise use original
+        row.created_at = row.created_at_gmt8 || row.created_at;
+        row.completed_at = row.completed_at_gmt8 || row.completed_at;
+    }
+    return row || null;
 }
 
 export async function getCurrentStockTake() {
@@ -285,14 +300,26 @@ export async function getStockTakeById(id: number) {
     const result = await query(
         `SELECT st.*, 
                 u1.name as created_by_name, u1.email as created_by_email,
-                u2.name as completed_by_name, u2.email as completed_by_email
+                u2.name as completed_by_name, u2.email as completed_by_email,
+                to_char(st.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8,
+                to_char(st.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as completed_at_gmt8
          FROM inventory_management.stock_takes st
          LEFT JOIN inventory_management.users u1 ON st.created_by = u1.id
          LEFT JOIN inventory_management.users u2 ON st.completed_by = u2.id
          WHERE st.id = $1`,
         [id]
     );
-    return result.rows[0] || null;
+    const row = result.rows[0];
+    if (row) {
+        // Use GMT+8 timestamps with timezone indicator
+        if (row.created_at_gmt8) {
+            row.created_at = row.created_at_gmt8;
+        }
+        if (row.completed_at_gmt8) {
+            row.completed_at = row.completed_at_gmt8;
+        }
+    }
+    return row || null;
 }
 
 export async function createStockTakeItems(stockTakeId: number, items: Array<{
