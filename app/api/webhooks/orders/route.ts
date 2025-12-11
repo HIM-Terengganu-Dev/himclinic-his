@@ -4,6 +4,7 @@ import { updateProductStock, getProduct, getOrders } from '@/lib/services/woocom
 import { getSingleSkuByCode, getAllComboSkus, getAllSingleSkus, logActivity } from '@/lib/db/queries';
 
 export async function POST(request: Request) {
+    console.log("!!! WEBHOOK HIT !!! Method:", request.method);
     try {
         const bodyText = await request.text();
         const signature = request.headers.get('x-wc-webhook-signature');
