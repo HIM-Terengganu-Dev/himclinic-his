@@ -41,8 +41,21 @@ export function toGMT8(date: Date | string): Date {
 
 /**
  * Format date to GMT+8 (Asia/Kuala_Lumpur timezone)
+ * Handles dates with +08:00 timezone from database correctly
  */
 export function formatDateGMT8(date: Date | string, formatString: string = 'MMM d, yyyy HH:mm'): string {
+  if (typeof date === 'string' && /\+08:00/.test(date)) {
+    // String already has GMT+8 timezone (e.g., "2025-12-11T16:18:00+08:00")
+    // Extract the date/time part and parse it as if it's already in GMT+8
+    // Remove the timezone part and parse as UTC, then format
+    const datePart = date.replace(/\+08:00$/, '');
+    // Parse as UTC (since the string time is already GMT+8, we treat it as UTC for formatting)
+    const dateObj = new Date(datePart + 'Z');
+    // Format using UTC methods to preserve the GMT+8 time
+    // Use toLocaleString with timezone or format directly
+    return format(dateObj, formatString);
+  }
+  
   const gmt8Date = toGMT8(date);
   return format(gmt8Date, formatString);
 }
