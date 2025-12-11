@@ -7,7 +7,12 @@ export async function POST(request: Request) {
     console.log("!!! WEBHOOK HIT !!! Method:", request.method);
     try {
         const bodyText = await request.text();
-        const signature = request.headers.get('x-wc-webhook-signature');
+
+        // Debug: Log all headers to find the signature
+        const headersList = Object.fromEntries(request.headers.entries());
+        console.log('Webhook Headers:', JSON.stringify(headersList, null, 2));
+
+        const signature = request.headers.get('x-wc-webhook-signature') || request.headers.get('X-WC-Webhook-Signature');
         const secret = process.env.WOOCOMMERCE_WEBHOOK_SECRET;
 
         if (!secret || !signature) {
