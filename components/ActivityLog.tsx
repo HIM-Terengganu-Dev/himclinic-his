@@ -72,15 +72,26 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         const headers = ['Timestamp', 'User', 'Action', 'SKU', 'Success', 'Details', 'Error'];
         const csvContent = [
             headers.join(','),
-            ...logs.map(log => [
-                `"${format(new Date(log.created_at), 'yyyy-MM-dd HH:mm:ss')}"`,
-                `"${log.user_name || log.user_email}"`,
-                `"${log.action}"`,
-                `"${log.affected_sku || ''}"`,
-                log.success ? 'Yes' : 'No',
-                `"${JSON.stringify(log.details).replace(/"/g, '""')}"`,
-                `"${log.error_message || ''}"`
-            ].join(','))
+            ...logs.map(log => {
+                // Get specific action label for export
+                let actionLabel = log.action;
+                if (log.action === 'procurement_update' && log.details) {
+                    const operation = log.details.operation;
+                    if (operation === 'add') actionLabel = 'Manual Stock In';
+                    else if (operation === 'subtract') actionLabel = 'Manual Stock Out';
+                    else if (operation === 'set') actionLabel = 'Reconciliation';
+                }
+                
+                return [
+                    `"${format(new Date(log.created_at), 'yyyy-MM-dd HH:mm:ss')}"`,
+                    `"${log.user_name || log.user_email}"`,
+                    `"${actionLabel}"`,
+                    `"${log.affected_sku || ''}"`,
+                    log.success ? 'Yes' : 'No',
+                    `"${JSON.stringify(log.details).replace(/"/g, '""')}"`,
+                    `"${log.error_message || ''}"`
+                ].join(',');
+            })
         ].join('\n');
 
         const blob = new Blob([csvContent], { type: 'text/csv' });
@@ -92,7 +103,20 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         window.URL.revokeObjectURL(url);
     };
 
-    const getActionLabel = (action: string) => {
+    const getActionLabel = (log: ActivityLogEntry) => {
+        const action = log.action;
+        
+        // For procurement updates, check the operation type in details
+        if (action === 'procurement_update' && log.details) {
+            const operation = log.details.operation;
+            switch (operation) {
+                case 'add': return 'Manual Stock In';
+                case 'subtract': return 'Manual Stock Out';
+                case 'set': return 'Reconciliation';
+                default: return 'Stock Update';
+            }
+        }
+        
         switch (action) {
             case 'procurement_update': return 'Stock Update';
             case 'sku_created': return 'Created SKU';
@@ -229,7 +253,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                         </td>
                                         <td className="px-6 py-4">
                                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${getActionColor(log.action)}`}>
-                                                {getActionLabel(log.action)}
+                                                {getActionLabel(log)}
                                             </span>
                                         </td>
                                         <td className="px-6 py-4">
