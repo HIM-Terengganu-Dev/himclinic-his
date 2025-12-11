@@ -333,7 +333,7 @@ export async function createStockTakeItems(stockTakeId: number, items: Array<{
     if (items.length === 0) return [];
 
     const values = items.map((item, idx) => {
-        const baseIdx = idx * 2;
+        const baseIdx = idx * 3; // Each item has 3 parameters: stockTakeId, singleSkuId, systemQuantity
         return `($${baseIdx + 1}, $${baseIdx + 2}, $${baseIdx + 3})`;
     }).join(', ');
 

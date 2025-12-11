@@ -100,8 +100,15 @@ export async function POST() {
     });
   } catch (error) {
     console.error('Error creating stock take:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const errorDetails = error instanceof Error ? error.stack : String(error);
+    console.error('Error details:', errorDetails);
     return NextResponse.json(
-      { success: false, error: 'Failed to create stock take' },
+      { 
+        success: false, 
+        error: `Failed to create stock take: ${errorMessage}`,
+        details: process.env.NODE_ENV === 'development' ? errorDetails : undefined
+      },
       { status: 500 }
     );
   }

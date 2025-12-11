@@ -51,8 +51,12 @@ export default function StockTakePage() {
         // Refetch to ensure we have the latest data with all items
         await fetchCurrentStockTake();
       } else {
-        console.error('Failed to create stock take:', data.error);
-        alert(data.error || 'Failed to create stock take. Please try again.');
+        console.error('Failed to create stock take:', data);
+        const errorMsg = data.error || 'Failed to create stock take. Please try again.';
+        alert(errorMsg);
+        if (data.details) {
+          console.error('Error details:', data.details);
+        }
       }
     } catch (error) {
       console.error('Error creating stock take:', error);
