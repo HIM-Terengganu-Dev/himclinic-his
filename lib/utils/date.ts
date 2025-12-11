@@ -107,8 +107,27 @@ export function formatDateTimeWithSecondsGMT8(date: Date | string): string {
  */
 export function formatDistanceToNowGMT8(date: Date | string, options?: { addSuffix?: boolean }): string {
   // Parse the date string to a Date object
-  // JavaScript Date objects represent moments in time, so this will work correctly
-  const dateObj = typeof date === 'string' ? new Date(date) : date;
+  // If it's a UTC timestamp (ends with Z or no timezone), parse it directly
+  // If it's a GMT+8 timestamp (has +08:00), JavaScript will parse it correctly
+  let dateObj: Date;
+  
+  if (typeof date === 'string') {
+    // If it has +08:00, parse it (JavaScript handles this correctly)
+    if (/\+08:00/.test(date)) {
+      dateObj = new Date(date);
+    }
+    // If it's UTC (ends with Z), parse it directly
+    else if (date.endsWith('Z')) {
+      dateObj = new Date(date);
+    }
+    // If no timezone indicator, assume it's UTC (from WooCommerce date_created_gmt)
+    else {
+      // WooCommerce date_created_gmt is UTC without Z, so add it
+      dateObj = new Date(date.endsWith('Z') ? date : date + 'Z');
+    }
+  } else {
+    dateObj = date;
+  }
   
   // formatDistanceToNow calculates the difference from "now" correctly
   // regardless of timezone, as long as both dates are in the same reference

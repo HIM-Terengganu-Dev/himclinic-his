@@ -119,15 +119,14 @@ async function checkAndProcessNewOrders() {
         if (Object.keys(totalDeductions).length > 0) {
           inventoryStore = currentInventory;
           
-          // Get current time in GMT+8 format
-          const now = new Date();
-          const gmt8Time = new Date(now.getTime() + (8 * 60 * 60 * 1000)); // Add 8 hours for GMT+8
-          const processedAtGMT8 = gmt8Time.toISOString().replace('Z', '+08:00');
+          // Use the order's creation date (UTC) for accurate relative time calculation
+          // formatDistanceToNowGMT8 will handle the timezone conversion for display
+          const processedAt = order.date_created_gmt || order.date_created;
           
           const processedOrder: ProcessedOrder = {
             orderId: order.id,
             orderDate: order.date_created,
-            processedAt: processedAtGMT8,
+            processedAt: processedAt,
             items: orderItems,
             totalDeductions,
           };
@@ -219,18 +218,14 @@ export async function GET() {
           }
         });
 
-        // Use the order's creation date as processedAt for historical orders
-        // WooCommerce returns date_created in store timezone (GMT+8) and date_created_gmt in UTC
-        // Use date_created_gmt (UTC) for accurate time calculations, then format as GMT+8
-        const orderDateUTC = order.date_created_gmt || order.date_created;
-        // Convert UTC to GMT+8 format string for display
-        const orderDate = new Date(orderDateUTC);
-        const processedAtGMT8 = orderDate.toISOString().replace('Z', '+08:00');
+        // Use the order's creation date (UTC) for accurate relative time calculation
+        // formatDistanceToNowGMT8 will handle the timezone conversion for display
+        const processedAt = order.date_created_gmt || order.date_created;
         
         return {
           orderId: order.id,
           orderDate: order.date_created,
-          processedAt: processedAtGMT8,
+          processedAt: processedAt,
           items: order.line_items.map(item => ({
             sku: item.sku || 'unknown',
             name: item.name,
