@@ -114,17 +114,8 @@ apiRoutes.forEach(route => {
   }
 });
 
-// Check 7: Data files
-console.log('📊 Checking data files...');
-const dataFiles = ['single_sku_list.csv', 'combo_sku_list.csv'];
-dataFiles.forEach(file => {
-  if (fs.existsSync(file)) {
-    checks.push(`✅ ${file}`);
-  } else {
-    checks.push(`❌ ${file} (missing)`);
-    hasErrors = true;
-  }
-});
+// Check 7: Data files (CSV files removed - using database instead)
+// No longer checking for CSV files as SKU definitions are now in database
 
 // Print results
 console.log('\n' + '='.repeat(70));

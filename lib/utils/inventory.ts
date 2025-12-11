@@ -69,27 +69,47 @@ export function calculateComboAvailability(
 
 /**
  * Calculate availability for all combo SKUs
+ * Uses database combo SKU definitions instead of static files
  */
 export function calculateAllComboAvailability(
-  inventory: InventoryStock
+  inventory: InventoryStock,
+  comboSkus: any[]
 ): ComboAvailability[] {
-  return COMBO_SKUS.map((combo) => {
-    const component1Available = Math.floor(
-      (inventory[combo.component_1] || 0) / combo.component_1_qty
-    );
+  return comboSkus.map((combo) => {
+    // Parse components from database JSONB field
+    const components = Array.isArray(combo.components) 
+      ? combo.components 
+      : JSON.parse(combo.components || '[]');
 
-    let limitingComponent = combo.component_1;
-    let maxAvailable = component1Available;
+    if (components.length === 0) {
+      return {
+        sku: combo.sku,
+        name: combo.name,
+        maxAvailable: 0,
+        limitingComponent: '',
+      };
+    }
 
-    if (combo.component_2 && combo.component_2_qty) {
-      const component2Available = Math.floor(
-        (inventory[combo.component_2] || 0) / combo.component_2_qty
+    // Calculate availability for each component
+    let maxAvailable = Infinity;
+    let limitingComponent = '';
+
+    for (const comp of components) {
+      if (!comp.sku || !comp.quantity) continue;
+      
+      const componentAvailable = Math.floor(
+        (inventory[comp.sku] || 0) / comp.quantity
       );
 
-      if (component2Available < maxAvailable) {
-        maxAvailable = component2Available;
-        limitingComponent = combo.component_2;
+      if (componentAvailable < maxAvailable) {
+        maxAvailable = componentAvailable;
+        limitingComponent = comp.sku;
       }
+    }
+
+    // If no components found or all have infinite availability, set to 0
+    if (maxAvailable === Infinity) {
+      maxAvailable = 0;
     }
 
     return {
