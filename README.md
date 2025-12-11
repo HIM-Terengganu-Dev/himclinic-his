@@ -5,29 +5,31 @@ A real-time inventory management system for ForHim Clinic telehealth products, i
 ## Features
 
 ### 🎯 Core Functionality
-- **Automatic Order Processing**: Orders automatically processed from WooCommerce every 30 seconds
+- **Webhook-Based Stock Updates**: Automatic WooCommerce stock updates when orders are processed
+- **Database-Backed SKU Management**: All SKU definitions stored in Neon PostgreSQL database
 - **Real-time Stock Tracking**: Monitor single SKU inventory levels in real-time
 - **Combo SKU Calculation**: Automatically calculate available combo SKUs based on single SKU components
-- **Smart Stock Deduction**: Automatic stock deduction when orders are detected
-- **Stock Constraints**: Enforce component-based limits on combo SKU availability
-- **Zero Manual Input**: No manual order processing needed
+- **Manual Stock Updates**: Procurement tab for manual stock adjustments (add/subtract/reconcile)
+- **Stock Take Feature**: Monthly stock take with physical count reconciliation
+- **Activity Logging**: Complete audit trail of all system activities
 
 ### 📊 Dashboard Features
 - **Single Unified Dashboard**: All inventory information in one place
-- **Single SKU Inventory View**: Visual cards showing stock levels with low stock warnings
+- **Single SKU Inventory View**: Table format showing stock levels with low stock warnings
 - **Combo SKU Availability Table**: Detailed view of combo products with limiting components
-- **Recently Processed Orders**: See last 20 orders processed automatically
-- **Auto-Refresh Toggle**: Automatically update dashboard every 30 seconds (can be toggled ON/OFF)
-- **Real-time Notifications**: Get notified when new orders are processed
+- **Procurement Tab**: Manual stock updates (Manual Stock In, Manual Stock Out, Reconciliation)
+- **Activity Log Tab**: View all system activities with date and SKU filters
+- **Stock Take Feature**: Monthly stock take with variance tracking
+- **Auto-Refresh**: Automatically update dashboard every 5 minutes
 - **Real-time Statistics**: Total stock, combo availability, and low stock alerts
 
-### 🔐 API Access
-- **READ Access**: Fetch products and orders from WooCommerce (automatic every 30s)
-- **WRITE Access**: Update both single SKU and combo SKU stock in WooCommerce (automatic after order processing)
-- **In-Memory Storage**: Single SKU inventory maintained locally (initialized from WooCommerce stock on startup)
-- **Auto-Refresh**: Dashboard updates every 30 seconds to reflect changes
-- **Automatic Order Processing**: Orders detected and processed with READ-only access
-- **Bidirectional Sync**: Single SKUs and combo SKUs stay synchronized with WooCommerce
+### 🔐 API Access & Data Flow
+- **Webhook Handler**: Receives WooCommerce order webhooks, validates against database, updates stock
+- **Manual Updates**: Procurement tab updates both database and WooCommerce stock
+- **Read-Only API**: `/api/inventory` route fetches stock for display only (no updates)
+- **Database**: Neon PostgreSQL stores SKU definitions, activity logs, and stock take records
+- **Bidirectional Sync**: Stock updates flow to WooCommerce, stock levels read from WooCommerce
+- **Auto-Refresh**: Dashboard updates every 5 minutes to reflect changes
 
 ## Architecture
 
@@ -125,36 +127,37 @@ If you add 50 more `spu1` units:
 - "Manage stock" must be enabled for each product
 - Stock quantities must be set (not null)
 
-### Automatic Operation
+### Automatic Operation (Webhook)
 
-**The system runs automatically:**
-1. Open the dashboard (or leave it open with auto-refresh)
-2. Every 30 seconds, the system:
-   - Checks for new "processing" orders in WooCommerce
-   - Automatically processes any new orders
-   - Deducts stock for single and combo SKUs
-   - Updates WooCommerce stock quantities
-   - Shows notifications for processed orders
-3. No manual input required!
+**When an order is processed in WooCommerce:**
+1. WooCommerce sends webhook to `/api/webhooks/orders`
+2. Webhook validates line items against database
+3. System automatically:
+   - Deducts single SKU stock in WooCommerce
+   - Breaks down combo SKUs to components
+   - Deducts component stock
+   - Recalculates combo SKU availability
+   - Updates combo SKU stock in WooCommerce
+   - Logs all updates to activity log
+4. No manual intervention required!
+
+**Note**: Webhook must be configured in WooCommerce settings to send order updates to your webhook URL.
 
 ### Dashboard View
-- View all single SKU inventory levels
-- See combo SKU availability with limiting components  
+- **Inventory Tab**: View all single SKU inventory levels (table format) and combo SKU availability
+- **Procurement Tab**: Manual stock updates (add/subtract/reconcile)
+- **Activity Log Tab**: View all system activities with filters
 - Monitor low stock and out-of-stock items
 - Color-coded alerts (green = in stock, yellow = low stock, red = out of stock)
-- **Auto-Refresh**: Toggle ON/OFF to automatically update every 30 seconds
-- **Recently Processed Orders**: See last 20 orders with details
-- **Real-time Notifications**: Get alerts when orders are processed
+- **Auto-Refresh**: Dashboard automatically updates every 5 minutes
 - **Last Updated**: Shows when data was last refreshed
 
-### 2. Automatic Order Processing
-- System checks WooCommerce every 30 seconds for new orders
-- Automatically processes orders with "processing" status
-- Deducts stock for both single and combo SKUs
-- Updates WooCommerce stock quantities automatically
-- Shows recently processed orders on dashboard
-- Displays notifications when new orders are processed
-- No manual order ID entry required
+### Manual Stock Updates (Procurement Tab)
+- **Manual Stock In**: Add quantity to existing stock
+- **Manual Stock Out**: Remove quantity from stock
+- **Reconciliation**: Set stock to specific quantity (notes required)
+- Updates both database (activity log) and WooCommerce stock
+- Automatically recalculates affected combo SKU availability
 
 ## API Endpoints
 
@@ -173,10 +176,11 @@ Get current inventory state
 Update inventory
 - Body: `{ action: 'set' | 'add' | 'subtract', sku: string, quantity: number }`
 
-### POST `/api/orders/process`
-Process a WooCommerce order
-- Body: `{ orderId: number }`
-- Deducts stock based on order items
+### POST `/api/webhooks/orders`
+Handle WooCommerce order webhook
+- Triggered when order status changes to `processing`
+- Validates line items against database
+- Updates WooCommerce stock for single and combo SKUs
 
 ### POST `/api/procurement/update`
 Update single SKU stock (uses WRITE API for combos)
@@ -242,36 +246,38 @@ Contains all combo SKU products with their components and quantities required.
 
 ## Important Notes
 
-### ⚠️ In-Memory Storage
-- Single SKU inventory is stored in memory (resets on server restart)
-- **Initialized from WooCommerce** on startup (reads actual stock quantities)
-- Falls back to 0 if product not found or stock not managed
-- For production, implement database persistence
+### ⚠️ Database-Backed System
+- All SKU definitions stored in Neon PostgreSQL database
+- Stock levels fetched from WooCommerce in real-time
+- Activity logs and stock take records stored in database
+- Webhook validates against database (not static files)
 
 ### 🔄 Auto-Refresh Feature
-- Dashboard refreshes every 30 seconds when enabled
-- Catches changes from WooCommerce or other sources
-- Can be toggled ON/OFF via button in header
-- Shows visual indicator (pulsing green dot) when active
+- Dashboard refreshes every 5 minutes automatically
+- Fetches fresh stock from WooCommerce
 - Displays last updated timestamp
 
 ### 🔒 WRITE API Usage
-- **READ access**: Used for automatically fetching products and orders every 30 seconds
-- **WRITE access**: Used after processing orders for:
-  - Updating single SKU stock in WooCommerce
-  - Updating combo SKU stock in WooCommerce
-- WRITE updates both single and combo SKUs based on calculated availability
-- This ensures WooCommerce stock is always accurate for both product types
-- Single SKUs can be sold individually with accurate stock levels
-- Orders are READ-only (never written to)
+- **Webhook**: Updates WooCommerce stock when orders are processed
+  - Deducts single SKU stock
+  - Breaks down combo SKUs and deducts components
+  - Recalculates and updates combo SKU availability
+- **Manual Updates**: Procurement tab updates WooCommerce stock
+  - Updates single SKU stock
+  - Recalculates affected combo SKUs
+  - Updates combo SKU stock
+- **Read-Only API**: `/api/inventory` route only fetches stock for display
 
-### 🎯 Stock Deduction Flow
-1. Order comes in with line items
-2. System checks if each item is single SKU or combo SKU
-3. Single SKUs: Direct deduction
-4. Combo SKUs: Break down to components and deduct each
-5. Inventory updated in memory
-6. Dashboard reflects new stock levels
+### 🎯 Webhook Stock Deduction Flow
+1. WooCommerce sends webhook when order status = `processing`
+2. Webhook validates line items against database
+3. For each line item:
+   - Single SKU: Add to deductions map
+   - Combo SKU: Break down to components, add to deductions map
+4. Update WooCommerce stock for each single SKU
+5. Recalculate affected combo SKU availability
+6. Update combo SKU stock in WooCommerce
+7. Log all updates to activity log
 
 ### 📦 Procurement Update Flow
 1. User adds single SKU quantity
@@ -281,18 +287,17 @@ Contains all combo SKU products with their components and quantities required.
 5. WooCommerce API called to update combo SKU stock
 6. Dashboard shows updated availability with sync status
 
+## Current System State
+
+See `CURRENT_STATE.md` for detailed architecture and current implementation status.
+
 ## Future Enhancements
 
-- [ ] Database integration (PostgreSQL/MySQL)
-- [ ] Persistent inventory storage
-- [ ] Order history logging
-- [ ] Stock movement reports
 - [ ] Low stock email alerts
 - [ ] Automatic reorder points
-- [ ] Batch order processing
 - [ ] Export inventory reports
-- [ ] Multi-user access control
-- [ ] Audit trail for stock changes
+- [ ] Advanced reporting and analytics
+- [ ] Multi-warehouse support
 
 ## Technologies Used
 
