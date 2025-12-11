@@ -13,6 +13,15 @@ if (process.env.DATABASE_URL) {
         max: 10, // Max number of clients in the pool
         idleTimeoutMillis: 30000,
     });
+
+    // Set timezone to GMT+8 (Asia/Kuala_Lumpur) for all connections
+    pool.on('connect', async (client) => {
+        try {
+            await client.query("SET timezone = 'Asia/Kuala_Lumpur'");
+        } catch (error) {
+            console.error('Failed to set timezone:', error);
+        }
+    });
 } else {
     console.warn('⚠️ DATABASE_URL not set - authentication will not work. Please set DATABASE_URL in .env.local');
 }
