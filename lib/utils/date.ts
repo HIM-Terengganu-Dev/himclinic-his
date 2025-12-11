@@ -46,22 +46,29 @@ export function toGMT8(date: Date | string): Date {
 export function formatDateGMT8(date: Date | string, formatString: string = 'MMM d, yyyy HH:mm'): string {
   if (typeof date === 'string' && /\+08:00/.test(date)) {
     // Database already returns GMT+8 timestamp (e.g., "2025-12-12T17:26:46+08:00")
-    // Extract the date/time components directly and use them as-is
+    // Extract components and format directly to preserve GMT+8 time
     const match = date.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
     if (match) {
       const [, year, month, day, hour, minute, second] = match;
-      // Create a Date object using UTC constructor with the GMT+8 values
-      // This ensures the displayed time matches what's in the database
-      const dateObj = new Date(Date.UTC(
-        parseInt(year),
-        parseInt(month) - 1,
-        parseInt(day),
-        parseInt(hour),
-        parseInt(minute),
-        second ? parseInt(second) : 0
-      ));
-      // Format will use UTC methods, showing the exact time from database
-      return format(dateObj, formatString);
+      
+      // Month names for formatting
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthName = monthNames[parseInt(month) - 1];
+      const dayNum = parseInt(day);
+      const yearNum = parseInt(year);
+      const hourNum = hour.padStart(2, '0');
+      const minuteNum = minute.padStart(2, '0');
+      const secondNum = second ? second.padStart(2, '0') : '00';
+      
+      // Format according to the formatString pattern
+      if (formatString.includes('HH:mm:ss')) {
+        return `${monthName} ${dayNum}, ${yearNum} ${hourNum}:${minuteNum}:${secondNum}`;
+      } else if (formatString.includes('HH:mm')) {
+        return `${monthName} ${dayNum}, ${yearNum} ${hourNum}:${minuteNum}`;
+      } else {
+        // Default format
+        return `${monthName} ${dayNum}, ${yearNum} ${hourNum}:${minuteNum}`;
+      }
     }
   }
   
