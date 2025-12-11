@@ -220,9 +220,12 @@ export async function GET() {
         });
 
         // Use the order's creation date as processedAt for historical orders
-        // WooCommerce date_created is in UTC, keep it as-is for relative time calculation
-        // The formatDistanceToNowGMT8 function will handle the timezone conversion
-        const processedAtGMT8 = order.date_created;
+        // WooCommerce returns date_created in store timezone (GMT+8) and date_created_gmt in UTC
+        // Use date_created_gmt (UTC) for accurate time calculations, then format as GMT+8
+        const orderDateUTC = order.date_created_gmt || order.date_created;
+        // Convert UTC to GMT+8 format string for display
+        const orderDate = new Date(orderDateUTC);
+        const processedAtGMT8 = orderDate.toISOString().replace('Z', '+08:00');
         
         return {
           orderId: order.id,
