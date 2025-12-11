@@ -10,12 +10,22 @@ export async function POST(request: Request) {
         const secret = process.env.WOOCOMMERCE_WEBHOOK_SECRET;
 
         if (!secret || !signature) {
+            console.error('Webhook Error: Missing secret or signature', {
+                hasSecret: !!secret,
+                hasSignature: !!signature
+            });
             return NextResponse.json({ error: 'Missing secret or signature' }, { status: 401 });
         }
 
         // Verify Signature
         const hash = crypto.createHmac('sha256', secret).update(bodyText).digest('base64');
+
         if (hash !== signature) {
+            console.error('Webhook Error: Invalid signature', {
+                received: signature,
+                computed: hash,
+                secretLength: secret.length
+            });
             return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
         }
 
