@@ -56,8 +56,29 @@ export default function StockTakeForm({ stockTake, items: initialItems, onComple
   }, [initialItems]);
 
   const handlePhysicalCountChange = (sku: string, value: string) => {
-    const numValue = value === '' ? 0 : parseInt(value);
-    if (isNaN(numValue) || numValue < 0) return;
+    // Allow empty string for clearing the field
+    if (value === '') {
+      setPhysicalCounts(prev => {
+        const newCounts = { ...prev };
+        delete newCounts[sku];
+        return newCounts;
+      });
+      // Update items with null physical quantity
+      setItems(prev => prev.map(item => {
+        if (item.sku === sku) {
+          return { ...item, physical_quantity: null, variance: null };
+        }
+        return item;
+      }));
+      return;
+    }
+
+    // Parse the value
+    const numValue = parseInt(value);
+    if (isNaN(numValue) || numValue < 0) {
+      // Don't update if invalid, but allow typing
+      return;
+    }
 
     setPhysicalCounts(prev => ({ ...prev, [sku]: numValue }));
     

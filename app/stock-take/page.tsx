@@ -44,7 +44,10 @@ export default function StockTakePage() {
       });
       const data = await response.json();
       if (data.success) {
-        setStockTakeData(data);
+        // Refetch to ensure we have the latest data with all items
+        await fetchCurrentStockTake();
+      } else {
+        console.error('Failed to create stock take:', data.error);
       }
     } catch (error) {
       console.error('Error creating stock take:', error);
