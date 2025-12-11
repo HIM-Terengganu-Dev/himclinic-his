@@ -12,6 +12,7 @@ interface StockTakeItem {
   physical_quantity: number | null;
   variance: number | null;
   adjustment_applied: boolean;
+  adjustment_notes: string | null;
 }
 
 interface StockTake {
