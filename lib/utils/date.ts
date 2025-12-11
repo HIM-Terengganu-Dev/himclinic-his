@@ -52,20 +52,12 @@ export function formatDateGMT8(date: Date | string, formatString: string = 'MMM 
     const match = date.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\+08:00/);
     if (match) {
       const [, year, month, day, hour, minute, second] = match;
-      // The components are already in GMT+8 time
-      // We need to format them directly to show GMT+8, not convert to UTC
-      // Create a date object that when formatted will show the GMT+8 time
-      // We do this by creating UTC date with GMT+8 values, then adding offset for display
-      const utcTime = Date.UTC(
-        parseInt(year),
-        parseInt(month) - 1,
-        parseInt(day),
-        parseInt(hour) - 8, // Convert GMT+8 to UTC for internal representation
-        parseInt(minute),
-        parseInt(second || '0')
-      );
-      // Add 8 hours back so when formatted, it shows GMT+8 time
-      const gmt8Date = new Date(utcTime + GMT8_OFFSET_MS);
+      // The components are already in GMT+8 time (e.g., 17:26:46)
+      // When JavaScript parses "2025-12-12T17:26:46+08:00", it converts to UTC (09:26:46 UTC)
+      // We need to add 8 hours back to show the GMT+8 time (17:26:46)
+      const parsedDate = new Date(date); // This parses as 17:26 GMT+8 = 09:26 UTC internally
+      // Add 8 hours to convert from UTC representation back to GMT+8 for display
+      const gmt8Date = new Date(parsedDate.getTime() + GMT8_OFFSET_MS);
       return format(gmt8Date, formatString);
     }
   }
