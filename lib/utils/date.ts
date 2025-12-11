@@ -45,13 +45,13 @@ export function toGMT8(date: Date | string): Date {
  */
 export function formatDateGMT8(date: Date | string, formatString: string = 'MMM d, yyyy HH:mm'): string {
   if (typeof date === 'string' && /\+08:00/.test(date)) {
-    // Database returns GMT+8 timestamp (e.g., "2025-12-12T17:26:46+08:00")
-    // Extract the date/time components directly without timezone conversion
+    // Database already returns GMT+8 timestamp (e.g., "2025-12-12T17:26:46+08:00")
+    // Extract the date/time components directly and use them as-is
     const match = date.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
     if (match) {
       const [, year, month, day, hour, minute, second] = match;
-      // Create a Date object using the GMT+8 time components
-      // We'll use UTC methods to format, but with GMT+8 values
+      // Create a Date object using UTC constructor with the GMT+8 values
+      // This ensures the displayed time matches what's in the database
       const dateObj = new Date(Date.UTC(
         parseInt(year),
         parseInt(month) - 1,
@@ -60,7 +60,7 @@ export function formatDateGMT8(date: Date | string, formatString: string = 'MMM 
         parseInt(minute),
         second ? parseInt(second) : 0
       ));
-      // Format using the date object (which has the correct GMT+8 time)
+      // Format will use UTC methods, showing the exact time from database
       return format(dateObj, formatString);
     }
   }
