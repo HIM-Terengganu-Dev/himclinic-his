@@ -219,9 +219,10 @@ export async function GET() {
           }
         });
 
-        // Get current time in GMT+8 format
-        const now = new Date();
-        const gmt8Time = new Date(now.getTime() + (8 * 60 * 60 * 1000)); // Add 8 hours for GMT+8
+        // Use the order's creation date as processedAt for historical orders
+        // Convert WooCommerce date (UTC) to GMT+8 format
+        const orderDate = new Date(order.date_created);
+        const gmt8Time = new Date(orderDate.getTime() + (8 * 60 * 60 * 1000)); // Add 8 hours for GMT+8
         const processedAtGMT8 = gmt8Time.toISOString().replace('Z', '+08:00');
         
         return {
