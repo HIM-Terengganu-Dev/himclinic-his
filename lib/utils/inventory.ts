@@ -16,20 +16,21 @@ export function initializeInventory(defaultQuantity: number = 10): InventoryStoc
 
 /**
  * Initialize inventory from WooCommerce product stock quantities
+ * Uses database SKU definitions instead of static files
  */
-export function initializeInventoryFromProducts(products: any[]): InventoryStock {
+export function initializeInventoryFromProducts(products: any[], singleSkus: any[]): InventoryStock {
   const inventory: InventoryStock = {};
   
-  SINGLE_SKUS.forEach((singleSku) => {
-    // Find the product in WooCommerce by ID
-    const product = products.find((p) => p.id === singleSku.id);
+  singleSkus.forEach((singleSku) => {
+    // Find the product in WooCommerce by woocommerce_product_id
+    const product = products.find((p) => p.id === singleSku.woocommerce_product_id);
     
     if (product && product.stock_quantity !== null) {
       // Use the actual stock from WooCommerce
       inventory[singleSku.sku] = product.stock_quantity;
     } else {
       // Fallback to 0 if product not found or stock not managed
-      console.warn(`Product ${singleSku.sku} (ID: ${singleSku.id}) not found or stock not managed. Setting to 0.`);
+      console.warn(`Product ${singleSku.sku} (WC ID: ${singleSku.woocommerce_product_id}) not found or stock not managed. Setting to 0.`);
       inventory[singleSku.sku] = 0;
     }
   });

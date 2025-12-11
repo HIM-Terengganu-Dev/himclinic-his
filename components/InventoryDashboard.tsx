@@ -1,18 +1,25 @@
 'use client';
 
 import { InventoryStock, ComboAvailability } from '@/types/inventory';
-import { SINGLE_SKUS } from '@/lib/data/single-skus';
 import { AlertTriangle, Package, TrendingUp } from 'lucide-react';
+
+interface SingleSkuInfo {
+  sku: string;
+  name: string;
+  id?: number;
+}
 
 interface InventoryDashboardProps {
   inventory: InventoryStock;
   comboAvailability: ComboAvailability[];
+  singleSkuList?: SingleSkuInfo[];
   loading: boolean;
 }
 
 export default function InventoryDashboard({
   inventory,
   comboAvailability,
+  singleSkuList = [],
   loading,
 }: InventoryDashboardProps) {
   if (loading) {
@@ -45,25 +52,33 @@ export default function InventoryDashboard({
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {SINGLE_SKUS.map((sku) => {
-                  const quantity = inventory[sku.sku] || 0;
-                  const isLowStock = quantity < 5;
-                  const isOutOfStock = quantity === 0;
+                {singleSkuList.length > 0 ? (
+                  singleSkuList.map((sku) => {
+                    const quantity = inventory[sku.sku] || 0;
+                    const isLowStock = quantity < 5;
+                    const isOutOfStock = quantity === 0;
 
-                  return (
-                    <tr key={sku.sku} className={`hover:bg-opacity-75 transition-colors ${isOutOfStock ? 'bg-red-50' : isLowStock ? 'bg-yellow-50' : 'bg-white'}`}>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 border-r border-gray-100 last:border-0">
-                        {sku.sku}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm">
-                        <span className={`font-bold ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-yellow-600' : 'text-green-600'}`}>
-                          {quantity}
-                        </span>
-                        <span className="text-gray-500 ml-1 text-xs">units</span>
-                      </td>
-                    </tr>
-                  );
-                })}
+                    return (
+                      <tr key={sku.sku} className={`hover:bg-opacity-75 transition-colors ${isOutOfStock ? 'bg-red-50' : isLowStock ? 'bg-yellow-50' : 'bg-white'}`}>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 border-r border-gray-100 last:border-0">
+                          {sku.sku}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm">
+                          <span className={`font-bold ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-yellow-600' : 'text-green-600'}`}>
+                            {quantity}
+                          </span>
+                          <span className="text-gray-500 ml-1 text-xs">units</span>
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={2} className="px-4 py-8 text-center text-gray-500 text-sm">
+                      No single SKUs found in database. Please configure SKUs first.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

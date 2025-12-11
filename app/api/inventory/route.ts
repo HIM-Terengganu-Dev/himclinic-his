@@ -1,58 +1,61 @@
 import { NextResponse } from 'next/server';
 import {
-  initializeInventory,
   initializeInventoryFromProducts,
   calculateAllComboAvailability,
 } from '@/lib/utils/inventory';
 import { getProducts } from '@/lib/services/woocommerce';
+import { getAllSingleSkus, getAllComboSkus } from '@/lib/db/queries';
 import { InventoryStock } from '@/types/inventory';
 
-// In-memory inventory store (in production, use a database)
-let inventoryStore = initializeInventory(10);
-let isInitialized = false;
-
-/**
- * Initialize inventory from WooCommerce on first request
- */
-async function ensureInventoryInitialized() {
-  if (!isInitialized) {
-    try {
-      console.log('Initializing inventory from WooCommerce...');
-      const products = await getProducts({ per_page: 100 });
-      inventoryStore = initializeInventoryFromProducts(products);
-      isInitialized = true;
-      console.log('Inventory initialized successfully from WooCommerce');
-    } catch (error) {
-      console.error('Failed to initialize from WooCommerce, using default:', error);
-      inventoryStore = initializeInventory(10);
-      isInitialized = true;
-    }
-  }
-}
 
 export async function GET() {
   try {
+    // Fetch SKU definitions from database (source of truth)
+    const [singleSkus, comboSkus] = await Promise.all([
+      getAllSingleSkus(),
+      getAllComboSkus()
+    ]);
+
+    if (singleSkus.length === 0) {
+      return NextResponse.json({
+        success: true,
+        singleSkus: {},
+        comboAvailability: [],
+        singleSkuList: [],
+        message: 'No single SKUs found in database'
+      });
+    }
+
     // Always fetch fresh inventory from WooCommerce to ensure accuracy
     // This ensures stock take adjustments and manual updates are reflected immediately
+    let inventoryStore: InventoryStock = {};
     try {
       const products = await getProducts({ per_page: 100 });
-      inventoryStore = initializeInventoryFromProducts(products);
-      isInitialized = true;
+      inventoryStore = initializeInventoryFromProducts(products, singleSkus);
     } catch (error) {
-      console.error('Failed to fetch from WooCommerce, using cached:', error);
-      // Fallback to cached if API fails
-      if (!isInitialized) {
-        await ensureInventoryInitialized();
-      }
+      console.error('Failed to fetch from WooCommerce:', error);
+      // If WooCommerce fails, initialize with 0 stock for all SKUs
+      singleSkus.forEach((sku: any) => {
+        inventoryStore[sku.sku] = 0;
+      });
     }
     
-    const comboAvailability = calculateAllComboAvailability(inventoryStore);
+    // Calculate combo availability using database combos
+    const comboAvailability = calculateAllComboAvailability(inventoryStore, comboSkus);
+
+    // Return SKU list for frontend display
+    const singleSkuList = singleSkus.map((sku: any) => ({
+      sku: sku.sku,
+      name: sku.name,
+      id: sku.woocommerce_product_id
+    }));
 
     return NextResponse.json({
       success: true,
       singleSkus: inventoryStore,
       comboAvailability,
-      initializedFromWooCommerce: isInitialized,
+      singleSkuList, // For frontend to know which SKUs to display
+      initializedFromWooCommerce: true,
     });
   } catch (error) {
     console.error('Error getting inventory:', error);
@@ -63,44 +66,5 @@ export async function GET() {
   }
 }
 
-export async function POST(request: Request) {
-  try {
-    const body = await request.json();
-    const { action, sku, quantity } = body;
-
-    if (!action || !sku || quantity === undefined) {
-      return NextResponse.json(
-        { success: false, error: 'action, sku, and quantity are required' },
-        { status: 400 }
-      );
-    }
-
-    if (action === 'set') {
-      inventoryStore[sku] = quantity;
-    } else if (action === 'add') {
-      inventoryStore[sku] = (inventoryStore[sku] || 0) + quantity;
-    } else if (action === 'subtract') {
-      inventoryStore[sku] = Math.max(0, (inventoryStore[sku] || 0) - quantity);
-    } else {
-      return NextResponse.json(
-        { success: false, error: 'Invalid action. Use set, add, or subtract' },
-        { status: 400 }
-      );
-    }
-
-    const comboAvailability = calculateAllComboAvailability(inventoryStore);
-
-    return NextResponse.json({
-      success: true,
-      singleSkus: inventoryStore,
-      comboAvailability,
-    });
-  } catch (error) {
-    console.error('Error updating inventory:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to update inventory' },
-      { status: 500 }
-    );
-  }
-}
+// POST endpoint removed - inventory updates should go through /api/procurement/update
 

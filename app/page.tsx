@@ -15,6 +15,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'activity' | 'sku'>('dashboard');
   const [inventory, setInventory] = useState<InventoryStock>({});
   const [comboAvailability, setComboAvailability] = useState<ComboAvailability[]>([]);
+  const [singleSkuList, setSingleSkuList] = useState<Array<{ sku: string; name: string; id?: number }>>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -33,6 +34,7 @@ export default function Home() {
       if (data.success) {
         setInventory(data.singleSkus);
         setComboAvailability(data.comboAvailability);
+        setSingleSkuList(data.singleSkuList || []);
         setLastUpdated(new Date());
 
         // Note: We don't show notifications for orders anymore
