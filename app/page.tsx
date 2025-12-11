@@ -138,22 +138,7 @@ export default function Home() {
   const isAdmin = session?.user?.role === 'admin';
 
   return (
-    <div 
-      className="min-h-screen relative"
-      style={{ 
-        backgroundColor: '#EEEEEE',
-        backgroundImage: 'linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 50%, rgba(0,0,0,0.02) 100%)',
-      }}
-    >
-      {/* Glossy overlay effect */}
-      <div 
-        className="fixed inset-0 pointer-events-none"
-        style={{
-          background: 'linear-gradient(135deg, rgba(255,255,255,0.3) 0%, transparent 50%, rgba(255,255,255,0.1) 100%)',
-          backdropFilter: 'blur(0.5px)',
-          WebkitBackdropFilter: 'blur(0.5px)',
-        }}
-      />
+    <div className="min-h-screen" style={{ backgroundColor: '#EEEEEE' }}>
       {/* Header */}
       <header className="bg-white shadow-md sticky top-0 z-50 backdrop-blur-md bg-white/90">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
