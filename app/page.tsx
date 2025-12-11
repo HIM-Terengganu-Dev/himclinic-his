@@ -138,7 +138,7 @@ export default function Home() {
   const isAdmin = session?.user?.role === 'admin';
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div className="min-h-screen" style={{ backgroundColor: '#EEEEEE' }}>
       {/* Header */}
       <header className="bg-white shadow-md sticky top-0 z-50 backdrop-blur-md bg-white/90">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
@@ -415,7 +415,7 @@ export default function Home() {
             </nav>
           </div>
 
-          <div className="p-6 md:p-8 min-h-[500px]" style={{ backgroundColor: '#EEEEEE' }}>
+          <div className="p-6 md:p-8 bg-gray-50/30 min-h-[500px]">
             {activeTab === 'dashboard' && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 <div className="lg:col-span-12">

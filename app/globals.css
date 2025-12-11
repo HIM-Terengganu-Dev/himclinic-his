@@ -54,8 +54,7 @@
     @apply border-border;
   }
   body {
-    @apply text-foreground;
-    background-color: #EEEEEE;
+    @apply bg-background text-foreground;
   }
 }
 
