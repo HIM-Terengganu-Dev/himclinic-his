@@ -160,8 +160,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white"
                             >
                                 <option value="">All Actions</option>
-                                <option value="procurement_update">Stock Updates</option>
-                                <option value="sku_created">SKU Creations</option>
+                                <option value="procurement_update:add">Manual Stock In</option>
+                                <option value="procurement_update:subtract">Manual Stock Out</option>
+                                <option value="procurement_update:set">Reconciliation</option>
                             </select>
                             <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                         </div>

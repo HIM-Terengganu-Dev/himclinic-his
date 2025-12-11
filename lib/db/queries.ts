@@ -178,6 +178,7 @@ export async function getActivityLogs(filters: {
     limit?: number;
     offset?: number;
     type?: string;
+    operation?: string;
     sku?: string;
     dateFrom?: string;
     dateTo?: string;
@@ -206,6 +207,11 @@ export async function getActivityLogs(filters: {
     if (filters.type) {
         sql += ` AND al.action = $${pIdx++}`;
         params.push(filters.type);
+    }
+
+    if (filters.operation) {
+        sql += ` AND pu.operation = $${pIdx++}`;
+        params.push(filters.operation);
     }
 
     if (filters.sku) {

@@ -14,17 +14,26 @@ export async function GET(req: NextRequest) {
         const { searchParams } = new URL(req.url);
         const limit = parseInt(searchParams.get('limit') || '20');
         const offset = parseInt(searchParams.get('offset') || '0');
-        const type = searchParams.get('type') || undefined;
+        let type = searchParams.get('type') || undefined;
         const userId = searchParams.get('userId') ? parseInt(searchParams.get('userId')!) : undefined;
         const sku = searchParams.get('sku') || undefined;
         const dateFrom = searchParams.get('dateFrom') || undefined;
         const dateTo = searchParams.get('dateTo') || undefined;
+
+        // Handle detailed filter types (procurement_update:add, procurement_update:subtract, procurement_update:set)
+        let operation: string | undefined = undefined;
+        if (type && type.includes(':')) {
+            const [actionType, op] = type.split(':');
+            type = actionType; // Set type to base action
+            operation = op; // Extract operation
+        }
 
         const logs = await getActivityLogs({
             userId,
             limit,
             offset,
             type,
+            operation,
             sku,
             dateFrom,
             dateTo
