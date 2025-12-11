@@ -45,15 +45,28 @@ export function toGMT8(date: Date | string): Date {
  */
 export function formatDateGMT8(date: Date | string, formatString: string = 'MMM d, yyyy HH:mm'): string {
   if (typeof date === 'string' && /\+08:00/.test(date)) {
-    // String already has GMT+8 timezone (e.g., "2025-12-11T16:18:00+08:00")
-    // Extract the date/time part and parse it as if it's already in GMT+8
-    // Remove the timezone part and parse as UTC, then format
-    const datePart = date.replace(/\+08:00$/, '');
-    // Parse as UTC (since the string time is already GMT+8, we treat it as UTC for formatting)
-    const dateObj = new Date(datePart + 'Z');
-    // Format using UTC methods to preserve the GMT+8 time
-    // Use toLocaleString with timezone or format directly
-    return format(dateObj, formatString);
+    // String has GMT+8 timezone (e.g., "2025-12-12T17:26:46+08:00")
+    // The time in the string (17:26:46) is already in GMT+8
+    // JavaScript's Date() parses this and converts to UTC (09:26:46 UTC)
+    // We need to extract the GMT+8 time components and create a Date that represents GMT+8
+    const match = date.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\+08:00/);
+    if (match) {
+      const [, year, month, day, hour, minute, second] = match;
+      // The components are already in GMT+8, so we create a UTC date with these values
+      // Then when formatted, it will show the GMT+8 time correctly
+      // Create date in UTC using GMT+8 time values (this represents the GMT+8 moment)
+      const utcDate = new Date(Date.UTC(
+        parseInt(year),
+        parseInt(month) - 1,
+        parseInt(day),
+        parseInt(hour),
+        parseInt(minute),
+        parseInt(second || '0')
+      ));
+      // Format using the UTC date - this will show the correct GMT+8 time
+      // because we used the GMT+8 time components to create the UTC date
+      return format(utcDate, formatString);
+    }
   }
   
   const gmt8Date = toGMT8(date);
