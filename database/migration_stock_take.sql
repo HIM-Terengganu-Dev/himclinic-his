@@ -65,3 +65,4 @@ COMMENT ON COLUMN inventory_management.stock_take_items.adjustment_applied IS 'W
 -- END OF MIGRATION
 -- ========================================
 
+

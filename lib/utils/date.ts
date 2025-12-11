@@ -44,34 +44,44 @@ export function toGMT8(date: Date | string): Date {
  * Database already returns timestamps in GMT+8, so we just format them directly
  */
 export function formatDateGMT8(date: Date | string, formatString: string = 'MMM d, yyyy HH:mm'): string {
-  if (typeof date === 'string' && /\+08:00/.test(date)) {
-    // Database already returns GMT+8 timestamp (e.g., "2025-12-12T17:26:46+08:00")
-    // Extract components and format directly to preserve GMT+8 time
-    const match = date.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-    if (match) {
-      const [, year, month, day, hour, minute, second] = match;
-      
-      // Month names for formatting
-      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      const monthName = monthNames[parseInt(month) - 1];
-      const dayNum = parseInt(day);
-      const yearNum = parseInt(year);
-      const hourNum = hour.padStart(2, '0');
-      const minuteNum = minute.padStart(2, '0');
-      const secondNum = second ? second.padStart(2, '0') : '00';
-      
-      // Format according to the formatString pattern
-      if (formatString.includes('HH:mm:ss')) {
-        return `${monthName} ${dayNum}, ${yearNum} ${hourNum}:${minuteNum}:${secondNum}`;
-      } else if (formatString.includes('HH:mm')) {
-        return `${monthName} ${dayNum}, ${yearNum} ${hourNum}:${minuteNum}`;
-      } else {
-        // Default format
-        return `${monthName} ${dayNum}, ${yearNum} ${hourNum}:${minuteNum}`;
+  if (typeof date === 'string') {
+    // Handle GMT+8 timestamps from database (e.g., "2025-12-11T17:26:46+08:00")
+    if (/\+08:00/.test(date)) {
+      const match = date.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+      if (match) {
+        const [, year, month, day, hour, minute, second] = match;
+        
+        // Month names for formatting
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const monthName = monthNames[parseInt(month) - 1];
+        const dayNum = parseInt(day);
+        const yearNum = parseInt(year);
+        const hourNum = hour.padStart(2, '0');
+        const minuteNum = minute.padStart(2, '0');
+        const secondNum = second ? second.padStart(2, '0') : '00';
+        
+        // Format according to the formatString pattern
+        if (formatString.includes('HH:mm:ss')) {
+          return `${monthName} ${dayNum}, ${yearNum} ${hourNum}:${minuteNum}:${secondNum}`;
+        } else if (formatString.includes('HH:mm')) {
+          return `${monthName} ${dayNum}, ${yearNum} ${hourNum}:${minuteNum}`;
+        } else {
+          // Default format
+          return `${monthName} ${dayNum}, ${yearNum} ${hourNum}:${minuteNum}`;
+        }
       }
+    }
+    
+    // Handle UTC timestamps (e.g., "2025-12-11T09:26:46Z")
+    // Convert to GMT+8 by adding 8 hours
+    if (date.endsWith('Z')) {
+      const dateObj = new Date(date);
+      const gmt8Date = new Date(dateObj.getTime() + GMT8_OFFSET_MS);
+      return format(gmt8Date, formatString);
     }
   }
   
+  // For Date objects or other formats, convert to GMT+8
   const gmt8Date = toGMT8(date);
   return format(gmt8Date, formatString);
 }

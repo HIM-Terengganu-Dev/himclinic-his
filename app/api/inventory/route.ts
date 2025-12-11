@@ -119,10 +119,15 @@ async function checkAndProcessNewOrders() {
         if (Object.keys(totalDeductions).length > 0) {
           inventoryStore = currentInventory;
           
+          // Get current time in GMT+8 format
+          const now = new Date();
+          const gmt8Time = new Date(now.getTime() + (8 * 60 * 60 * 1000)); // Add 8 hours for GMT+8
+          const processedAtGMT8 = gmt8Time.toISOString().replace('Z', '+08:00');
+          
           const processedOrder: ProcessedOrder = {
             orderId: order.id,
             orderDate: order.date_created,
-            processedAt: new Date().toISOString(),
+            processedAt: processedAtGMT8,
             items: orderItems,
             totalDeductions,
           };
@@ -214,10 +219,15 @@ export async function GET() {
           }
         });
 
+        // Get current time in GMT+8 format
+        const now = new Date();
+        const gmt8Time = new Date(now.getTime() + (8 * 60 * 60 * 1000)); // Add 8 hours for GMT+8
+        const processedAtGMT8 = gmt8Time.toISOString().replace('Z', '+08:00');
+        
         return {
           orderId: order.id,
           orderDate: order.date_created,
-          processedAt: order.date_created, // Use order date as fallback
+          processedAt: processedAtGMT8,
           items: order.line_items.map(item => ({
             sku: item.sku || 'unknown',
             name: item.name,

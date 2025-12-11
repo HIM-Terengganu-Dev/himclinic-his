@@ -188,7 +188,7 @@ export async function getActivityLogs(filters: {
         u.name as user_name, 
         u.email as user_email,
         ss.sku as affected_sku,
-        to_char(al.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
+        to_char(al.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
     FROM inventory_management.activity_logs al
     LEFT JOIN inventory_management.users u ON al.user_id = u.id
     LEFT JOIN inventory_management.procurement_updates pu ON al.entity_type = 'procurement_update' AND al.entity_id = pu.id
@@ -270,8 +270,8 @@ export async function getStockTakeByMonth(month: number, year: number) {
         `SELECT st.*, 
                 u1.name as created_by_name, u1.email as created_by_email,
                 u2.name as completed_by_name, u2.email as completed_by_email,
-                to_char(st.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8,
-                to_char(st.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as completed_at_gmt8
+                to_char(st.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8,
+                to_char(st.completed_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as completed_at_gmt8
          FROM inventory_management.stock_takes st
          LEFT JOIN inventory_management.users u1 ON st.created_by = u1.id
          LEFT JOIN inventory_management.users u2 ON st.completed_by = u2.id
@@ -305,8 +305,8 @@ export async function getStockTakeById(id: number) {
         `SELECT st.*, 
                 u1.name as created_by_name, u1.email as created_by_email,
                 u2.name as completed_by_name, u2.email as completed_by_email,
-                to_char(st.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8,
-                to_char(st.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as completed_at_gmt8
+                to_char(st.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8,
+                to_char(st.completed_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as completed_at_gmt8
          FROM inventory_management.stock_takes st
          LEFT JOIN inventory_management.users u1 ON st.created_by = u1.id
          LEFT JOIN inventory_management.users u2 ON st.completed_by = u2.id
