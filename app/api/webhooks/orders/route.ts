@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
 import { getAllComboSkus, getAllSingleSkus, logActivity } from '@/lib/db/queries';
-import { isSingleSKU, isComboSKU, deductComboSKU } from '@/lib/utils/inventory';
+import { deductComboSKU } from '@/lib/utils/inventory';
 
 export async function POST(request: Request) {
     console.log("!!! WEBHOOK HIT !!! Method:", request.method);
@@ -45,42 +45,70 @@ export async function POST(request: Request) {
             return NextResponse.json({ success: true, message: `Order status is ${status}, skipping stock update` });
         }
 
-        // Get all line items
+        // Get all line items from webhook payload
+        // WooCommerce webhook includes line_items in the payload
         const lineItems = payload.line_items;
-        if (!lineItems || lineItems.length === 0) {
-            return NextResponse.json({ success: true, message: 'No items' });
+        if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+            return NextResponse.json({ success: true, message: 'No line items in order' });
         }
 
-        // Get SKU mappings from database
+        // Get SKU mappings from database (source of truth)
         const allSingleSkus = await getAllSingleSkus();
+        const allCombos = await getAllComboSkus();
+        
+        // Create maps for quick lookup
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
+        const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
 
         // Calculate total deductions for each single SKU
         const totalDeductions: Record<string, number> = {};
 
         for (const item of lineItems) {
-            if (!item.sku) continue;
+            if (!item.sku) {
+                console.warn(`⚠️ Order #${orderId} has line item without SKU: ${item.name || 'Unknown'}`);
+                continue;
+            }
 
             const sku = item.sku;
             const quantity = item.quantity || 0;
 
-            if (isSingleSKU(sku)) {
+            // Validate against database: Check if it's a single SKU
+            if (singleSkuMap.has(sku)) {
                 // Direct single SKU deduction
                 totalDeductions[sku] = (totalDeductions[sku] || 0) + quantity;
-            } else if (isComboSKU(sku)) {
-                // Combo SKU: break down to component single SKUs
-                // Use a dummy inventory to calculate deductions
-                const dummyInventory: Record<string, number> = {};
-                allSingleSkus.forEach((s: any) => {
-                    dummyInventory[s.sku] = 1000; // Large enough for calculation
-                });
+                console.log(`✅ Found single SKU ${sku} in database, quantity: ${quantity}`);
+            } 
+            // Validate against database: Check if it's a combo SKU
+            else if (comboSkuMap.has(sku)) {
+                // Combo SKU: break down to component single SKUs from database
+                const combo = comboSkuMap.get(sku);
+                if (!combo) continue;
 
-                const result = deductComboSKU(sku, quantity, dummyInventory);
-                if (result.success) {
-                    Object.entries(result.deductions).forEach(([deductedSku, deductedQty]) => {
-                        totalDeductions[deductedSku] = (totalDeductions[deductedSku] || 0) + deductedQty;
-                    });
+                const components = Array.isArray(combo.components) 
+                    ? combo.components 
+                    : JSON.parse(combo.components || '[]');
+
+                // Calculate deductions for each component
+                for (const comp of components) {
+                    if (!comp.sku || !comp.quantity) {
+                        console.warn(`⚠️ Invalid component in combo ${sku}:`, comp);
+                        continue;
+                    }
+
+                    // Validate component SKU exists in database
+                    if (!singleSkuMap.has(comp.sku)) {
+                        console.warn(`⚠️ Component SKU ${comp.sku} from combo ${sku} not found in database`);
+                        continue;
+                    }
+
+                    const deductedQty = comp.quantity * quantity;
+                    totalDeductions[comp.sku] = (totalDeductions[comp.sku] || 0) + deductedQty;
                 }
+                console.log(`✅ Found combo SKU ${sku} in database, breaking down to components`);
+            } 
+            else {
+                // SKU not found in database - skip it
+                console.warn(`⚠️ SKU ${sku} from order #${orderId} not found in database (not a single or combo SKU)`);
             }
         }
 
