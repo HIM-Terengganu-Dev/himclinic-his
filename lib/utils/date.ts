@@ -53,12 +53,36 @@ export function formatDateGMT8(date: Date | string, formatString: string = 'MMM 
     if (match) {
       const [, year, month, day, hour, minute, second] = match;
       // The components are already in GMT+8 time (e.g., 17:26:46)
-      // When JavaScript parses "2025-12-12T17:26:46+08:00", it converts to UTC (09:26:46 UTC)
-      // We need to add 8 hours back to show the GMT+8 time (17:26:46)
-      const parsedDate = new Date(date); // This parses as 17:26 GMT+8 = 09:26 UTC internally
-      // Add 8 hours to convert from UTC representation back to GMT+8 for display
-      const gmt8Date = new Date(parsedDate.getTime() + GMT8_OFFSET_MS);
-      return format(gmt8Date, formatString);
+      // When JavaScript parses "2025-12-12T17:26:46+08:00", it correctly parses it
+      // The Date object internally represents 17:26 GMT+8 = 09:26 UTC
+      // date-fns format() will format in browser's local timezone
+      // If browser is in GMT+8, it will show 17:26 correctly
+      // But to ensure it always shows GMT+8 regardless of browser timezone,
+      // we need to format using UTC methods or manually format the components
+      
+      // Parse the date - JavaScript correctly interprets +08:00
+      const parsedDate = new Date(date);
+      // The parsed date represents the correct moment, but format() uses local timezone
+      // We need to format it as if we're in GMT+8
+      // Since the string time is GMT+8, we can use the components directly
+      // Or format using UTC and adjust
+      
+      // Actually, the issue is that format() uses local timezone
+      // If browser is not in GMT+8, it will show wrong time
+      // Solution: Use the GMT+8 time components directly for formatting
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthName = monthNames[parseInt(month) - 1];
+      
+      // Format manually to ensure GMT+8 time is shown
+      if (formatString === 'MMM d, yyyy HH:mm:ss') {
+        return `${monthName} ${parseInt(day)}, ${year} ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}:${second.padStart(2, '0')}`;
+      } else if (formatString === 'MMM d, yyyy HH:mm') {
+        return `${monthName} ${parseInt(day)}, ${year} ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+      } else {
+        // Fallback to date-fns for other formats
+        const parsedDate = new Date(date);
+        return format(parsedDate, formatString);
+      }
     }
   }
   
