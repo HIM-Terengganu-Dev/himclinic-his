@@ -243,7 +243,6 @@ export default function Home() {
                       {Object.entries(inventory).filter(([_, q]) => q <= 0).map(([sku]) => sku).join(', ') || 'None'}
                     </p>
                   </div>
-                  <p className="text-[10px] text-red-500 mt-0.5">Qty ≤ 0</p>
                 </div>
 
                 {/* Low Stock */}
@@ -257,7 +256,6 @@ export default function Home() {
                       {Object.entries(inventory).filter(([_, q]) => q > 0 && q <= 10).map(([sku]) => sku).join(', ') || 'None'}
                     </p>
                   </div>
-                  <p className="text-[10px] text-yellow-500 mt-0.5">Qty ≤ 10</p>
                 </div>
 
                 {/* Adequate */}
@@ -266,12 +264,6 @@ export default function Home() {
                   <p className="text-2xl font-bold text-green-700 mt-1">
                     {Object.values(inventory).filter(q => q > 10).length}
                   </p>
-                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
-                    <p className="text-[10px] text-green-600 leading-tight">
-                      {Object.entries(inventory).filter(([_, q]) => q > 10).map(([sku]) => sku).join(', ') || 'None'}
-                    </p>
-                  </div>
-                  <p className="text-[10px] text-green-500 mt-0.5">Qty &gt; 10</p>
                 </div>
               </div>
             </div>
@@ -300,7 +292,6 @@ export default function Home() {
                       {comboAvailability.filter(c => c.maxAvailable <= 0).map(c => c.sku).join(', ') || 'None'}
                     </p>
                   </div>
-                  <p className="text-[10px] text-red-500 mt-0.5">Qty ≤ 0</p>
                 </div>
 
                 {/* Low Stock */}
@@ -314,7 +305,6 @@ export default function Home() {
                       {comboAvailability.filter(c => c.maxAvailable > 0 && c.maxAvailable <= 10).map(c => c.sku).join(', ') || 'None'}
                     </p>
                   </div>
-                  <p className="text-[10px] text-yellow-500 mt-0.5">Qty ≤ 10</p>
                 </div>
 
                 {/* Adequate */}
@@ -323,7 +313,6 @@ export default function Home() {
                   <p className="text-2xl font-bold text-green-700 mt-1">
                     {comboAvailability.filter(c => c.maxAvailable > 10).length}
                   </p>
-                  <p className="text-[10px] text-green-500 mt-0.5">Qty &gt; 10</p>
                 </div>
               </div>
             </div>
