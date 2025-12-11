@@ -270,8 +270,8 @@ export async function getStockTakeByMonth(month: number, year: number) {
         `SELECT st.*, 
                 u1.name as created_by_name, u1.email as created_by_email,
                 u2.name as completed_by_name, u2.email as completed_by_email,
-                st.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur' as created_at_gmt8,
-                st.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur' as completed_at_gmt8
+                to_char(st.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8,
+                to_char(st.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as completed_at_gmt8
          FROM inventory_management.stock_takes st
          LEFT JOIN inventory_management.users u1 ON st.created_by = u1.id
          LEFT JOIN inventory_management.users u2 ON st.completed_by = u2.id
@@ -282,9 +282,13 @@ export async function getStockTakeByMonth(month: number, year: number) {
     );
     const row = result.rows[0];
     if (row) {
-        // Use GMT+8 timestamps if available, otherwise use original
-        row.created_at = row.created_at_gmt8 || row.created_at;
-        row.completed_at = row.completed_at_gmt8 || row.completed_at;
+        // Use GMT+8 timestamps with timezone indicator
+        if (row.created_at_gmt8) {
+            row.created_at = row.created_at_gmt8;
+        }
+        if (row.completed_at_gmt8) {
+            row.completed_at = row.completed_at_gmt8;
+        }
     }
     return row || null;
 }
