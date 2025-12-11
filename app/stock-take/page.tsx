@@ -108,16 +108,25 @@ export default function StockTakePage() {
         {/* Content */}
         {!stockTakeData?.stockTake ? (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8">
-            <div className="text-center">
+            <div className="text-center max-w-2xl mx-auto">
               <h1 className="text-2xl font-bold text-gray-900 mb-4">
                 Stock Take - {new Date().toLocaleString('default', { month: 'long', year: 'numeric' })}
               </h1>
-              <p className="text-gray-600 mb-4">
-                Create a snapshot of current inventory levels and perform physical count.
-              </p>
-              <p className="text-sm text-gray-500 mb-6">
-                Note: You can perform a stock take at any time during the month. Only one stock take is allowed per month.
-              </p>
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 text-left">
+                <p className="text-sm text-blue-800 mb-2">
+                  <strong>How it works:</strong>
+                </p>
+                <ul className="text-sm text-blue-700 space-y-1 list-disc list-inside">
+                  <li>Clicking "Start Stock Take" creates a <strong>snapshot</strong> (freeze) of current stock levels from WooCommerce</li>
+                  <li>This snapshot is stored and won't change, even if stock changes later</li>
+                  <li>You can do stock take for previous month (e.g., December stock take in January)</li>
+                  <li>Only one stock take is allowed per month</li>
+                </ul>
+                <p className="text-xs text-blue-600 mt-3 italic">
+                  Note: The snapshot captures current stock when you create it. For historical stock (e.g., Dec 31 11:59pm), 
+                  create the stock take as close to that time as possible, or create it on Jan 1st if you need December's end-of-month stock.
+                </p>
+              </div>
               <button
                 onClick={handleCreateStockTake}
                 disabled={creating}
@@ -129,7 +138,7 @@ export default function StockTakePage() {
                     Creating Stock Take...
                   </>
                 ) : (
-                  'Start Stock Take'
+                  'Start Stock Take (Freeze Current Stock)'
                 )}
               </button>
             </div>

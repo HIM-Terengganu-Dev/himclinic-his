@@ -10,7 +10,7 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
     const session = await requireAuth();
     if (!session) {
@@ -21,9 +21,28 @@ export async function POST() {
     }
 
     const userId = session.user.id;
+    
+    // Allow specifying month/year for stock take (e.g., December stock take in January)
+    // If not provided, use current month
+    const body = await request.json().catch(() => ({}));
     const now = new Date();
-    const month = now.getMonth() + 1; // JavaScript months are 0-indexed
-    const year = now.getFullYear();
+    const month = body.month || (now.getMonth() + 1); // JavaScript months are 0-indexed
+    const year = body.year || now.getFullYear();
+    
+    // Validate month and year
+    if (month < 1 || month > 12) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid month. Must be between 1 and 12.' },
+        { status: 400 }
+      );
+    }
+    
+    if (year < 2020 || year > 2100) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid year.' },
+        { status: 400 }
+      );
+    }
 
     // Check if stock take already exists for this month
     const existing = await getStockTakeByMonth(month, year);
@@ -51,10 +70,13 @@ export async function POST() {
     }
 
     // Create snapshot data
+    // Ensure stock quantities are never negative (WooCommerce can have negative stock if oversold)
     const snapshotData: Record<string, number> = {};
     singleSkus.forEach((sku) => {
       const product = products.find((p) => p.id === sku.woocommerce_product_id);
-      snapshotData[sku.sku] = product?.stock_quantity || 0;
+      const stockQty = product?.stock_quantity || 0;
+      // Ensure non-negative for database constraint
+      snapshotData[sku.sku] = Math.max(0, stockQty);
     });
 
     // Create stock take record
