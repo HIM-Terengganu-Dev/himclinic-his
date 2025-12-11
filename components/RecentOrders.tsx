@@ -2,7 +2,7 @@
 
 import { ProcessedOrder } from '@/types/inventory';
 import { Package, Clock } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNowGMT8 } from '@/lib/utils/date';
 
 interface RecentOrdersProps {
   orders: ProcessedOrder[];
@@ -46,7 +46,7 @@ export default function RecentOrders({ orders }: RecentOrdersProps) {
                 <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
                   <span className="flex items-center gap-1">
                     <Clock className="w-3 h-3" />
-                    {formatDistanceToNow(new Date(order.processedAt), { addSuffix: true })}
+                    {formatDistanceToNowGMT8(order.processedAt, { addSuffix: true })}
                   </span>
                 </div>
               </div>

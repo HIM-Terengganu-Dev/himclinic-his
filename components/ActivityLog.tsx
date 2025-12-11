@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
+import { formatDateTimeWithSecondsGMT8 } from '@/lib/utils/date';
 import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 interface ActivityLogEntry {
@@ -83,7 +84,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                 }
                 
                 return [
-                    `"${format(new Date(log.created_at), 'yyyy-MM-dd HH:mm:ss')}"`,
+                    `"${formatDateTimeWithSecondsGMT8(log.created_at)}"`,
                     `"${log.user_name || log.user_email}"`,
                     `"${actionLabel}"`,
                     `"${log.affected_sku || ''}"`,
@@ -230,7 +231,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 logs.map((log) => (
                                     <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
                                         <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                                            {format(new Date(log.created_at), 'MMM d, HH:mm:ss')}
+                                            {formatDateTimeWithSecondsGMT8(log.created_at)}
                                         </td>
                                         <td className="px-6 py-4">
                                             <div className="flex items-center gap-3">

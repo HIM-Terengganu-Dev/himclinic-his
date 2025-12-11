@@ -1,6 +1,7 @@
 'use client';
 
 import { format } from 'date-fns';
+import { formatDateTimeGMT8 } from '@/lib/utils/date';
 import { Download, CheckCircle, AlertTriangle } from 'lucide-react';
 
 interface StockTakeItem {
@@ -86,13 +87,13 @@ export default function StockTakeReport({ stockTake, items }: StockTakeReportPro
           <div className="flex flex-wrap items-center gap-4 text-sm text-gray-600">
             <div>
               <span className="font-medium">Created:</span>{' '}
-              {format(new Date(stockTake.created_at), 'MMM d, yyyy HH:mm')} by{' '}
+              {formatDateTimeGMT8(stockTake.created_at)} by{' '}
               {stockTake.created_by_name || stockTake.created_by_email}
             </div>
             {stockTake.completed_at && (
               <div>
                 <span className="font-medium">Completed:</span>{' '}
-                {format(new Date(stockTake.completed_at), 'MMM d, yyyy HH:mm')}
+                {formatDateTimeGMT8(stockTake.completed_at)}
                 {stockTake.completed_by_name && ` by ${stockTake.completed_by_name}`}
               </div>
             )}
