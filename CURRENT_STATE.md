@@ -13,7 +13,7 @@ The Telehealth Inventory Management System is a Next.js 14 application that mana
 - **Neon PostgreSQL** is the authoritative source for all SKU definitions
 - Single SKUs and Combo SKUs are stored in the database, not static files
 - Webhook validates line items against database records
-- SKU Management UI allows adding/editing SKUs directly in the database
+- SKU Management UI allows adding/editing SKUs directly in the database (intentionally hidden from main navigation but still accessible)
 
 ### 2. Stock Updates Flow
 
@@ -53,7 +53,7 @@ The Telehealth Inventory Management System is a Next.js 14 application that mana
   - **Dashboard**: Inventory overview
   - **Procurement**: Manual stock updates
   - **Activity Log**: View all system activities
-  - **SKU Management**: (Admin only, hidden from UI but accessible)
+  - **SKU Management**: (Admin only, intentionally hidden from main navigation but still accessible via direct route/state)
 - Stock Take button (far right of navbar)
 - Auto-refresh every 5 minutes
 - User menu with logout
@@ -62,7 +62,7 @@ The Telehealth Inventory Management System is a Next.js 14 application that mana
 - `InventoryDashboard.tsx`: Displays single SKU inventory (table format) and combo SKU availability
 - `ProcurementUpdate.tsx`: Form for manual stock updates (add/subtract/set)
 - `ActivityLog.tsx`: Table showing all system activities with filters
-- `SkuManagement.tsx`: Admin interface for managing SKUs
+- `SkuManagement.tsx`: Admin interface for managing SKUs (intentionally hidden from main navigation)
 - `StockTakeForm.tsx`: Form for entering physical counts during stock take
 - `StockTakeReport.tsx`: View completed stock take reports
 
@@ -288,7 +288,7 @@ Required environment variables:
 - Manual stock updates (Procurement tab)
 - Stock Take feature (monthly snapshots)
 - Activity Log with filters
-- SKU Management (admin only)
+- SKU Management (admin only, intentionally hidden from UI but still accessible)
 - Google OAuth authentication
 - Timezone handling (GMT+8)
 - Combo SKU availability calculation
