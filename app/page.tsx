@@ -140,8 +140,8 @@ export default function Home() {
                 <button
                   onClick={toggleAutoRefresh}
                   className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${autoRefresh
-                      ? 'bg-green-50 text-green-700 border border-green-200'
-                      : 'bg-gray-50 text-gray-600 border border-gray-200'
+                    ? 'bg-green-50 text-green-700 border border-green-200'
+                    : 'bg-gray-50 text-gray-600 border border-gray-200'
                     }`}
                 >
                   <RefreshCw className={`w-4 h-4 ${autoRefresh ? 'animate-spin-slow' : ''}`} />
@@ -218,34 +218,106 @@ export default function Home() {
 
         {/* Top Stats Cards */}
         {activeTab === 'dashboard' && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 flex items-center justify-between hover:shadow-md transition-shadow">
-              <div>
-                <p className="text-sm font-medium text-gray-500">Single SKU Stock</p>
-                <p className="text-3xl font-bold text-gray-900 mt-1">{totalSingleSkuStock}</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            {/* Single SKU Availability Card */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <Package className="w-5 h-5 text-blue-600" />
+                  Single SKU Availability
+                </h3>
+                <span className="text-xs font-medium bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full">
+                  {Object.keys(inventory).length} Items
+                </span>
               </div>
-              <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center">
-                <Package className="w-6 h-6 text-blue-600" />
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                {/* No Stock */}
+                <div className="bg-red-50 rounded-lg p-3 border border-red-100">
+                  <p className="text-xs font-medium text-red-600 uppercase tracking-wide">No Stock</p>
+                  <p className="text-2xl font-bold text-red-700 mt-1">
+                    {Object.values(inventory).filter(q => q === 0).length}
+                  </p>
+                  <p className="text-[10px] text-red-500 mt-0.5">Qty = 0</p>
+                </div>
+
+                {/* Low Stock */}
+                <div className="bg-yellow-50 rounded-lg p-3 border border-yellow-100">
+                  <p className="text-xs font-medium text-yellow-600 uppercase tracking-wide">Low Stock</p>
+                  <p className="text-2xl font-bold text-yellow-700 mt-1">
+                    {Object.values(inventory).filter(q => q > 0 && q <= 10).length}
+                  </p>
+                  <p className="text-[10px] text-yellow-500 mt-0.5">Qty ≤ 10</p>
+                </div>
+
+                {/* Oversold */}
+                <div className="bg-orange-50 rounded-lg p-3 border border-orange-100">
+                  <p className="text-xs font-medium text-orange-600 uppercase tracking-wide">Oversold</p>
+                  <p className="text-2xl font-bold text-orange-700 mt-1">
+                    {Object.values(inventory).filter(q => q < 0).length}
+                  </p>
+                  <p className="text-[10px] text-orange-500 mt-0.5">Qty &lt; 0</p>
+                </div>
+
+                {/* Adequate */}
+                <div className="bg-green-50 rounded-lg p-3 border border-green-100">
+                  <p className="text-xs font-medium text-green-600 uppercase tracking-wide">Adequate</p>
+                  <p className="text-2xl font-bold text-green-700 mt-1">
+                    {Object.values(inventory).filter(q => q > 10).length}
+                  </p>
+                  <p className="text-[10px] text-green-500 mt-0.5">Qty &gt; 10</p>
+                </div>
               </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 flex items-center justify-between hover:shadow-md transition-shadow">
-              <div>
-                <p className="text-sm font-medium text-gray-500">Combos Available</p>
-                <p className="text-3xl font-bold text-gray-900 mt-1">{totalComboAvailable}</p>
+            {/* Combo SKU Availability Card */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5 text-purple-600" />
+                  Combo SKU Availability
+                </h3>
+                <span className="text-xs font-medium bg-purple-50 text-purple-700 px-2.5 py-1 rounded-full">
+                  {comboAvailability.length} Items
+                </span>
               </div>
-              <div className="w-12 h-12 bg-purple-50 rounded-xl flex items-center justify-center">
-                <TrendingUp className="w-6 h-6 text-purple-600" />
-              </div>
-            </div>
 
-            <div className={`rounded-xl shadow-sm border p-6 flex items-center justify-between transition-colors ${lowStockItems > 0 ? 'bg-red-50 border-red-100' : 'bg-white border-gray-100'}`}>
-              <div>
-                <p className={`text-sm font-medium ${lowStockItems > 0 ? 'text-red-600' : 'text-gray-500'}`}>Low Stock Alerts</p>
-                <p className={`text-3xl font-bold mt-1 ${lowStockItems > 0 ? 'text-red-700' : 'text-gray-900'}`}>{lowStockItems}</p>
-              </div>
-              <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${lowStockItems > 0 ? 'bg-red-100' : 'bg-green-50'}`}>
-                <AlertTriangle className={`w-6 h-6 ${lowStockItems > 0 ? 'text-red-600' : 'text-green-600'}`} />
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                {/* No Stock */}
+                <div className="bg-red-50 rounded-lg p-3 border border-red-100">
+                  <p className="text-xs font-medium text-red-600 uppercase tracking-wide">No Stock</p>
+                  <p className="text-2xl font-bold text-red-700 mt-1">
+                    {comboAvailability.filter(c => c.maxAvailable === 0).length}
+                  </p>
+                  <p className="text-[10px] text-red-500 mt-0.5">Qty = 0</p>
+                </div>
+
+                {/* Low Stock */}
+                <div className="bg-yellow-50 rounded-lg p-3 border border-yellow-100">
+                  <p className="text-xs font-medium text-yellow-600 uppercase tracking-wide">Low Stock</p>
+                  <p className="text-2xl font-bold text-yellow-700 mt-1">
+                    {comboAvailability.filter(c => c.maxAvailable > 0 && c.maxAvailable <= 10).length}
+                  </p>
+                  <p className="text-[10px] text-yellow-500 mt-0.5">Qty ≤ 10</p>
+                </div>
+
+                {/* Oversold */}
+                <div className="bg-orange-50 rounded-lg p-3 border border-orange-100">
+                  <p className="text-xs font-medium text-orange-600 uppercase tracking-wide">Oversold</p>
+                  <p className="text-2xl font-bold text-orange-700 mt-1">
+                    {comboAvailability.filter(c => c.maxAvailable < 0).length}
+                  </p>
+                  <p className="text-[10px] text-orange-500 mt-0.5">Qty &lt; 0</p>
+                </div>
+
+                {/* Adequate */}
+                <div className="bg-green-50 rounded-lg p-3 border border-green-100">
+                  <p className="text-xs font-medium text-green-600 uppercase tracking-wide">Adequate</p>
+                  <p className="text-2xl font-bold text-green-700 mt-1">
+                    {comboAvailability.filter(c => c.maxAvailable > 10).length}
+                  </p>
+                  <p className="text-[10px] text-green-500 mt-0.5">Qty &gt; 10</p>
+                </div>
               </div>
             </div>
           </div>
@@ -258,8 +330,8 @@ export default function Home() {
               <button
                 onClick={() => setActiveTab('dashboard')}
                 className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'dashboard'
-                    ? 'text-blue-600 bg-blue-50/50'
-                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  ? 'text-blue-600 bg-blue-50/50'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
                   }`}
               >
                 <Package size={18} />
@@ -270,8 +342,8 @@ export default function Home() {
               <button
                 onClick={() => setActiveTab('procurement')}
                 className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'procurement'
-                    ? 'text-blue-600 bg-blue-50/50'
-                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  ? 'text-blue-600 bg-blue-50/50'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
                   }`}
               >
                 <TrendingUp size={18} />
@@ -282,8 +354,8 @@ export default function Home() {
               <button
                 onClick={() => setActiveTab('activity')}
                 className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'activity'
-                    ? 'text-blue-600 bg-blue-50/50'
-                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  ? 'text-blue-600 bg-blue-50/50'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
                   }`}
               >
                 <History size={18} />
@@ -295,8 +367,8 @@ export default function Home() {
                 <button
                   onClick={() => setActiveTab('sku')}
                   className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'sku'
-                      ? 'text-purple-600 bg-purple-50/50'
-                      : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                    ? 'text-purple-600 bg-purple-50/50'
+                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
                     }`}
                 >
                   <Settings size={18} />

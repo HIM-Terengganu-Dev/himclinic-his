@@ -29,7 +29,7 @@ export default function InventoryDashboard({
       <div>
         <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
           <Package className="w-5 h-5" />
-          Single SKU Inventory
+          Single SKU Availability
         </h2>
         <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
           <div className="overflow-x-auto">
