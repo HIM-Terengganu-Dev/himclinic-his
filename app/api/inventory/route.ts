@@ -168,8 +168,19 @@ async function checkAndProcessNewOrders() {
 
 export async function GET() {
   try {
-    // Ensure inventory is initialized from WooCommerce on first request
-    await ensureInventoryInitialized();
+    // Always fetch fresh inventory from WooCommerce to ensure accuracy
+    // This ensures stock take adjustments and manual updates are reflected immediately
+    try {
+      const products = await getProducts({ per_page: 100 });
+      inventoryStore = initializeInventoryFromProducts(products);
+      isInitialized = true;
+    } catch (error) {
+      console.error('Failed to fetch from WooCommerce, using cached:', error);
+      // Fallback to cached if API fails
+      if (!isInitialized) {
+        await ensureInventoryInitialized();
+      }
+    }
     
     // Check for and process new orders
     const newlyProcessed = await checkAndProcessNewOrders();
