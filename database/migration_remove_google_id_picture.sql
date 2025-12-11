@@ -23,3 +23,4 @@ WHERE table_schema = 'inventory_management'
   AND table_name = 'users'
 ORDER BY ordinal_position;
 
+

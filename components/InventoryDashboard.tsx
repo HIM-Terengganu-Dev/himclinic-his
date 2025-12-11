@@ -24,7 +24,7 @@ export default function InventoryDashboard({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Single SKUs Section */}
       <div>
         <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -36,17 +36,11 @@ export default function InventoryDashboard({
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     SKU
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Product Name
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Quantity Available
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Quantity
                   </th>
                 </tr>
               </thead>
@@ -57,33 +51,15 @@ export default function InventoryDashboard({
                   const isOutOfStock = quantity === 0;
 
                   return (
-                    <tr key={sku.sku} className={isOutOfStock ? 'bg-red-50' : isLowStock ? 'bg-yellow-50' : ''}>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                    <tr key={sku.sku} className={`hover:bg-opacity-75 transition-colors ${isOutOfStock ? 'bg-red-50' : isLowStock ? 'bg-yellow-50' : 'bg-white'}`}>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 border-r border-gray-100 last:border-0">
                         {sku.sku}
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-900">{sku.name}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <td className="px-4 py-3 whitespace-nowrap text-sm">
                         <span className={`font-bold ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-yellow-600' : 'text-green-600'}`}>
                           {quantity}
                         </span>
-                        <span className="text-gray-500 ml-1">units</span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {isOutOfStock ? (
-                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800 flex items-center gap-1">
-                            <AlertTriangle className="w-3 h-3" />
-                            Out of Stock
-                          </span>
-                        ) : isLowStock ? (
-                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800 flex items-center gap-1">
-                            <AlertTriangle className="w-3 h-3" />
-                            Low Stock
-                          </span>
-                        ) : (
-                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                            In Stock
-                          </span>
-                        )}
+                        <span className="text-gray-500 ml-1 text-xs">units</span>
                       </td>
                     </tr>
                   );
@@ -105,20 +81,14 @@ export default function InventoryDashboard({
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     SKU
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Product Name
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Available
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Max Available
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Limiting Component
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Limiting
                   </th>
                 </tr>
               </thead>
@@ -128,33 +98,17 @@ export default function InventoryDashboard({
                   const isOutOfStock = combo.maxAvailable === 0;
 
                   return (
-                    <tr key={combo.sku} className={isOutOfStock ? 'bg-red-50' : isLowStock ? 'bg-yellow-50' : ''}>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                    <tr key={combo.sku} className={`hover:bg-opacity-75 transition-colors ${isOutOfStock ? 'bg-red-50' : isLowStock ? 'bg-yellow-50' : 'bg-white'}`}>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900 border-r border-gray-100 last:border-0">
                         {combo.sku}
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-900">{combo.name}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <td className="px-4 py-3 whitespace-nowrap text-sm">
                         <span className={`font-bold ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-yellow-600' : 'text-green-600'}`}>
                           {combo.maxAvailable}
                         </span>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {combo.limitingComponent} ({inventory[combo.limitingComponent] || 0} units)
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {isOutOfStock ? (
-                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">
-                            Out of Stock
-                          </span>
-                        ) : isLowStock ? (
-                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
-                            Low Stock
-                          </span>
-                        ) : (
-                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                            In Stock
-                          </span>
-                        )}
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                        {combo.limitingComponent} <span className="text-xs text-gray-400">({inventory[combo.limitingComponent] || 0})</span>
                       </td>
                     </tr>
                   );
