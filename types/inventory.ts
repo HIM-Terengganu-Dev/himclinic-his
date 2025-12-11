@@ -45,6 +45,7 @@ export interface WooCommerceOrder {
   id: number;
   status: string;
   date_created: string;
+  date_created_gmt?: string; // UTC timestamp from WooCommerce
   total: string;
   line_items: WooCommerceLineItem[];
 }
