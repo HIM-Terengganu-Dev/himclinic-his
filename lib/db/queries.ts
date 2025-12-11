@@ -145,7 +145,7 @@ export async function createProcurementUpdate(data: {
 }
 
 export async function logActivity(data: {
-    userId?: number;
+    userId?: number | string;
     action: string;
     entityType?: string;
     entityId?: number;
@@ -160,7 +160,7 @@ export async function logActivity(data: {
      (user_id, action, entity_type, entity_id, details, success, error_message, ip_address, user_agent)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
-            data.userId,
+            typeof data.userId === 'number' ? data.userId : null,
             data.action,
             data.entityType,
             data.entityId,
