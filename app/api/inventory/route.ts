@@ -11,8 +11,6 @@ import { InventoryStock } from '@/types/inventory';
 let inventoryStore = initializeInventory(10);
 let isInitialized = false;
 
-
-
 /**
  * Initialize inventory from WooCommerce on first request
  */
@@ -31,7 +29,6 @@ async function ensureInventoryInitialized() {
     }
   }
 }
-
 
 export async function GET() {
   try {
