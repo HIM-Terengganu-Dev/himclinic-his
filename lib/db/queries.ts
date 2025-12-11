@@ -237,3 +237,174 @@ export async function getActivityLogs(filters: {
     const result = await query(sql, params);
     return result.rows;
 }
+
+/**
+ * STOCK TAKE OPERATIONS
+ */
+
+export async function createStockTake(data: {
+    userId: number;
+    month: number;
+    year: number;
+    snapshotData: any;
+}) {
+    const result = await query(
+        `INSERT INTO inventory_management.stock_takes
+         (month, year, snapshot_data, created_by, status)
+         VALUES ($1, $2, $3, $4, 'pending')
+         RETURNING *`,
+        [data.month, data.year, JSON.stringify(data.snapshotData), data.userId]
+    );
+    return result.rows[0];
+}
+
+export async function getStockTakeByMonth(month: number, year: number) {
+    const result = await query(
+        `SELECT st.*, 
+                u1.name as created_by_name, u1.email as created_by_email,
+                u2.name as completed_by_name, u2.email as completed_by_email
+         FROM inventory_management.stock_takes st
+         LEFT JOIN inventory_management.users u1 ON st.created_by = u1.id
+         LEFT JOIN inventory_management.users u2 ON st.completed_by = u2.id
+         WHERE st.month = $1 AND st.year = $2
+         ORDER BY st.created_at DESC
+         LIMIT 1`,
+        [month, year]
+    );
+    return result.rows[0] || null;
+}
+
+export async function getCurrentStockTake() {
+    const now = new Date();
+    const month = now.getMonth() + 1; // JavaScript months are 0-indexed
+    const year = now.getFullYear();
+    return getStockTakeByMonth(month, year);
+}
+
+export async function getStockTakeById(id: number) {
+    const result = await query(
+        `SELECT st.*, 
+                u1.name as created_by_name, u1.email as created_by_email,
+                u2.name as completed_by_name, u2.email as completed_by_email
+         FROM inventory_management.stock_takes st
+         LEFT JOIN inventory_management.users u1 ON st.created_by = u1.id
+         LEFT JOIN inventory_management.users u2 ON st.completed_by = u2.id
+         WHERE st.id = $1`,
+        [id]
+    );
+    return result.rows[0] || null;
+}
+
+export async function createStockTakeItems(stockTakeId: number, items: Array<{
+    singleSkuId: number;
+    systemQuantity: number;
+}>) {
+    if (items.length === 0) return [];
+
+    const values = items.map((item, idx) => {
+        const baseIdx = idx * 2;
+        return `($${baseIdx + 1}, $${baseIdx + 2}, $${baseIdx + 3})`;
+    }).join(', ');
+
+    const params: any[] = [];
+    items.forEach(item => {
+        params.push(stockTakeId, item.singleSkuId, item.systemQuantity);
+    });
+
+    const result = await query(
+        `INSERT INTO inventory_management.stock_take_items
+         (stock_take_id, single_sku_id, system_quantity)
+         VALUES ${values}
+         RETURNING *`,
+        params
+    );
+    return result.rows;
+}
+
+export async function getStockTakeItems(stockTakeId: number) {
+    const result = await query(
+        `SELECT sti.*, ss.sku, ss.name as sku_name
+         FROM inventory_management.stock_take_items sti
+         JOIN inventory_management.single_skus ss ON sti.single_sku_id = ss.id
+         WHERE sti.stock_take_id = $1
+         ORDER BY ss.sku`,
+        [stockTakeId]
+    );
+    return result.rows;
+}
+
+export async function updateStockTakeItems(stockTakeId: number, physicalCounts: Array<{
+    sku: string;
+    physicalQuantity: number;
+    remarks?: string | null;
+}>) {
+    const { pool } = await import('./connection');
+    if (!pool) {
+        throw new Error('Database not configured');
+    }
+    const client = await pool.connect();
+    
+    try {
+        await client.query('BEGIN');
+
+        // Get SKU IDs for the provided SKUs
+        const skuMap = new Map<string, number>();
+        for (const count of physicalCounts) {
+            const skuResult = await client.query(
+                'SELECT id FROM inventory_management.single_skus WHERE sku = $1',
+                [count.sku]
+            );
+            if (skuResult.rows.length > 0) {
+                skuMap.set(count.sku, skuResult.rows[0].id);
+            }
+        }
+
+        // Update each item
+        for (const count of physicalCounts) {
+            const skuId = skuMap.get(count.sku);
+            if (!skuId) continue;
+
+            const variance = count.physicalQuantity - (await client.query(
+                'SELECT system_quantity FROM inventory_management.stock_take_items WHERE stock_take_id = $1 AND single_sku_id = $2',
+                [stockTakeId, skuId]
+            )).rows[0]?.system_quantity || 0;
+
+            await client.query(
+                `UPDATE inventory_management.stock_take_items
+                 SET physical_quantity = $1, variance = $2
+                 WHERE stock_take_id = $3 AND single_sku_id = $4`,
+                [count.physicalQuantity, variance, stockTakeId, skuId]
+            );
+        }
+
+        await client.query('COMMIT');
+        return true;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+export async function completeStockTake(stockTakeId: number, completedBy: number) {
+    const result = await query(
+        `UPDATE inventory_management.stock_takes
+         SET status = 'completed', completed_at = CURRENT_TIMESTAMP, completed_by = $1
+         WHERE id = $2
+         RETURNING *`,
+        [completedBy, stockTakeId]
+    );
+    return result.rows[0];
+}
+
+export async function markStockTakeItemAdjusted(stockTakeId: number, singleSkuId: number, notes?: string) {
+    const result = await query(
+        `UPDATE inventory_management.stock_take_items
+         SET adjustment_applied = true, adjustment_notes = $1
+         WHERE stock_take_id = $2 AND single_sku_id = $3
+         RETURNING *`,
+        [notes || null, stockTakeId, singleSkuId]
+    );
+    return result.rows[0];
+}

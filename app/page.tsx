@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSession, signOut } from 'next-auth/react';
-import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User } from 'lucide-react';
+import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, ClipboardCheck } from 'lucide-react';
 import InventoryDashboard from '@/components/InventoryDashboard';
 import RecentOrders from '@/components/RecentOrders';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
@@ -23,6 +23,8 @@ export default function Home() {
   // Removed: newOrdersCount - orders are read-only, no notifications needed
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const [stockTakeData, setStockTakeData] = useState<any>(null);
+  const [stockTakeLoading, setStockTakeLoading] = useState(false);
 
   const fetchInventory = async () => {
     try {
@@ -50,6 +52,7 @@ export default function Home() {
   useEffect(() => {
     if (status === 'authenticated') {
       fetchInventory();
+      fetchCurrentStockTake();
     }
   }, [status]);
 
@@ -63,6 +66,31 @@ export default function Home() {
 
     return () => clearInterval(interval);
   }, [autoRefresh, status]);
+
+  const fetchCurrentStockTake = async () => {
+    try {
+      setStockTakeLoading(true);
+      const response = await fetch('/api/stock-take/current');
+      const data = await response.json();
+      if (data.success) {
+        setStockTakeData(data);
+      }
+    } catch (error) {
+      console.error('Error fetching current stock take:', error);
+    } finally {
+      setStockTakeLoading(false);
+    }
+  };
+
+  const handleStockTakeClick = () => {
+    // Navigate to stock take page
+    window.location.href = '/stock-take';
+  };
+
+  const handleStockTakeComplete = () => {
+    fetchCurrentStockTake();
+    fetchInventory();
+  };
 
   const handleRefresh = () => {
     fetchInventory();
@@ -373,6 +401,18 @@ export default function Home() {
                 Activity Log
                 {activeTab === 'activity' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
+
+              {/* Stock Take Button - Far Right, Separate from Tabs */}
+              <div className="ml-auto flex items-center px-4">
+                <button
+                  onClick={handleStockTakeClick}
+                  disabled={stockTakeLoading}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  <ClipboardCheck size={18} />
+                  Stock Take
+                </button>
+              </div>
             </nav>
           </div>
 
@@ -403,6 +443,7 @@ export default function Home() {
             {activeTab === 'sku' && isAdmin && (
               <SkuManagement />
             )}
+
           </div>
         </div>
       </div>
