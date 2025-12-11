@@ -16,7 +16,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
   try {
     const session = await requireAuth();
@@ -28,7 +28,9 @@ export async function POST(
     }
 
     const userId = session.user.id;
-    const stockTakeId = parseInt(params.id);
+    // Handle both Promise and direct params for Next.js version compatibility
+    const resolvedParams = params instanceof Promise ? await params : params;
+    const stockTakeId = parseInt(resolvedParams.id);
 
     if (isNaN(stockTakeId)) {
       return NextResponse.json(
