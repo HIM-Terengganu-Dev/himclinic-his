@@ -268,7 +268,15 @@ export default function StockTakeForm({ stockTake, items: initialItems, onComple
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {items.map((item) => (
+              {items.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
+                    <p className="mb-2">No items found for this stock take.</p>
+                    <p className="text-sm">Please check if single SKUs are configured in the system.</p>
+                  </td>
+                </tr>
+              ) : (
+                items.map((item) => (
                 <tr key={item.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3 font-mono font-medium text-gray-900">
                     {item.sku}
@@ -328,7 +336,8 @@ export default function StockTakeForm({ stockTake, items: initialItems, onComple
                     )}
                   </td>
                 </tr>
-              ))}
+                ))
+              )}
             </tbody>
           </table>
         </div>

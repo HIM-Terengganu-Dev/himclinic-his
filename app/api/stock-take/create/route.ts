@@ -43,6 +43,13 @@ export async function POST() {
     const products = await getProducts({ per_page: 100 });
     const singleSkus = await getAllSingleSkus();
 
+    if (!singleSkus || singleSkus.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'No single SKUs found in the system. Please configure SKUs first.' },
+        { status: 400 }
+      );
+    }
+
     // Create snapshot data
     const snapshotData: Record<string, number> = {};
     singleSkus.forEach((sku) => {
@@ -66,6 +73,14 @@ export async function POST() {
         systemQuantity: snapshotData[sku.sku] || 0,
       }))
     );
+
+    if (!items || items.length === 0) {
+      console.error('No stock take items were created');
+      return NextResponse.json(
+        { success: false, error: 'Failed to create stock take items' },
+        { status: 500 }
+      );
+    }
 
     // Log activity
     const { logActivity } = await import('@/lib/db/queries');

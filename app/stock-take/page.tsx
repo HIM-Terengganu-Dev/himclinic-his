@@ -44,13 +44,19 @@ export default function StockTakePage() {
       });
       const data = await response.json();
       if (data.success) {
+        // Use the data directly from create response, then refetch to ensure consistency
+        if (data.stockTake && data.items) {
+          setStockTakeData(data);
+        }
         // Refetch to ensure we have the latest data with all items
         await fetchCurrentStockTake();
       } else {
         console.error('Failed to create stock take:', data.error);
+        alert(data.error || 'Failed to create stock take. Please try again.');
       }
     } catch (error) {
       console.error('Error creating stock take:', error);
+      alert('Network error. Please try again.');
     } finally {
       setCreating(false);
     }
@@ -102,8 +108,11 @@ export default function StockTakePage() {
               <h1 className="text-2xl font-bold text-gray-900 mb-4">
                 Stock Take - {new Date().toLocaleString('default', { month: 'long', year: 'numeric' })}
               </h1>
-              <p className="text-gray-600 mb-6">
+              <p className="text-gray-600 mb-4">
                 Create a snapshot of current inventory levels and perform physical count.
+              </p>
+              <p className="text-sm text-gray-500 mb-6">
+                Note: You can perform a stock take at any time during the month. Only one stock take is allowed per month.
               </p>
               <button
                 onClick={handleCreateStockTake}
