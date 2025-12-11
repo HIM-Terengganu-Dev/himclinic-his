@@ -20,7 +20,8 @@ export async function POST(request: Request) {
                 hasSecret: !!secret,
                 hasSignature: !!signature
             });
-            return NextResponse.json({ error: 'Missing secret or signature' }, { status: 401 });
+            // TEMPORARY: Relaxed for 2nd webhook setup
+            return NextResponse.json({ success: true, warning: 'Missing secret' });
         }
 
         // Verify Signature
@@ -32,7 +33,8 @@ export async function POST(request: Request) {
                 computed: hash,
                 secretLength: secret.length
             });
-            return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+            // TEMPORARY: Relaxed for 2nd webhook setup
+            return NextResponse.json({ success: true, warning: 'Invalid signature' });
         }
 
         const payload = JSON.parse(bodyText);
