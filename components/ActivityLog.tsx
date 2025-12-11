@@ -127,10 +127,23 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         }
     };
 
-    const getActionColor = (action: string) => {
-        if (action.includes('procurement')) return 'bg-blue-100 text-blue-800';
-        if (action.includes('sku')) return 'bg-purple-100 text-purple-800';
-        if (action.includes('error')) return 'bg-red-100 text-red-800';
+    const getActionColor = (log: ActivityLogEntry) => {
+        // For procurement updates, use different colors based on operation type
+        if (log.action === 'procurement_update' && log.details) {
+            const operation = log.details.operation;
+            switch (operation) {
+                case 'add': return 'bg-green-100 text-green-800 border border-green-200'; // Manual Stock In - Green
+                case 'subtract': return 'bg-orange-100 text-orange-800 border border-orange-200'; // Manual Stock Out - Orange
+                case 'set': return 'bg-blue-100 text-blue-800 border border-blue-200'; // Reconciliation - Blue
+                default: return 'bg-gray-100 text-gray-800';
+            }
+        }
+        
+        // Other action types
+        if (log.action.includes('sku')) return 'bg-purple-100 text-purple-800';
+        if (log.action.includes('error')) return 'bg-red-100 text-red-800';
+        if (log.action.includes('stock_take')) return 'bg-indigo-100 text-indigo-800';
+        if (log.action.includes('webhook')) return 'bg-cyan-100 text-cyan-800';
         return 'bg-gray-100 text-gray-800';
     };
 
@@ -254,7 +267,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                             </div>
                                         </td>
                                         <td className="px-6 py-4">
-                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${getActionColor(log.action)}`}>
+                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${getActionColor(log)}`}>
                                                 {getActionLabel(log)}
                                             </span>
                                         </td>
