@@ -422,6 +422,7 @@ export default function Home() {
                   <InventoryDashboard
                     inventory={inventory}
                     comboAvailability={comboAvailability}
+                    singleSkuList={singleSkuList}
                     loading={loading}
                   />
                 </div>
