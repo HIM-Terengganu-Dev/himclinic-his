@@ -146,7 +146,7 @@ export async function POST(request: Request) {
         }
 
         // 2. Recalculate and update combo SKU availability in WooCommerce
-        const allCombos = await getAllComboSkus();
+        // Note: allCombos already fetched above on line 57
         const affectedCombos = allCombos.filter((c: any) => {
             const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
             return components.some((comp: any) => Object.keys(totalDeductions).includes(comp.sku));
