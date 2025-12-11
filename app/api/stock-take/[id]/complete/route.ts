@@ -206,7 +206,7 @@ export async function POST(
       details: {
         month: stockTake.month,
         year: stockTake.year,
-        totalItems: items.length,
+        totalItems: updatedItems.length,
         adjustmentsApplied: adjustments.filter(a => a.success).length,
         adjustmentsFailed: adjustments.filter(a => !a.success).length,
       },
@@ -218,8 +218,8 @@ export async function POST(
       message: 'Stock take completed successfully',
       adjustments,
       summary: {
-        totalItems: items.length,
-        itemsWithVariance: items.filter(i => i.variance !== 0 && i.variance !== null).length,
+        totalItems: updatedItems.length,
+        itemsWithVariance: updatedItems.filter(i => i.variance !== 0 && i.variance !== null).length,
         adjustmentsApplied: adjustments.filter(a => a.success).length,
         adjustmentsFailed: adjustments.filter(a => !a.success).length,
       },
