@@ -102,27 +102,16 @@ export function formatDateTimeWithSecondsGMT8(date: Date | string): string {
 
 /**
  * Format distance to now in GMT+8
+ * For relative time calculations, we just need the correct moment in time
+ * JavaScript Date objects handle this correctly regardless of timezone
  */
 export function formatDistanceToNowGMT8(date: Date | string, options?: { addSuffix?: boolean }): string {
-  if (typeof date === 'string') {
-    // If it's a GMT+8 timestamp string, parse it correctly
-    if (/\+08:00/.test(date)) {
-      // Extract the time components and create a Date object
-      // JavaScript will parse it correctly, but we need to account for the timezone
-      const dateObj = new Date(date);
-      // The Date object represents the correct moment in time
-      // formatDistanceToNow will calculate correctly from "now"
-      return formatDistanceToNow(dateObj, options);
-    }
-    // If it's UTC (Z), convert to GMT+8 first
-    if (date.endsWith('Z')) {
-      const dateObj = new Date(date);
-      const gmt8Date = new Date(dateObj.getTime() + GMT8_OFFSET_MS);
-      return formatDistanceToNow(gmt8Date, options);
-    }
-  }
+  // Parse the date string to a Date object
+  // JavaScript Date objects represent moments in time, so this will work correctly
+  const dateObj = typeof date === 'string' ? new Date(date) : date;
   
-  const gmt8Date = toGMT8(date);
-  return formatDistanceToNow(gmt8Date, options);
+  // formatDistanceToNow calculates the difference from "now" correctly
+  // regardless of timezone, as long as both dates are in the same reference
+  return formatDistanceToNow(dateObj, options);
 }
 
