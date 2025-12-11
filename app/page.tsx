@@ -4,19 +4,17 @@ import { useEffect, useState, useRef } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, ClipboardCheck } from 'lucide-react';
 import InventoryDashboard from '@/components/InventoryDashboard';
-import RecentOrders from '@/components/RecentOrders';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
 import ActivityLog from '@/components/ActivityLog';
 import SkuManagement from '@/components/SkuManagement';
 import LoginPage from '@/components/LoginPage';
-import { InventoryStock, ComboAvailability, ProcessedOrder } from '@/types/inventory';
+import { InventoryStock, ComboAvailability } from '@/types/inventory';
 
 export default function Home() {
   const { data: session, status } = useSession();
   const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'activity' | 'sku'>('dashboard');
   const [inventory, setInventory] = useState<InventoryStock>({});
   const [comboAvailability, setComboAvailability] = useState<ComboAvailability[]>([]);
-  const [recentOrders, setRecentOrders] = useState<ProcessedOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -35,7 +33,6 @@ export default function Home() {
       if (data.success) {
         setInventory(data.singleSkus);
         setComboAvailability(data.comboAvailability);
-        setRecentOrders(data.recentlyProcessedOrders || []);
         setLastUpdated(new Date());
 
         // Note: We don't show notifications for orders anymore
@@ -425,9 +422,6 @@ export default function Home() {
                     comboAvailability={comboAvailability}
                     loading={loading}
                   />
-                </div>
-                <div className="lg:col-span-12">
-                  <RecentOrders orders={recentOrders} />
                 </div>
               </div>
             )}

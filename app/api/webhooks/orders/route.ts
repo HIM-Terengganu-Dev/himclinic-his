@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { updateProductStock, getProduct, getOrders } from '@/lib/services/woocommerce';
-import { getSingleSkuByCode, getAllComboSkus, getAllSingleSkus, logActivity } from '@/lib/db/queries';
+import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
+import { getAllComboSkus, getAllSingleSkus, logActivity } from '@/lib/db/queries';
+import { isSingleSKU, isComboSKU, deductComboSKU } from '@/lib/utils/inventory';
 
 export async function POST(request: Request) {
     console.log("!!! WEBHOOK HIT !!! Method:", request.method);
@@ -39,15 +40,10 @@ export async function POST(request: Request) {
         const orderId = payload.id;
         const status = payload.status;
 
-        // We only care about orders that are 'processing' (paid) or 'on-hold' (reserved)
-        // or 'cancelled'/'refunded' (to restock - future improvement)
-        // For now, let's focus on 'processing' to deduct stock.
-        // NOTE: WC usually deducts stock automatically on 'processing'.
-
-        // Our MAIN GOAL: Sync Combo SKU Availabilities based on Single SKU changes.
-        // If an order contains a Single SKU, we must recalculate Combos that use it.
-
-        console.log(`Processing webhook for Order #${orderId} (${status})`);
+        // Only process 'processing' status orders (paid orders that need stock deduction)
+        if (status !== 'processing') {
+            return NextResponse.json({ success: true, message: `Order status is ${status}, skipping stock update` });
+        }
 
         // Get all line items
         const lineItems = payload.line_items;
@@ -55,91 +51,168 @@ export async function POST(request: Request) {
             return NextResponse.json({ success: true, message: 'No items' });
         }
 
-        // Identify changed SKUs
-        const changedSkus = new Set<string>();
-
-        for (const item of lineItems) {
-            if (item.sku) changedSkus.add(item.sku);
-        }
-
-        if (changedSkus.size === 0) {
-            return NextResponse.json({ success: true, message: 'No SKUs found' });
-        }
-
-        // 1. Get All Combos from DB
-        const allCombos = await getAllComboSkus();
+        // Get SKU mappings from database
         const allSingleSkus = await getAllSingleSkus();
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
 
-        // 2. Identify Affected Combos
-        // Combos that contain any of the bought Single SKUs as components
-        const affectedCombos = allCombos.filter((c: any) =>
-            c.components.some((comp: any) => changedSkus.has(comp.sku))
-        );
+        // Calculate total deductions for each single SKU
+        const totalDeductions: Record<string, number> = {};
 
-        if (affectedCombos.length === 0) {
-            return NextResponse.json({ success: true, message: 'No affected combos' });
+        for (const item of lineItems) {
+            if (!item.sku) continue;
+
+            const sku = item.sku;
+            const quantity = item.quantity || 0;
+
+            if (isSingleSKU(sku)) {
+                // Direct single SKU deduction
+                totalDeductions[sku] = (totalDeductions[sku] || 0) + quantity;
+            } else if (isComboSKU(sku)) {
+                // Combo SKU: break down to component single SKUs
+                // Use a dummy inventory to calculate deductions
+                const dummyInventory: Record<string, number> = {};
+                allSingleSkus.forEach((s: any) => {
+                    dummyInventory[s.sku] = 1000; // Large enough for calculation
+                });
+
+                const result = deductComboSKU(sku, quantity, dummyInventory);
+                if (result.success) {
+                    Object.entries(result.deductions).forEach(([deductedSku, deductedQty]) => {
+                        totalDeductions[deductedSku] = (totalDeductions[deductedSku] || 0) + deductedQty;
+                    });
+                }
+            }
         }
 
-        console.log(`Found ${affectedCombos.length} affected combos: ${affectedCombos.map((c: any) => c.sku).join(', ')}`);
+        if (Object.keys(totalDeductions).length === 0) {
+            return NextResponse.json({ success: true, message: 'No valid SKUs found' });
+        }
 
-        // 3. Recalculate & Update WC for each affected combo
-        const updates = [];
+        console.log(`Processing webhook for Order #${orderId}: Deducting ${Object.keys(totalDeductions).length} single SKUs`);
 
-        for (const combo of affectedCombos) {
-            // Need current stock of ALL components for this combo
-            // We must fetch from WC to be safe (Source of Truth)
+        // 1. Update single SKU stock in WooCommerce
+        const singleSkuUpdates: Array<{ sku: string; success: boolean; error?: string }> = [];
 
-            let comboLimit = Infinity;
-
-            // For each component in the combo
-            for (const comp of combo.components) {
-                // Fetch current stock from WC
-                // Optimization: Dedupe fetches if multiple combos use same component
-                let stock = 0;
-                try {
-                    // If we have the WC ID, use it
-                    const singleSkuData = singleSkuMap.get(comp.sku);
-                    if (singleSkuData) {
-                        const p = await getProduct(singleSkuData.woocommerce_product_id);
-                        stock = p.stock_quantity || 0;
-                    } else {
-                        // Fallback if not mapped (shouldn't happen for valid items)
-                        console.warn(`SKU ${comp.sku} not found in local DB mapping`);
-                    }
-                } catch (e) {
-                    console.error(`Failed to fetch stock for ${comp.sku}`, e);
-                    comboLimit = 0; // Fail safe
-                    break;
-                }
-
-                const canMake = Math.floor(stock / comp.quantity);
-                if (canMake < comboLimit) comboLimit = canMake;
+        for (const [sku, deductedQty] of Object.entries(totalDeductions)) {
+            const singleSku = singleSkuMap.get(sku);
+            if (!singleSku || !singleSku.woocommerce_product_id) {
+                console.warn(`⚠️ SKU ${sku} not found in database or missing WooCommerce product ID`);
+                singleSkuUpdates.push({ sku, success: false, error: 'SKU not found in database' });
+                continue;
             }
 
-            if (comboLimit === Infinity) comboLimit = 0;
-
-            // Update WC
             try {
-                await updateProductStock(combo.woocommerce_product_id, comboLimit);
-                updates.push({ sku: combo.sku, newStock: comboLimit });
-                console.log(`Updated Combo ${combo.sku} to ${comboLimit}`);
-            } catch (e) {
-                console.error(`Failed to update combo ${combo.sku}`, e);
+                // Get current stock from WooCommerce
+                const currentProduct = await getProduct(singleSku.woocommerce_product_id);
+                const currentStock = currentProduct.stock_quantity || 0;
+                const newStock = Math.max(0, currentStock - deductedQty); // Ensure non-negative
+
+                // Update WooCommerce stock
+                await updateProductStock(singleSku.woocommerce_product_id, newStock);
+                console.log(`✅ Updated ${sku} in WooCommerce: ${currentStock} → ${newStock} (deducted ${deductedQty})`);
+                singleSkuUpdates.push({ sku, success: true });
+            } catch (error: any) {
+                console.error(`❌ Failed to update ${sku} in WooCommerce:`, error.message);
+                singleSkuUpdates.push({ sku, success: false, error: error.message });
+            }
+        }
+
+        // 2. Recalculate and update combo SKU availability in WooCommerce
+        const allCombos = await getAllComboSkus();
+        const affectedCombos = allCombos.filter((c: any) => {
+            const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
+            return components.some((comp: any) => Object.keys(totalDeductions).includes(comp.sku));
+        });
+
+        const comboUpdates: Array<{ sku: string; newStock: number }> = [];
+
+        if (affectedCombos.length > 0) {
+            // Build stock map: use updated stock for deducted SKUs, fetch others from WooCommerce
+            const stockMap: Record<string, number> = {};
+
+            // Get updated stock for SKUs we just deducted
+            for (const [sku, deductedQty] of Object.entries(totalDeductions)) {
+                const singleSku = singleSkuMap.get(sku);
+                if (singleSku && singleSku.woocommerce_product_id) {
+                    try {
+                        const p = await getProduct(singleSku.woocommerce_product_id);
+                        stockMap[sku] = p.stock_quantity || 0; // Already updated above
+                    } catch (e) {
+                        console.warn(`Failed to fetch updated stock for ${sku}`, e);
+                        stockMap[sku] = 0;
+                    }
+                }
+            }
+
+            // Fetch stock for other components needed for combo calculations
+            const neededSkus = new Set<string>();
+            affectedCombos.forEach((c: any) => {
+                const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
+                components.forEach((comp: any) => neededSkus.add(comp.sku));
+            });
+
+            const missingSkus = Array.from(neededSkus).filter(s => !stockMap.hasOwnProperty(s));
+            await Promise.all(missingSkus.map(async (s) => {
+                const sData = singleSkuMap.get(s);
+                if (sData && sData.woocommerce_product_id) {
+                    try {
+                        const p = await getProduct(sData.woocommerce_product_id);
+                        stockMap[s] = p.stock_quantity || 0;
+                    } catch (e) {
+                        console.warn(`Failed to fetch stock for component ${s}`, e);
+                        stockMap[s] = 0;
+                    }
+                }
+            }));
+
+            // Calculate and update combo stock in WooCommerce
+            for (const combo of affectedCombos) {
+                if (!combo.woocommerce_product_id) {
+                    console.warn(`⚠️ Combo ${combo.sku} missing WooCommerce product ID`);
+                    continue;
+                }
+
+                const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
+                let comboLimit = Infinity;
+
+                for (const comp of components) {
+                    const stock = stockMap[comp.sku] || 0;
+                    const canMake = Math.floor(stock / comp.quantity);
+                    if (canMake < comboLimit) comboLimit = canMake;
+                }
+
+                if (comboLimit === Infinity) comboLimit = 0;
+
+                try {
+                    await updateProductStock(combo.woocommerce_product_id, comboLimit);
+                    comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
+                    console.log(`✅ Updated combo ${combo.sku} in WooCommerce: ${comboLimit} units`);
+                } catch (e: any) {
+                    console.error(`❌ Failed to update combo ${combo.sku} in WooCommerce:`, e.message);
+                }
             }
         }
 
         // Log Activity
         await logActivity({
             userId: 'system-webhook', // Special system user
-            action: 'webhook_sync',
+            action: 'webhook_order_processed',
             entityType: 'order',
             entityId: orderId,
-            details: { orderId, status, updates },
+            details: { 
+                orderId, 
+                status, 
+                singleSkuUpdates: singleSkuUpdates.filter(u => u.success).map(u => u.sku),
+                comboUpdates: comboUpdates.map(u => u.sku)
+            },
             success: true
         });
 
-        return NextResponse.json({ success: true, updates });
+        return NextResponse.json({ 
+            success: true, 
+            singleSkuUpdates: singleSkuUpdates.filter(u => u.success).length,
+            comboUpdates: comboUpdates.length
+        });
 
     } catch (error) {
         console.error('Webhook Error:', error);
