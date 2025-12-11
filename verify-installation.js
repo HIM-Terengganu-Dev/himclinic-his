@@ -58,7 +58,6 @@ const requiredFiles = [
   'lib/data/single-skus.ts',
   'lib/data/combo-skus.ts',
   'components/InventoryDashboard.tsx',
-  'components/RecentOrders.tsx',
   'types/inventory.ts',
 ];
 
