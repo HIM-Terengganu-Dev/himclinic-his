@@ -92,6 +92,8 @@ export async function getOrders(params?: {
       status: params?.status,
       after: params?.after,
       before: params?.before,
+      orderby: 'date',
+      order: 'desc', // Newest first
     });
     return response.data;
   } catch (error) {

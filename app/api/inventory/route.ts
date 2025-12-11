@@ -153,7 +153,14 @@ async function checkAndProcessNewOrders() {
       // Filter out any duplicates before adding
       const existingIds = new Set(recentlyProcessedOrders.map(o => o.orderId));
       const newOrders = processedThisCheck.filter(o => !existingIds.has(o.orderId));
-      recentlyProcessedOrders = [...newOrders, ...recentlyProcessedOrders].slice(0, 20);
+      // Combine and sort by processedAt (newest first)
+      recentlyProcessedOrders = [...newOrders, ...recentlyProcessedOrders]
+        .sort((a, b) => {
+          const dateA = new Date(a.processedAt).getTime();
+          const dateB = new Date(b.processedAt).getTime();
+          return dateB - dateA; // Descending order (newest first)
+        })
+        .slice(0, 20);
     }
     
     // Clean up processedOrderIds set (keep only IDs from recent orders to prevent memory bloat)
@@ -239,7 +246,15 @@ export async function GET() {
       const memoryOrderIds = new Set(recentlyProcessedOrders.map(o => o.orderId));
       const wooOrdersNotInMemory = wooOrdersFormatted.filter(o => !memoryOrderIds.has(o.orderId));
       
-      allRecentOrders = [...recentlyProcessedOrders, ...wooOrdersNotInMemory].slice(0, 15);
+      // Combine and sort by processedAt (newest first)
+      allRecentOrders = [...recentlyProcessedOrders, ...wooOrdersNotInMemory]
+        .sort((a, b) => {
+          // Sort by processedAt timestamp (newest first)
+          const dateA = new Date(a.processedAt).getTime();
+          const dateB = new Date(b.processedAt).getTime();
+          return dateB - dateA; // Descending order (newest first)
+        })
+        .slice(0, 15);
     } catch (error) {
       console.error('Error fetching recent orders from WooCommerce:', error);
       // Fallback to in-memory only
