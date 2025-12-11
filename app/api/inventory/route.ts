@@ -8,7 +8,8 @@ import {
   isSingleSKU,
   isComboSKU,
 } from '@/lib/utils/inventory';
-import { getProducts, getOrders } from '@/lib/services/woocommerce';
+import { getProducts, getOrders, getProduct, updateProductStock } from '@/lib/services/woocommerce';
+import { getAllSingleSkus, getAllComboSkus, getSingleSkuByCode } from '@/lib/db/queries';
 import { InventoryStock, ProcessedOrder } from '@/types/inventory';
 import { COMBO_SKUS } from '@/lib/data/combo-skus';
 
