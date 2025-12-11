@@ -415,7 +415,7 @@ export default function Home() {
             </nav>
           </div>
 
-          <div className="p-6 md:p-8 bg-gray-50/30 min-h-[500px]">
+          <div className="p-6 md:p-8 min-h-[500px]" style={{ backgroundColor: '#EEEEEE' }}>
             {activeTab === 'dashboard' && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 <div className="lg:col-span-12">
