@@ -231,14 +231,19 @@ export default function Home() {
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                {/* No Stock */}
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {/* No Stock (Includes Oversold) */}
                 <div className="bg-red-50 rounded-lg p-3 border border-red-100">
                   <p className="text-xs font-medium text-red-600 uppercase tracking-wide">No Stock</p>
                   <p className="text-2xl font-bold text-red-700 mt-1">
-                    {Object.values(inventory).filter(q => q === 0).length}
+                    {Object.values(inventory).filter(q => q <= 0).length}
                   </p>
-                  <p className="text-[10px] text-red-500 mt-0.5">Qty = 0</p>
+                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
+                    <p className="text-[10px] text-red-600 leading-tight">
+                      {Object.entries(inventory).filter(([_, q]) => q <= 0).map(([sku]) => sku).join(', ') || 'None'}
+                    </p>
+                  </div>
+                  <p className="text-[10px] text-red-500 mt-0.5">Qty ≤ 0</p>
                 </div>
 
                 {/* Low Stock */}
@@ -247,16 +252,12 @@ export default function Home() {
                   <p className="text-2xl font-bold text-yellow-700 mt-1">
                     {Object.values(inventory).filter(q => q > 0 && q <= 10).length}
                   </p>
+                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
+                    <p className="text-[10px] text-yellow-600 leading-tight">
+                      {Object.entries(inventory).filter(([_, q]) => q > 0 && q <= 10).map(([sku]) => sku).join(', ') || 'None'}
+                    </p>
+                  </div>
                   <p className="text-[10px] text-yellow-500 mt-0.5">Qty ≤ 10</p>
-                </div>
-
-                {/* Oversold */}
-                <div className="bg-orange-50 rounded-lg p-3 border border-orange-100">
-                  <p className="text-xs font-medium text-orange-600 uppercase tracking-wide">Oversold</p>
-                  <p className="text-2xl font-bold text-orange-700 mt-1">
-                    {Object.values(inventory).filter(q => q < 0).length}
-                  </p>
-                  <p className="text-[10px] text-orange-500 mt-0.5">Qty &lt; 0</p>
                 </div>
 
                 {/* Adequate */}
@@ -265,6 +266,11 @@ export default function Home() {
                   <p className="text-2xl font-bold text-green-700 mt-1">
                     {Object.values(inventory).filter(q => q > 10).length}
                   </p>
+                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
+                    <p className="text-[10px] text-green-600 leading-tight">
+                      {Object.entries(inventory).filter(([_, q]) => q > 10).map(([sku]) => sku).join(', ') || 'None'}
+                    </p>
+                  </div>
                   <p className="text-[10px] text-green-500 mt-0.5">Qty &gt; 10</p>
                 </div>
               </div>
@@ -282,14 +288,19 @@ export default function Home() {
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                {/* No Stock */}
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {/* No Stock (Includes Oversold) */}
                 <div className="bg-red-50 rounded-lg p-3 border border-red-100">
                   <p className="text-xs font-medium text-red-600 uppercase tracking-wide">No Stock</p>
                   <p className="text-2xl font-bold text-red-700 mt-1">
-                    {comboAvailability.filter(c => c.maxAvailable === 0).length}
+                    {comboAvailability.filter(c => c.maxAvailable <= 0).length}
                   </p>
-                  <p className="text-[10px] text-red-500 mt-0.5">Qty = 0</p>
+                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
+                    <p className="text-[10px] text-red-600 leading-tight">
+                      {comboAvailability.filter(c => c.maxAvailable <= 0).map(c => c.sku).join(', ') || 'None'}
+                    </p>
+                  </div>
+                  <p className="text-[10px] text-red-500 mt-0.5">Qty ≤ 0</p>
                 </div>
 
                 {/* Low Stock */}
@@ -298,16 +309,12 @@ export default function Home() {
                   <p className="text-2xl font-bold text-yellow-700 mt-1">
                     {comboAvailability.filter(c => c.maxAvailable > 0 && c.maxAvailable <= 10).length}
                   </p>
+                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
+                    <p className="text-[10px] text-yellow-600 leading-tight">
+                      {comboAvailability.filter(c => c.maxAvailable > 0 && c.maxAvailable <= 10).map(c => c.sku).join(', ') || 'None'}
+                    </p>
+                  </div>
                   <p className="text-[10px] text-yellow-500 mt-0.5">Qty ≤ 10</p>
-                </div>
-
-                {/* Oversold */}
-                <div className="bg-orange-50 rounded-lg p-3 border border-orange-100">
-                  <p className="text-xs font-medium text-orange-600 uppercase tracking-wide">Oversold</p>
-                  <p className="text-2xl font-bold text-orange-700 mt-1">
-                    {comboAvailability.filter(c => c.maxAvailable < 0).length}
-                  </p>
-                  <p className="text-[10px] text-orange-500 mt-0.5">Qty &lt; 0</p>
                 </div>
 
                 {/* Adequate */}
