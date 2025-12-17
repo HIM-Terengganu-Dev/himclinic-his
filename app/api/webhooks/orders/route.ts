@@ -112,40 +112,17 @@ export async function POST(request: Request) {
             }
         }
 
+        // Note: WooCommerce automatically deducts stock when order status changes to 'processing'
+        // We don't need to deduct single SKU stock here - only recalculate combo SKU availability
+        
         if (Object.keys(totalDeductions).length === 0) {
-            return NextResponse.json({ success: true, message: 'No valid SKUs found' });
+            return NextResponse.json({ success: true, message: 'No valid SKUs found in order' });
         }
 
-        console.log(`Processing webhook for Order #${orderId}: Deducting ${Object.keys(totalDeductions).length} single SKUs`);
+        console.log(`Processing webhook for Order #${orderId}: Affected ${Object.keys(totalDeductions).length} single SKUs (WooCommerce already deducted stock)`);
 
-        // 1. Update single SKU stock in WooCommerce
-        const singleSkuUpdates: Array<{ sku: string; success: boolean; error?: string }> = [];
-
-        for (const [sku, deductedQty] of Object.entries(totalDeductions)) {
-            const singleSku = singleSkuMap.get(sku);
-            if (!singleSku || !singleSku.woocommerce_product_id) {
-                console.warn(`⚠️ SKU ${sku} not found in database or missing WooCommerce product ID`);
-                singleSkuUpdates.push({ sku, success: false, error: 'SKU not found in database' });
-                continue;
-            }
-
-            try {
-                // Get current stock from WooCommerce
-                const currentProduct = await getProduct(singleSku.woocommerce_product_id);
-                const currentStock = currentProduct.stock_quantity || 0;
-                const newStock = Math.max(0, currentStock - deductedQty); // Ensure non-negative
-
-                // Update WooCommerce stock
-                await updateProductStock(singleSku.woocommerce_product_id, newStock);
-                console.log(`✅ Updated ${sku} in WooCommerce: ${currentStock} → ${newStock} (deducted ${deductedQty})`);
-                singleSkuUpdates.push({ sku, success: true });
-            } catch (error: any) {
-                console.error(`❌ Failed to update ${sku} in WooCommerce:`, error.message);
-                singleSkuUpdates.push({ sku, success: false, error: error.message });
-            }
-        }
-
-        // 2. Recalculate and update combo SKU availability in WooCommerce
+        // Recalculate and update combo SKU availability in WooCommerce
+        // WooCommerce has already deducted single SKU stock, so we just need to recalculate combos
         // Note: allCombos already fetched above on line 57
         const affectedCombos = allCombos.filter((c: any) => {
             const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
@@ -155,18 +132,18 @@ export async function POST(request: Request) {
         const comboUpdates: Array<{ sku: string; newStock: number }> = [];
 
         if (affectedCombos.length > 0) {
-            // Build stock map: use updated stock for deducted SKUs, fetch others from WooCommerce
+            // Build stock map: fetch current stock from WooCommerce (already deducted by WooCommerce)
             const stockMap: Record<string, number> = {};
 
-            // Get updated stock for SKUs we just deducted
-            for (const [sku, deductedQty] of Object.entries(totalDeductions)) {
+            // Get current stock for all affected single SKUs (WooCommerce already deducted)
+            for (const [sku] of Object.entries(totalDeductions)) {
                 const singleSku = singleSkuMap.get(sku);
                 if (singleSku && singleSku.woocommerce_product_id) {
                     try {
                         const p = await getProduct(singleSku.woocommerce_product_id);
-                        stockMap[sku] = p.stock_quantity || 0; // Already updated above
+                        stockMap[sku] = p.stock_quantity || 0; // Current stock after WooCommerce deduction
                     } catch (e) {
-                        console.warn(`Failed to fetch updated stock for ${sku}`, e);
+                        console.warn(`Failed to fetch current stock for ${sku}`, e);
                         stockMap[sku] = 0;
                     }
                 }
@@ -230,7 +207,8 @@ export async function POST(request: Request) {
             details: { 
                 orderId, 
                 status, 
-                singleSkuUpdates: singleSkuUpdates.filter(u => u.success).map(u => u.sku),
+                affectedSingleSkus: Object.keys(totalDeductions),
+                note: 'WooCommerce automatically deducted single SKU stock. Webhook only updated combo SKU availability.',
                 comboUpdates: comboUpdates.map(u => u.sku)
             },
             success: true
@@ -238,7 +216,8 @@ export async function POST(request: Request) {
 
         return NextResponse.json({ 
             success: true, 
-            singleSkuUpdates: singleSkuUpdates.filter(u => u.success).length,
+            message: 'Combo SKU availability updated. Single SKU stock was already deducted by WooCommerce.',
+            affectedSingleSkus: Object.keys(totalDeductions).length,
             comboUpdates: comboUpdates.length
         });
 
