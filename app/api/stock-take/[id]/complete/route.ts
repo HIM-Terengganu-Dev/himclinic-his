@@ -9,6 +9,8 @@ import {
   getSingleSkuByCode,
   createProcurementUpdate,
   logActivity,
+  getAllComboSkus,
+  getAllSingleSkus,
 } from '@/lib/db/queries';
 import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
 
@@ -192,6 +194,101 @@ export async function POST(
             success: false,
             error: String(error),
           });
+        }
+      }
+    }
+
+    // Recalculate and update combo SKU availability for all affected single SKUs
+    const affectedSingleSkus = adjustments
+      .filter(a => a.success)
+      .map(a => a.sku);
+
+    if (affectedSingleSkus.length > 0) {
+      console.log(`Recalculating combo SKUs for ${affectedSingleSkus.length} adjusted single SKUs`);
+      
+      const allCombos = await getAllComboSkus();
+      const allSingleSkus = await getAllSingleSkus();
+      const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
+
+      // Find all combo SKUs that use any of the affected single SKUs
+      const affectedCombos = allCombos.filter((c: any) => {
+        const components = Array.isArray(c.components) 
+          ? c.components 
+          : JSON.parse(c.components || '[]');
+        return components.some((comp: any) => affectedSingleSkus.includes(comp.sku));
+      });
+
+      if (affectedCombos.length > 0) {
+        console.log(`Found ${affectedCombos.length} combo SKUs to recalculate`);
+
+        // Build stock map: use updated stock for adjusted SKUs, fetch others from WooCommerce
+        const stockMap: Record<string, number> = {};
+
+        // Get updated stock for adjusted SKUs (from adjustments)
+        for (const adj of adjustments.filter(a => a.success)) {
+          const singleSku = singleSkuMap.get(adj.sku);
+          if (singleSku && singleSku.woocommerce_product_id) {
+            stockMap[adj.sku] = adj.physicalQuantity; // Use the physical quantity we just set
+          }
+        }
+
+        // Collect all unique component SKUs needed for affected combos
+        const neededSkus = new Set<string>();
+        affectedCombos.forEach((c: any) => {
+          const components = Array.isArray(c.components) 
+            ? c.components 
+            : JSON.parse(c.components || '[]');
+          components.forEach((comp: any) => neededSkus.add(comp.sku));
+        });
+
+        // Fetch stock for other components needed for combo calculations
+        const missingSkus = Array.from(neededSkus).filter(s => !stockMap.hasOwnProperty(s));
+        await Promise.all(missingSkus.map(async (s) => {
+          const sData = singleSkuMap.get(s);
+          if (sData && sData.woocommerce_product_id) {
+            try {
+              const p = await getProduct(sData.woocommerce_product_id);
+              stockMap[s] = p.stock_quantity || 0;
+            } catch (e) {
+              console.warn(`Failed to fetch stock for component ${s}`, e);
+              stockMap[s] = 0;
+            }
+          }
+        }));
+
+        // Calculate and update combo stock in WooCommerce
+        const comboUpdates: Array<{ sku: string; newStock: number }> = [];
+
+        for (const combo of affectedCombos) {
+          if (!combo.woocommerce_product_id) {
+            console.warn(`⚠️ Combo ${combo.sku} missing WooCommerce product ID`);
+            continue;
+          }
+
+          const components = Array.isArray(combo.components) 
+            ? combo.components 
+            : JSON.parse(combo.components || '[]');
+          let comboLimit = Infinity;
+
+          for (const comp of components) {
+            const stock = stockMap[comp.sku] || 0;
+            const canMake = Math.floor(stock / comp.quantity);
+            if (canMake < comboLimit) comboLimit = canMake;
+          }
+
+          if (comboLimit === Infinity) comboLimit = 0;
+
+          try {
+            await updateProductStock(combo.woocommerce_product_id, comboLimit);
+            comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
+            console.log(`✅ Updated combo ${combo.sku} in WooCommerce: ${comboLimit} units`);
+          } catch (e: any) {
+            console.error(`❌ Failed to update combo ${combo.sku} in WooCommerce:`, e.message);
+          }
+        }
+
+        if (comboUpdates.length > 0) {
+          console.log(`Successfully updated ${comboUpdates.length} combo SKUs after stock take completion`);
         }
       }
     }
