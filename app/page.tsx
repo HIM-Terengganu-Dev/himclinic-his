@@ -28,7 +28,10 @@ export default function Home() {
   const fetchInventory = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/inventory');
+      // Add cache-busting query parameter to ensure fresh data
+      const response = await fetch(`/api/inventory?t=${Date.now()}`, {
+        cache: 'no-store',
+      });
       const data = await response.json();
 
       if (data.success) {

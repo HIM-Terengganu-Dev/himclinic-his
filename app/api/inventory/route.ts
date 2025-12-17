@@ -30,8 +30,22 @@ export async function GET() {
     // This ensures stock take adjustments and manual updates are reflected immediately
     let inventoryStore: InventoryStock = {};
     try {
-      const products = await getProducts({ per_page: 100 });
-      inventoryStore = initializeInventoryFromProducts(products, singleSkus);
+      // Fetch ALL products (handle pagination)
+      let allProducts: any[] = [];
+      let page = 1;
+      let hasMore = true;
+      
+      while (hasMore) {
+        const products = await getProducts({ per_page: 100, page });
+        allProducts = allProducts.concat(products);
+        
+        // If we got less than 100 products, we've reached the end
+        hasMore = products.length === 100;
+        page++;
+      }
+      
+      console.log(`Fetched ${allProducts.length} products from WooCommerce`);
+      inventoryStore = initializeInventoryFromProducts(allProducts, singleSkus);
     } catch (error) {
       console.error('Failed to fetch from WooCommerce:', error);
       // If WooCommerce fails, initialize with 0 stock for all SKUs
@@ -56,6 +70,12 @@ export async function GET() {
       comboAvailability,
       singleSkuList, // For frontend to know which SKUs to display
       initializedFromWooCommerce: true,
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      }
     });
   } catch (error) {
     console.error('Error getting inventory:', error);
