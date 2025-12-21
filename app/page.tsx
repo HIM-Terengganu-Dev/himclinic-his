@@ -159,7 +159,7 @@ export default function Home() {
     <div className="min-h-screen" style={{ backgroundColor: '#EEEEEE' }}>
       {/* Refresh Notification Toast */}
       {showRefreshNotification && (
-        <div className="fixed top-20 right-4 z-50 animate-pulse">
+        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 animate-pulse">
           <div className="bg-green-500 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 border border-green-600">
             <CheckCircle className="w-5 h-5" />
             <span className="font-medium">Data refreshed successfully!</span>
