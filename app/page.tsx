@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSession, signOut } from 'next-auth/react';
-import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, ClipboardCheck } from 'lucide-react';
+import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, ClipboardCheck, CheckCircle } from 'lucide-react';
 import InventoryDashboard from '@/components/InventoryDashboard';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
 import ActivityLog from '@/components/ActivityLog';
@@ -24,8 +24,9 @@ export default function Home() {
   const userMenuRef = useRef<HTMLDivElement>(null);
   const [stockTakeData, setStockTakeData] = useState<any>(null);
   const [stockTakeLoading, setStockTakeLoading] = useState(false);
+  const [showRefreshNotification, setShowRefreshNotification] = useState(false);
 
-  const fetchInventory = async () => {
+  const fetchInventory = async (showNotification = false) => {
     try {
       setLoading(true);
       // Add cache-busting query parameter to ensure fresh data
@@ -39,6 +40,15 @@ export default function Home() {
         setComboAvailability(data.comboAvailability);
         setSingleSkuList(data.singleSkuList || []);
         setLastUpdated(new Date());
+
+        // Show notification if refresh was manually triggered
+        if (showNotification) {
+          setShowRefreshNotification(true);
+          // Auto-hide notification after 3 seconds
+          setTimeout(() => {
+            setShowRefreshNotification(false);
+          }, 3000);
+        }
 
         // Note: We don't show notifications for orders anymore
         // Orders are read-only from WooCommerce - we just track them locally
@@ -58,13 +68,13 @@ export default function Home() {
     }
   }, [status]);
 
-  // Auto-refresh every 5 minutes
+  // Auto-refresh every 30 seconds
   useEffect(() => {
     if (!autoRefresh || status !== 'authenticated') return;
 
     const interval = setInterval(() => {
       fetchInventory();
-    }, 300000); // 5 minutes (5 * 60 * 1000)
+    }, 30000); // 30 seconds (30 * 1000)
 
     return () => clearInterval(interval);
   }, [autoRefresh, status]);
@@ -95,7 +105,7 @@ export default function Home() {
   };
 
   const handleRefresh = () => {
-    fetchInventory();
+    fetchInventory(true); // Pass true to show notification
   };
 
   const toggleAutoRefresh = () => {
@@ -142,6 +152,16 @@ export default function Home() {
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#EEEEEE' }}>
+      {/* Refresh Notification Toast */}
+      {showRefreshNotification && (
+        <div className="fixed top-20 right-4 z-50 animate-pulse">
+          <div className="bg-green-500 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 border border-green-600">
+            <CheckCircle className="w-5 h-5" />
+            <span className="font-medium">Data refreshed successfully!</span>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white shadow-md sticky top-0 z-50 backdrop-blur-md bg-white/90">
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
