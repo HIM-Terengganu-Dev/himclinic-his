@@ -107,6 +107,11 @@ export async function createProcurementUpdate(data: {
     notes?: string;
     createdBy: number;
 }) {
+    // Validate operation value
+    if (!['add', 'subtract', 'set'].includes(data.operation)) {
+        throw new Error(`Invalid operation: ${data.operation}. Must be 'add', 'subtract', or 'set'`);
+    }
+    
     // Start transaction
     const { pool } = await import('./connection');
     if (!pool) {
@@ -117,16 +122,22 @@ export async function createProcurementUpdate(data: {
         await client.query('BEGIN');
 
         // Create record
+        // Ensure notes is null (not undefined) for database compatibility
+        const notesValue = data.notes && data.notes.trim() ? data.notes.trim() : null;
+        console.log(`📝 Inserting procurement update: operation=${data.operation}, quantity=${data.quantity}, notes=${notesValue}`);
+        
         const result = await client.query(
             `INSERT INTO inventory_management.procurement_updates
        (single_sku_id, operation, quantity, previous_quantity, new_quantity, notes, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-            [data.singleSkuId, data.operation, data.quantity, data.previousQuantity, data.newQuantity, data.notes, data.createdBy]
+            [data.singleSkuId, data.operation, data.quantity, data.previousQuantity || null, data.newQuantity || null, notesValue, data.createdBy]
         );
 
         // Also log to activity_logs
         const entry = result.rows[0];
+        console.log(`✅ Procurement update record created: ID=${entry.id}, Operation=${entry.operation}`);
+        
         // Explicitly construct details object to ensure operation field is included
         // Use data.operation as source of truth to ensure it's always present
         const details = {
@@ -139,17 +150,41 @@ export async function createProcurementUpdate(data: {
             createdBy: entry.created_by,
             createdAt: entry.created_at
         };
-        await client.query(
-            `INSERT INTO inventory_management.activity_logs
-       (user_id, action, entity_type, entity_id, details, success)
-       VALUES ($1, 'procurement_update', 'procurement_update', $2, $3, true)`,
-            [data.createdBy, entry.id, JSON.stringify(details)]
-        );
+        
+        try {
+            await client.query(
+                `INSERT INTO inventory_management.activity_logs
+           (user_id, action, entity_type, entity_id, details, success)
+           VALUES ($1, 'procurement_update', 'procurement_update', $2, $3, true)`,
+                [data.createdBy, entry.id, JSON.stringify(details)]
+            );
+            console.log(`✅ Activity log entry created for procurement update ID=${entry.id}`);
+        } catch (activityLogError: any) {
+            // If activity log insert fails, log the error but don't rollback the procurement update
+            // The procurement update is the primary record, activity log is secondary
+            console.error('⚠️ Failed to create activity log entry (but procurement update succeeded):', {
+                error: activityLogError?.message,
+                code: activityLogError?.code,
+                detail: activityLogError?.detail,
+                procurementUpdateId: entry.id
+            });
+            // Continue with commit - the procurement update is more important
+        }
 
         await client.query('COMMIT');
+        console.log(`✅ Procurement update transaction committed: ID=${entry.id}, Operation=${entry.operation}`);
         return entry;
-    } catch (e) {
+    } catch (e: any) {
         await client.query('ROLLBACK');
+        console.error('❌ Procurement update transaction failed:', {
+            error: e?.message,
+            code: e?.code,
+            detail: e?.detail,
+            constraint: e?.constraint,
+            operation: data.operation,
+            singleSkuId: data.singleSkuId,
+            quantity: data.quantity
+        });
         throw e;
     } finally {
         client.release();

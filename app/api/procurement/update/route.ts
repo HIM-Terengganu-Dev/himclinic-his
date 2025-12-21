@@ -105,7 +105,8 @@ export async function POST(request: Request) {
 
       // 6. Log to Database (Procurement History & Activity Log)
       try {
-        await createProcurementUpdate({
+        console.log(`📝 Logging procurement update to DB: SKU=${sku}, Operation=${operation}, Quantity=${quantity}, UserId=${userId}`);
+        const procurementRecord = await createProcurementUpdate({
           singleSkuId: singleSku.id,
           operation,
           quantity,
@@ -114,10 +115,32 @@ export async function POST(request: Request) {
           notes,
           createdBy: userId
         });
-      } catch (dbError) {
-        console.error('Failed to log procurement update to DB:', dbError);
+        console.log(`✅ Successfully logged procurement update: ID=${procurementRecord.id}, Operation=${procurementRecord.operation}`);
+      } catch (dbError: any) {
+        console.error('❌ Failed to log procurement update to DB:', dbError);
+        console.error('Error details:', {
+          message: dbError?.message,
+          code: dbError?.code,
+          detail: dbError?.detail,
+          constraint: dbError?.constraint,
+          stack: dbError?.stack
+        });
         // We don't fail the request if DB log fails, but we should alert?
         // Since WC is updated, the business operation succeeded.
+        // However, we should still log this as an error activity
+        try {
+          await import('@/lib/db/queries').then(m => m.logActivity({
+            userId,
+            action: 'procurement_update_db_log_failed',
+            entityType: 'single_sku',
+            entityId: singleSku.id,
+            details: { sku, quantity, operation, error: String(dbError), errorDetails: dbError },
+            success: false,
+            errorMessage: dbError?.message || String(dbError)
+          }));
+        } catch (logError) {
+          console.error('Failed to log the DB log failure:', logError);
+        }
       }
 
       // 7. Calculate and Update Combo SKUs
