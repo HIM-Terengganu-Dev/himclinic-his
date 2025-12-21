@@ -127,11 +127,23 @@ export async function createProcurementUpdate(data: {
 
         // Also log to activity_logs
         const entry = result.rows[0];
+        // Explicitly construct details object to ensure operation field is included
+        // Use data.operation as source of truth to ensure it's always present
+        const details = {
+            id: entry.id,
+            operation: data.operation, // Use data.operation as source of truth
+            quantity: entry.quantity,
+            previousQuantity: entry.previous_quantity,
+            newQuantity: entry.new_quantity,
+            notes: entry.notes,
+            createdBy: entry.created_by,
+            createdAt: entry.created_at
+        };
         await client.query(
             `INSERT INTO inventory_management.activity_logs
        (user_id, action, entity_type, entity_id, details, success)
        VALUES ($1, 'procurement_update', 'procurement_update', $2, $3, true)`,
-            [data.createdBy, entry.id, JSON.stringify(entry)]
+            [data.createdBy, entry.id, JSON.stringify(details)]
         );
 
         await client.query('COMMIT');
