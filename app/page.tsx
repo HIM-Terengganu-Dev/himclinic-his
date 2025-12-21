@@ -26,9 +26,12 @@ export default function Home() {
   const [stockTakeLoading, setStockTakeLoading] = useState(false);
   const [showRefreshNotification, setShowRefreshNotification] = useState(false);
 
-  const fetchInventory = async (showNotification = false) => {
+  const fetchInventory = async (showNotification = false, showLoading = true) => {
     try {
-      setLoading(true);
+      // Only show loading indicator for manual refreshes or initial load
+      if (showLoading) {
+        setLoading(true);
+      }
       // Add cache-busting query parameter to ensure fresh data
       const response = await fetch(`/api/inventory?t=${Date.now()}`, {
         cache: 'no-store',
@@ -57,7 +60,9 @@ export default function Home() {
     } catch (error) {
       console.error('Error fetching inventory:', error);
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   };
 
@@ -68,12 +73,12 @@ export default function Home() {
     }
   }, [status]);
 
-  // Auto-refresh every 30 seconds
+  // Auto-refresh every 30 seconds (silent refresh, no loading indicator)
   useEffect(() => {
     if (!autoRefresh || status !== 'authenticated') return;
 
     const interval = setInterval(() => {
-      fetchInventory();
+      fetchInventory(false, false); // No notification, no loading indicator
     }, 30000); // 30 seconds (30 * 1000)
 
     return () => clearInterval(interval);
@@ -105,7 +110,7 @@ export default function Home() {
   };
 
   const handleRefresh = () => {
-    fetchInventory(true); // Pass true to show notification
+    fetchInventory(true, true); // Show notification and loading indicator
   };
 
   const toggleAutoRefresh = () => {
