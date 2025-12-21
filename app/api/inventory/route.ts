@@ -7,6 +7,9 @@ import { getProducts } from '@/lib/services/woocommerce';
 import { getAllSingleSkus, getAllComboSkus } from '@/lib/db/queries';
 import { InventoryStock } from '@/types/inventory';
 
+// Force dynamic rendering to prevent Next.js caching
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export async function GET() {
   try {
@@ -44,8 +47,12 @@ export async function GET() {
         page++;
       }
       
-      console.log(`Fetched ${allProducts.length} products from WooCommerce`);
+      console.log(`Fetched ${allProducts.length} products from WooCommerce at ${new Date().toISOString()}`);
       inventoryStore = initializeInventoryFromProducts(allProducts, singleSkus);
+      
+      // Log sample of inventory for debugging
+      const sampleSkus = Object.keys(inventoryStore).slice(0, 5);
+      console.log('Sample inventory:', sampleSkus.map(sku => ({ sku, qty: inventoryStore[sku] })));
     } catch (error) {
       console.error('Failed to fetch from WooCommerce:', error);
       // If WooCommerce fails, initialize with 0 stock for all SKUs

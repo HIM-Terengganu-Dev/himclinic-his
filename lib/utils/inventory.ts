@@ -25,12 +25,26 @@ export function initializeInventoryFromProducts(products: any[], singleSkus: any
     // Find the product in WooCommerce by woocommerce_product_id
     const product = products.find((p) => p.id === singleSku.woocommerce_product_id);
     
-    if (product && product.stock_quantity !== null) {
-      // Use the actual stock from WooCommerce
-      inventory[singleSku.sku] = product.stock_quantity;
+    if (product) {
+      // Handle stock_quantity: can be number, null, undefined, or string
+      let stockQuantity: number = 0;
+      
+      if (product.stock_quantity !== null && product.stock_quantity !== undefined) {
+        // Convert to number if it's a string
+        stockQuantity = typeof product.stock_quantity === 'string' 
+          ? parseFloat(product.stock_quantity) || 0
+          : Number(product.stock_quantity) || 0;
+      }
+      
+      inventory[singleSku.sku] = stockQuantity;
+      
+      // Log if stock management is disabled
+      if (!product.manage_stock && stockQuantity === 0) {
+        console.warn(`Product ${singleSku.sku} (WC ID: ${singleSku.woocommerce_product_id}) has stock management disabled. Setting to 0.`);
+      }
     } else {
-      // Fallback to 0 if product not found or stock not managed
-      console.warn(`Product ${singleSku.sku} (WC ID: ${singleSku.woocommerce_product_id}) not found or stock not managed. Setting to 0.`);
+      // Fallback to 0 if product not found
+      console.warn(`Product ${singleSku.sku} (WC ID: ${singleSku.woocommerce_product_id}) not found in WooCommerce. Setting to 0.`);
       inventory[singleSku.sku] = 0;
     }
   });
