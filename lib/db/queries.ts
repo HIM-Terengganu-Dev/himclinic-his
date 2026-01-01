@@ -298,6 +298,136 @@ export async function getActivityLogs(filters: {
     });
 }
 
+export async function logWcWebhook(data: {
+    webhookType: 'order' | 'product';
+    webhookEvent: string;
+    entityId: number;
+    entitySku?: string;
+    entityName?: string;
+    status?: string;
+    stockQuantity?: number;
+    previousStockQuantity?: number;
+    affectedSkus?: string[];
+    comboUpdates?: Array<{ sku: string; newStock: number; wcProductId?: number; error?: string }>;
+    details?: any;
+    ipAddress?: string;
+    userAgent?: string;
+    success?: boolean;
+    errorMessage?: string;
+}) {
+    await query(
+        `INSERT INTO inventory_management.wc_webhook_logs
+         (webhook_type, webhook_event, entity_id, entity_sku, entity_name, status, stock_quantity, previous_stock_quantity, 
+          affected_skus, combo_updates, details, ip_address, user_agent, success, error_message)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        [
+            data.webhookType,
+            data.webhookEvent,
+            data.entityId,
+            data.entitySku || null,
+            data.entityName || null,
+            data.status || null,
+            data.stockQuantity ?? null,
+            data.previousStockQuantity ?? null,
+            data.affectedSkus ? JSON.stringify(data.affectedSkus) : null,
+            data.comboUpdates ? JSON.stringify(data.comboUpdates) : null,
+            data.details ? JSON.stringify(data.details) : null,
+            data.ipAddress || null,
+            data.userAgent || null,
+            data.success ?? true,
+            data.errorMessage || null
+        ]
+    );
+}
+
+export async function getWcWebhookLogs(filters: {
+    webhookType?: 'order' | 'product';
+    webhookEvent?: string;
+    entitySku?: string;
+    limit?: number;
+    offset?: number;
+    dateFrom?: string;
+    dateTo?: string;
+}) {
+    let sql = `
+        SELECT 
+            *,
+            to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
+        FROM inventory_management.wc_webhook_logs
+        WHERE 1=1
+    `;
+    const params: any[] = [];
+    let pIdx = 1;
+
+    if (filters.webhookType) {
+        sql += ` AND webhook_type = $${pIdx++}`;
+        params.push(filters.webhookType);
+    }
+
+    if (filters.webhookEvent) {
+        sql += ` AND webhook_event = $${pIdx++}`;
+        params.push(filters.webhookEvent);
+    }
+
+    if (filters.entitySku) {
+        sql += ` AND entity_sku = $${pIdx++}`;
+        params.push(filters.entitySku);
+    }
+
+    if (filters.dateFrom) {
+        sql += ` AND created_at >= $${pIdx++}`;
+        params.push(filters.dateFrom);
+    }
+
+    if (filters.dateTo) {
+        sql += ` AND created_at <= $${pIdx++}`;
+        params.push(filters.dateTo);
+    }
+
+    sql += ` ORDER BY created_at DESC`;
+
+    if (filters.limit) {
+        sql += ` LIMIT $${pIdx++}`;
+        params.push(filters.limit);
+    }
+
+    if (filters.offset) {
+        sql += ` OFFSET $${pIdx++}`;
+        params.push(filters.offset);
+    }
+
+    const result = await query(sql, params);
+    // Replace created_at with GMT+8 version if available
+    return result.rows.map(row => {
+        if (row.created_at_gmt8) {
+            row.created_at = row.created_at_gmt8;
+        }
+        // Parse JSONB fields
+        if (row.affected_skus && typeof row.affected_skus === 'string') {
+            try {
+                row.affected_skus = JSON.parse(row.affected_skus);
+            } catch (e) {
+                row.affected_skus = [];
+            }
+        }
+        if (row.combo_updates && typeof row.combo_updates === 'string') {
+            try {
+                row.combo_updates = JSON.parse(row.combo_updates);
+            } catch (e) {
+                row.combo_updates = [];
+            }
+        }
+        if (row.details && typeof row.details === 'string') {
+            try {
+                row.details = JSON.parse(row.details);
+            } catch (e) {
+                row.details = {};
+            }
+        }
+        return row;
+    });
+}
+
 /**
  * STOCK TAKE OPERATIONS
  */

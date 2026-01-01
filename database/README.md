@@ -11,7 +11,7 @@ The database uses a **minimal schema** approach where:
 
 ## Database Schema
 
-The `inventory_management` schema contains **5 tables**:
+The `inventory_management` schema contains **6 tables**:
 
 | Table | Purpose | Records |
 |-------|---------|---------|
@@ -19,7 +19,8 @@ The `inventory_management` schema contains **5 tables**:
 | `single_skus` | Master data for single SKU products | 12 SKUs |
 | `combo_skus` | Combo SKU definitions with components | 18 combo SKUs |
 | `procurement_updates` | History of manual stock updates | Activity tracking |
-| `activity_logs` | Comprehensive audit trail | All manual changes |
+| `activity_logs` | Comprehensive audit trail | All manual system changes (HIS System tab) |
+| `wc_webhook_logs` | WooCommerce webhook events | Orders, product reconciliations (WooCommerce tab) |
 
 ## Prerequisites
 
@@ -86,6 +87,7 @@ Check that all tables were created:
  inventory_management| procurement_updates   | table | neondb_owner
  inventory_management| single_skus           | table | neondb_owner
  inventory_management| users                 | table | neondb_owner
+ inventory_management| wc_webhook_logs       | table | neondb_owner
 ```
 
 ### 4. Seed Initial Data
@@ -241,6 +243,39 @@ CREATE TABLE inventory_management.activity_logs (
 );
 ```
 
+**Purpose:** Tracks all manual system changes made by users through the HIS System interface (procurement updates, SKU management, etc.). Displayed in the "HIS System" tab of the Activity Log.
+
+### WooCommerce Webhook Logs Table
+
+```sql
+CREATE TABLE inventory_management.wc_webhook_logs (
+    id SERIAL PRIMARY KEY,
+    webhook_type VARCHAR(50) NOT NULL CHECK (webhook_type IN ('order', 'product')),
+    webhook_event VARCHAR(100) NOT NULL, -- e.g., 'order.created', 'order.processing', 'product.updated'
+    entity_id INTEGER NOT NULL, -- Order ID or Product ID from WooCommerce
+    entity_sku VARCHAR(100), -- SKU of the product/order item
+    entity_name VARCHAR(255), -- Name of the product/order
+    status VARCHAR(50), -- Order status or product stock status
+    stock_quantity INTEGER, -- Stock quantity after change
+    previous_stock_quantity INTEGER, -- Stock quantity before change (if available)
+    affected_skus JSONB, -- Array of SKUs affected by this webhook
+    combo_updates JSONB, -- Details of combo SKU updates triggered: [{"sku": "combo1", "newStock": 5}, ...]
+    details JSONB, -- Full webhook payload and additional context
+    ip_address VARCHAR(45), -- IP address of webhook sender
+    user_agent TEXT, -- User agent of webhook sender
+    success BOOLEAN DEFAULT TRUE,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Purpose:** Tracks all stock changes and triggers from WooCommerce side (orders, product reconciliations, manual stock updates in WooCommerce). Displayed in the "WooCommerce" tab of the Activity Log.
+
+**To create this table**, run the migration:
+```bash
+psql 'postgresql://...' -f database/migration_wc_webhook_logs.sql
+```
+
 ## Useful Queries
 
 ### View Recent Activity
@@ -299,6 +334,44 @@ SELECT
     components
 FROM inventory_management.combo_skus
 WHERE components::text LIKE '%him1%';
+```
+
+### View WooCommerce Webhook Logs
+
+```sql
+-- Recent webhook events
+SELECT 
+    created_at,
+    webhook_type,
+    webhook_event,
+    entity_name,
+    entity_sku,
+    status,
+    stock_quantity,
+    success,
+    error_message
+FROM inventory_management.wc_webhook_logs
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- View order webhooks
+SELECT * FROM inventory_management.wc_webhook_logs 
+WHERE webhook_type = 'order' 
+ORDER BY created_at DESC;
+
+-- View product update webhooks
+SELECT * FROM inventory_management.wc_webhook_logs 
+WHERE webhook_type = 'product' 
+ORDER BY created_at DESC;
+
+-- View combo updates from webhooks
+SELECT 
+    created_at,
+    entity_sku,
+    jsonb_array_elements(combo_updates) as combo_update
+FROM inventory_management.wc_webhook_logs
+WHERE combo_updates IS NOT NULL
+ORDER BY created_at DESC;
 ```
 
 ## Maintenance

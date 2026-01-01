@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import { formatDateTimeWithSecondsGMT8 } from '@/lib/utils/date';
-import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2, Package, ShoppingCart } from 'lucide-react';
 
 interface ActivityLogEntry {
     id: number;
@@ -19,9 +19,31 @@ interface ActivityLogEntry {
     affected_sku?: string;
 }
 
+interface WcWebhookLogEntry {
+    id: number;
+    webhook_type: 'order' | 'product';
+    webhook_event: string;
+    entity_id: number;
+    entity_sku?: string;
+    entity_name?: string;
+    status?: string;
+    stock_quantity?: number;
+    previous_stock_quantity?: number;
+    affected_skus?: string[];
+    combo_updates?: Array<{ sku: string; newStock: number; wcProductId?: number; error?: string }>;
+    details: any;
+    success: boolean;
+    error_message?: string;
+    created_at: string;
+}
+
+type TabType = 'manual' | 'woocommerce';
+
 export default function ActivityLog({ limit = 20, compact = false }: { limit?: number, compact?: boolean }) {
     const { data: session } = useSession();
+    const [activeTab, setActiveTab] = useState<TabType>('manual');
     const [logs, setLogs] = useState<ActivityLogEntry[]>([]);
+    const [wcLogs, setWcLogs] = useState<WcWebhookLogEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [filterType, setFilterType] = useState('');
@@ -42,12 +64,20 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             .catch(err => console.error('Failed to fetch SKUs:', err));
     }, []);
 
-    const fetchLogs = async () => {
+    const fetchManualLogs = async () => {
         try {
-            setRefreshing(true);
             const queryParams = new URLSearchParams();
             if (limit) queryParams.append('limit', limit.toString());
-            if (filterType) queryParams.append('type', filterType);
+            if (filterType) {
+                // Handle filterType format: "procurement_update:add" or just "procurement_update"
+                if (filterType.includes(':')) {
+                    const [action, operation] = filterType.split(':');
+                    queryParams.append('type', action);
+                    queryParams.append('operation', operation);
+                } else {
+                    queryParams.append('type', filterType);
+                }
+            }
             if (filterSku) queryParams.append('sku', filterSku);
             if (filterDateFrom) queryParams.append('dateFrom', filterDateFrom);
             if (filterDateTo) queryParams.append('dateTo', filterDateTo);
@@ -59,6 +89,41 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             setLogs(data.logs);
         } catch (error) {
             console.error('Error fetching activity logs:', error);
+        }
+    };
+
+    const fetchWcWebhookLogs = async () => {
+        try {
+            const queryParams = new URLSearchParams();
+            if (limit) queryParams.append('limit', limit.toString());
+            if (filterType) {
+                if (filterType === 'order') {
+                    queryParams.append('type', 'order');
+                } else if (filterType === 'product') {
+                    queryParams.append('type', 'product');
+                }
+            }
+            if (filterSku) queryParams.append('sku', filterSku);
+            if (filterDateFrom) queryParams.append('dateFrom', filterDateFrom);
+            if (filterDateTo) queryParams.append('dateTo', filterDateTo);
+
+            const res = await fetch(`/api/webhook-logs?${queryParams.toString()}`);
+            if (!res.ok) throw new Error('Failed to fetch webhook logs');
+
+            const data = await res.json();
+            setWcLogs(data.logs || []);
+        } catch (error) {
+            console.error('Error fetching webhook logs:', error);
+        }
+    };
+
+    const fetchLogs = async () => {
+        try {
+            setRefreshing(true);
+            await Promise.all([
+                fetchManualLogs(),
+                fetchWcWebhookLogs()
+            ]);
         } finally {
             setLoading(false);
             setRefreshing(false);
@@ -67,31 +132,50 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
 
     useEffect(() => {
         fetchLogs();
-    }, [filterType, filterSku, filterDateFrom, filterDateTo]);
+    }, [filterType, filterSku, filterDateFrom, filterDateTo, activeTab]);
 
     const handleExport = () => {
-        const headers = ['Timestamp', 'User', 'Action', 'SKU', 'Success', 'Details', 'Error'];
+        const headers = activeTab === 'manual' 
+            ? ['Timestamp', 'User', 'Action', 'SKU', 'Success', 'Details', 'Error']
+            : ['Timestamp', 'Type', 'Event', 'Entity', 'SKU', 'Stock', 'Status', 'Combo Updates', 'Success', 'Error'];
+        
+        const data = activeTab === 'manual' ? logs : wcLogs;
+        
         const csvContent = [
             headers.join(','),
-            ...logs.map(log => {
-                // Get specific action label for export
-                let actionLabel = log.action;
-                if (log.action === 'procurement_update' && log.details) {
-                    const operation = log.details.operation;
-                    if (operation === 'add') actionLabel = 'Manual Stock In';
-                    else if (operation === 'subtract') actionLabel = 'Manual Stock Out';
-                    else if (operation === 'set') actionLabel = 'Reconciliation';
+            ...data.map((log: any) => {
+                if (activeTab === 'manual') {
+                    let actionLabel = log.action;
+                    if (log.action === 'procurement_update' && log.details) {
+                        const operation = log.details.operation;
+                        if (operation === 'add') actionLabel = 'Manual Stock In';
+                        else if (operation === 'subtract') actionLabel = 'Manual Stock Out';
+                        else if (operation === 'set') actionLabel = 'Reconciliation';
+                    }
+                    
+                    return [
+                        `"${formatDateTimeWithSecondsGMT8(log.created_at)}"`,
+                        `"${log.user_name || log.user_email || 'System'}"`,
+                        `"${actionLabel}"`,
+                        `"${log.affected_sku || ''}"`,
+                        log.success ? 'Yes' : 'No',
+                        `"${JSON.stringify(log.details).replace(/"/g, '""')}"`,
+                        `"${log.error_message || ''}"`
+                    ].join(',');
+                } else {
+                    return [
+                        `"${formatDateTimeWithSecondsGMT8(log.created_at)}"`,
+                        `"${log.webhook_type}"`,
+                        `"${log.webhook_event}"`,
+                        `"${log.entity_name || `#${log.entity_id}`}"`,
+                        `"${log.entity_sku || ''}"`,
+                        log.stock_quantity ?? '',
+                        `"${log.status || ''}"`,
+                        `"${JSON.stringify(log.combo_updates || []).replace(/"/g, '""')}"`,
+                        log.success ? 'Yes' : 'No',
+                        `"${log.error_message || ''}"`
+                    ].join(',');
                 }
-                
-                return [
-                    `"${formatDateTimeWithSecondsGMT8(log.created_at)}"`,
-                    `"${log.user_name || log.user_email}"`,
-                    `"${actionLabel}"`,
-                    `"${log.affected_sku || ''}"`,
-                    log.success ? 'Yes' : 'No',
-                    `"${JSON.stringify(log.details).replace(/"/g, '""')}"`,
-                    `"${log.error_message || ''}"`
-                ].join(',');
             })
         ].join('\n');
 
@@ -99,7 +183,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `activity-log-${format(new Date(), 'yyyy-MM-dd')}.csv`;
+        a.download = `${activeTab === 'manual' ? 'activity-log' : 'wc-webhook-log'}-${format(new Date(), 'yyyy-MM-dd')}.csv`;
         a.click();
         window.URL.revokeObjectURL(url);
     };
@@ -107,7 +191,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const getActionLabel = (log: ActivityLogEntry) => {
         const action = log.action;
         
-        // For procurement updates, check the operation type in details
         if (action === 'procurement_update' && log.details) {
             const operation = log.details.operation;
             switch (operation) {
@@ -128,102 +211,164 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     };
 
     const getActionColor = (log: ActivityLogEntry) => {
-        // For procurement updates, use different colors based on operation type
         if (log.action === 'procurement_update' && log.details) {
             const operation = log.details.operation;
             switch (operation) {
-                case 'add': return 'bg-green-100 text-green-800 border border-green-200'; // Manual Stock In - Green
-                case 'subtract': return 'bg-orange-100 text-orange-800 border border-orange-200'; // Manual Stock Out - Orange
-                case 'set': return 'bg-blue-100 text-blue-800 border border-blue-200'; // Reconciliation - Blue
+                case 'add': return 'bg-green-100 text-green-800 border border-green-200';
+                case 'subtract': return 'bg-orange-100 text-orange-800 border border-orange-200';
+                case 'set': return 'bg-blue-100 text-blue-800 border border-blue-200';
                 default: return 'bg-gray-100 text-gray-800';
             }
         }
         
-        // Other action types
         if (log.action.includes('sku')) return 'bg-purple-100 text-purple-800';
         if (log.action.includes('error')) return 'bg-red-100 text-red-800';
         if (log.action.includes('stock_take')) return 'bg-indigo-100 text-indigo-800';
-        if (log.action.includes('webhook')) return 'bg-cyan-100 text-cyan-800';
         return 'bg-gray-100 text-gray-800';
     };
+
+    const getWebhookEventLabel = (event: string) => {
+        if (event.includes('order.')) {
+            return event.replace('order.', 'Order ').replace('_', ' ').toUpperCase();
+        }
+        if (event.includes('product.')) {
+            return event.replace('product.', 'Product ').replace('_', ' ').toUpperCase();
+        }
+        return event.replace(/_/g, ' ').toUpperCase();
+    };
+
+    const getWebhookTypeColor = (type: string) => {
+        if (type === 'order') return 'bg-green-100 text-green-800';
+        if (type === 'product') return 'bg-blue-100 text-blue-800';
+        return 'bg-gray-100 text-gray-800';
+    };
+
+    const currentLogs = activeTab === 'manual' ? logs : wcLogs;
 
     return (
         <div className={`bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden ${compact ? '' : 'p-6'}`}>
             {!compact && (
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
-                    <div>
-                        <h2 className="text-xl font-bold text-gray-900">Activity Log</h2>
-                        <p className="text-sm text-gray-500 mt-1">Audit trail of all manual system changes</p>
+                <div className="flex flex-col gap-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-900">Activity Log</h2>
+                            <p className="text-sm text-gray-500 mt-1">
+                                {activeTab === 'manual' 
+                                    ? 'Audit trail of all manual system changes'
+                                    : 'Stock changes and triggers from WooCommerce (orders, reconciliations)'
+                                }
+                            </p>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                            <div className="relative">
+                                <select
+                                    value={filterType}
+                                    onChange={(e) => setFilterType(e.target.value)}
+                                    className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white"
+                                >
+                                    {activeTab === 'manual' ? (
+                                        <>
+                                            <option value="">All Actions</option>
+                                            <option value="procurement_update:add">Manual Stock In</option>
+                                            <option value="procurement_update:subtract">Manual Stock Out</option>
+                                            <option value="procurement_update:set">Reconciliation</option>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <option value="">All Types</option>
+                                            <option value="order">Orders</option>
+                                            <option value="product">Products</option>
+                                        </>
+                                    )}
+                                </select>
+                                <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                            </div>
+
+                            <div className="relative">
+                                <select
+                                    value={filterSku}
+                                    onChange={(e) => setFilterSku(e.target.value)}
+                                    className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white"
+                                >
+                                    <option value="">All SKUs</option>
+                                    {singleSkus.map((sku) => (
+                                        <option key={sku.sku} value={sku.sku}>
+                                            {sku.sku}
+                                        </option>
+                                    ))}
+                                </select>
+                                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                            </div>
+
+                            <input
+                                type="date"
+                                value={filterDateFrom}
+                                onChange={(e) => setFilterDateFrom(e.target.value)}
+                                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                                placeholder="From Date"
+                            />
+
+                            <input
+                                type="date"
+                                value={filterDateTo}
+                                onChange={(e) => setFilterDateTo(e.target.value)}
+                                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                                placeholder="To Date"
+                            />
+
+                            <button
+                                onClick={handleExport}
+                                className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
+                            >
+                                <Download size={16} />
+                                Export CSV
+                            </button>
+
+                            <button
+                                onClick={fetchLogs}
+                                disabled={refreshing}
+                                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+                                title="Refresh Logs"
+                            >
+                                <RefreshCw size={20} className={`${refreshing ? 'animate-spin' : ''}`} />
+                            </button>
+                        </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-2">
+                    {/* Tabs */}
+                    <div className="flex gap-2 border-b border-gray-200">
                         <button
-                            onClick={fetchLogs}
-                            disabled={refreshing}
-                            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
-                            title="Refresh Logs"
+                            onClick={() => setActiveTab('manual')}
+                            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
+                                activeTab === 'manual'
+                                    ? 'border-blue-500 text-blue-600'
+                                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                            }`}
                         >
-                            <RefreshCw size={20} className={`${refreshing ? 'animate-spin' : ''}`} />
+                            <div className="flex items-center gap-2">
+                                <User size={16} />
+                                HIS System
+                            </div>
                         </button>
-
-                        <div className="relative">
-                            <select
-                                value={filterType}
-                                onChange={(e) => setFilterType(e.target.value)}
-                                className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white"
-                            >
-                                <option value="">All Actions</option>
-                                <option value="procurement_update:add">Manual Stock In</option>
-                                <option value="procurement_update:subtract">Manual Stock Out</option>
-                                <option value="procurement_update:set">Reconciliation</option>
-                            </select>
-                            <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                        </div>
-
-                        <div className="relative">
-                            <select
-                                value={filterSku}
-                                onChange={(e) => setFilterSku(e.target.value)}
-                                className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white"
-                            >
-                                <option value="">All SKUs</option>
-                                {singleSkus.map((sku) => (
-                                    <option key={sku.sku} value={sku.sku}>
-                                        {sku.sku}
-                                    </option>
-                                ))}
-                            </select>
-                            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                        </div>
-
-                        <input
-                            type="date"
-                            value={filterDateFrom}
-                            onChange={(e) => setFilterDateFrom(e.target.value)}
-                            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                            placeholder="From Date"
-                        />
-
-                        <input
-                            type="date"
-                            value={filterDateTo}
-                            onChange={(e) => setFilterDateTo(e.target.value)}
-                            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                            placeholder="To Date"
-                        />
-
                         <button
-                            onClick={handleExport}
-                            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
+                            onClick={() => setActiveTab('woocommerce')}
+                            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
+                                activeTab === 'woocommerce'
+                                    ? 'border-blue-500 text-blue-600'
+                                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                            }`}
                         >
-                            <Download size={16} />
-                            Export CSV
+                            <div className="flex items-center gap-2">
+                                <Package size={16} />
+                                WooCommerce
+                            </div>
                         </button>
                     </div>
                 </div>
             )}
 
-            {loading && logs.length === 0 ? (
+            {loading && currentLogs.length === 0 ? (
                 <div className="flex justify-center items-center h-64">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
                 </div>
@@ -232,85 +377,187 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                     <table className="w-full text-left text-sm">
                         <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-100">
                             <tr>
-                                <th className="px-6 py-4">Time</th>
-                                <th className="px-6 py-4">User</th>
-                                <th className="px-6 py-4">Action</th>
-                                <th className="px-6 py-4">SKU</th>
-                                <th className="px-6 py-4">Details</th>
-                                <th className="px-6 py-4">Status</th>
+                                {activeTab === 'manual' ? (
+                                    <>
+                                        <th className="px-6 py-4">Time</th>
+                                        <th className="px-6 py-4">User</th>
+                                        <th className="px-6 py-4">Action</th>
+                                        <th className="px-6 py-4">SKU</th>
+                                        <th className="px-6 py-4">Details</th>
+                                        <th className="px-6 py-4">Status</th>
+                                    </>
+                                ) : (
+                                    <>
+                                        <th className="px-6 py-4">Time</th>
+                                        <th className="px-6 py-4">Type</th>
+                                        <th className="px-6 py-4">Event</th>
+                                        <th className="px-6 py-4">Entity</th>
+                                        <th className="px-6 py-4">SKU</th>
+                                        <th className="px-6 py-4">Stock</th>
+                                        <th className="px-6 py-4">Component Deductions</th>
+                                        <th className="px-6 py-4">Combo Updates</th>
+                                        <th className="px-6 py-4">Status</th>
+                                    </>
+                                )}
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50">
-                            {logs.length > 0 ? (
-                                logs.map((log) => (
-                                    <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
-                                        <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                                            {formatDateTimeWithSecondsGMT8(log.created_at)}
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <div className="flex items-center gap-3">
-                                                {log.user_picture ? (
-                                                    <img
-                                                        src={log.user_picture}
-                                                        alt={log.user_name}
-                                                        className="w-8 h-8 rounded-full border border-gray-100"
-                                                    />
-                                                ) : (
-                                                    <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-400">
-                                                        <User size={16} />
+                            {currentLogs.length > 0 ? (
+                                activeTab === 'manual' ? (
+                                    logs.map((log) => (
+                                        <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
+                                            <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                                {formatDateTimeWithSecondsGMT8(log.created_at)}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-3">
+                                                    {log.user_picture ? (
+                                                        <img
+                                                            src={log.user_picture}
+                                                            alt={log.user_name}
+                                                            className="w-8 h-8 rounded-full border border-gray-100"
+                                                        />
+                                                    ) : (
+                                                        <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-400">
+                                                            <User size={16} />
+                                                        </div>
+                                                    )}
+                                                    <div>
+                                                        <p className="font-medium text-gray-900">{log.user_name || 'System'}</p>
+                                                        <p className="text-xs text-gray-500">{log.user_email || ''}</p>
                                                     </div>
-                                                )}
-                                                <div>
-                                                    <p className="font-medium text-gray-900">{log.user_name}</p>
-                                                    <p className="text-xs text-gray-500">{log.user_email}</p>
                                                 </div>
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${getActionColor(log)}`}>
-                                                {getActionLabel(log)}
-                                            </span>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            {log.affected_sku ? (
-                                                <span className="font-mono text-sm font-medium text-gray-900 bg-gray-50 px-2 py-1 rounded">
-                                                    {log.affected_sku}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${getActionColor(log)}`}>
+                                                    {getActionLabel(log)}
                                                 </span>
-                                            ) : (
-                                                <span className="text-gray-400 text-xs">—</span>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <div className="max-w-xs truncate text-gray-600">
-                                                {log.action === 'procurement_update' && log.details ? (
-                                                    <span>
-                                                        {log.details.operation === 'add' ? 'Added' : log.details.operation === 'subtract' ? 'Deducted' : 'Set to'} <strong>{log.details.quantity}</strong> units
-                                                        {log.details.notes && <span className="text-gray-400 ml-1">- {log.details.notes}</span>}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {log.affected_sku ? (
+                                                    <span className="font-mono text-sm font-medium text-gray-900 bg-gray-50 px-2 py-1 rounded">
+                                                        {log.affected_sku}
                                                     </span>
                                                 ) : (
-                                                    JSON.stringify(log.details)
+                                                    <span className="text-gray-400 text-xs">—</span>
                                                 )}
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            {log.success ? (
-                                                <div className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
-                                                    <CheckCircle2 size={16} />
-                                                    Success
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="max-w-xs truncate text-gray-600">
+                                                    {log.action === 'procurement_update' && log.details ? (
+                                                        <span>
+                                                            {log.details.operation === 'add' ? 'Added' : log.details.operation === 'subtract' ? 'Deducted' : 'Set to'} <strong>{log.details.quantity}</strong> units
+                                                            {log.details.notes && <span className="text-gray-400 ml-1">- {log.details.notes}</span>}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="truncate">{JSON.stringify(log.details)}</span>
+                                                    )}
                                                 </div>
-                                            ) : (
-                                                <div className="flex items-center gap-1.5 text-red-600 text-xs font-medium" title={log.error_message}>
-                                                    <AlertCircle size={16} />
-                                                    Failed
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {log.success ? (
+                                                    <div className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
+                                                        <CheckCircle2 size={16} />
+                                                        Success
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center gap-1.5 text-red-600 text-xs font-medium" title={log.error_message}>
+                                                        <AlertCircle size={16} />
+                                                        Failed
+                                                    </div>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    ))
+                                ) : (
+                                    wcLogs.map((log) => (
+                                        <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
+                                            <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                                {formatDateTimeWithSecondsGMT8(log.created_at)}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getWebhookTypeColor(log.webhook_type)}`}>
+                                                    {log.webhook_type === 'order' ? <ShoppingCart size={12} className="mr-1" /> : <Package size={12} className="mr-1" />}
+                                                    {log.webhook_type}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <span className="text-gray-700 font-medium text-xs">
+                                                    {getWebhookEventLabel(log.webhook_event)}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="text-gray-900 font-medium">
+                                                    {log.entity_name || `#${log.entity_id}`}
                                                 </div>
-                                            )}
-                                        </td>
-                                    </tr>
-                                ))
+                                                {log.status && (
+                                                    <div className="text-xs text-gray-500">{log.status}</div>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {log.entity_sku && (
+                                                    <span className="text-gray-700 font-mono text-xs">{log.entity_sku}</span>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {log.stock_quantity !== null && log.stock_quantity !== undefined && (
+                                                    <span className="text-gray-700 font-medium">{log.stock_quantity}</span>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {log.details?.componentDeductions && Array.isArray(log.details.componentDeductions) && log.details.componentDeductions.length > 0 ? (
+                                                    <div className="max-w-xs">
+                                                        {log.details.componentDeductions.map((deduction: any, idx: number) => (
+                                                            <div key={idx} className="text-xs text-gray-600 mb-1">
+                                                                <span className="font-mono">{deduction.sku}</span>: 
+                                                                <span className="text-gray-400 ml-1">{deduction.previousStock}</span>
+                                                                <span className="mx-1">→</span>
+                                                                <span className="text-red-600 font-medium">{deduction.newStock}</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-gray-400 text-xs">—</span>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {log.combo_updates && Array.isArray(log.combo_updates) && log.combo_updates.length > 0 ? (
+                                                    <div className="max-w-xs">
+                                                        {log.combo_updates.map((update: any, idx: number) => (
+                                                            <div key={idx} className="text-xs text-gray-600 mb-1">
+                                                                <span className="font-mono">{update.sku}</span>: 
+                                                                {update.error ? (
+                                                                    <span className="text-red-600 ml-1">Error</span>
+                                                                ) : (
+                                                                    <span className="text-green-600 ml-1">→ {update.newStock}</span>
+                                                                )}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-gray-400 text-xs">—</span>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {log.success ? (
+                                                    <div className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
+                                                        <CheckCircle2 size={16} />
+                                                        Success
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center gap-1.5 text-red-600 text-xs font-medium" title={log.error_message}>
+                                                        <AlertCircle size={16} />
+                                                        Failed
+                                                    </div>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    ))
+                                )
                             ) : (
                                 <tr>
-                                    <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
-                                        No activity logs found matching your filters.
+                                    <td colSpan={activeTab === 'manual' ? 6 : 9} className="px-6 py-12 text-center text-gray-500">
+                                        No {activeTab === 'manual' ? 'activity' : 'webhook'} logs found matching your filters.
                                     </td>
                                 </tr>
                             )}

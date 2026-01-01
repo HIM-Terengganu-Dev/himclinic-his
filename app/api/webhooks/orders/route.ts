@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
-import { getAllComboSkus, getAllSingleSkus, logActivity } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
 export async function POST(request: Request) {
@@ -60,8 +60,12 @@ export async function POST(request: Request) {
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
         const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
 
-        // Calculate total deductions for each single SKU
+        // Track what needs to be deducted
+        // For combo SKUs, we need to manually deduct component single SKUs
+        // For direct single SKU orders, WooCommerce already deducted them
         const totalDeductions: Record<string, number> = {};
+        const singleSkuDeductions: Array<{ sku: string; quantity: number; wcProductId: number }> = [];
+        const comboSkusInOrder: Array<{ sku: string; quantity: number }> = [];
 
         for (const item of lineItems) {
             if (!item.sku) {
@@ -74,15 +78,17 @@ export async function POST(request: Request) {
 
             // Validate against database: Check if it's a single SKU
             if (singleSkuMap.has(sku)) {
-                // Direct single SKU deduction
+                // Direct single SKU order: WooCommerce already deducted stock
                 totalDeductions[sku] = (totalDeductions[sku] || 0) + quantity;
-                console.log(`✅ Found single SKU ${sku} in database, quantity: ${quantity}`);
+                console.log(`✅ Found single SKU ${sku} in database, quantity: ${quantity} (WC already deducted)`);
             } 
             // Validate against database: Check if it's a combo SKU
             else if (comboSkuMap.has(sku)) {
-                // Combo SKU: break down to component single SKUs from database
+                // Combo SKU: break down to component single SKUs and deduct them
                 const combo = comboSkuMap.get(sku);
                 if (!combo) continue;
+
+                comboSkusInOrder.push({ sku, quantity });
 
                 const components = Array.isArray(combo.components) 
                     ? combo.components 
@@ -103,8 +109,18 @@ export async function POST(request: Request) {
 
                     const deductedQty = comp.quantity * quantity;
                     totalDeductions[comp.sku] = (totalDeductions[comp.sku] || 0) + deductedQty;
+                    
+                    // Track component deduction for WooCommerce update
+                    const componentSkuData = singleSkuMap.get(comp.sku);
+                    if (componentSkuData && componentSkuData.woocommerce_product_id) {
+                        singleSkuDeductions.push({
+                            sku: comp.sku,
+                            quantity: deductedQty,
+                            wcProductId: componentSkuData.woocommerce_product_id
+                        });
+                    }
                 }
-                console.log(`✅ Found combo SKU ${sku} in database, breaking down to components`);
+                console.log(`✅ Found combo SKU ${sku} in database, breaking down to components - will deduct component stocks`);
             } 
             else {
                 // SKU not found in database - skip it
@@ -112,18 +128,65 @@ export async function POST(request: Request) {
             }
         }
 
-        // Note: WooCommerce automatically deducts stock when order status changes to 'processing'
-        // We don't need to deduct single SKU stock here - only recalculate combo SKU availability
-        
         if (Object.keys(totalDeductions).length === 0) {
             return NextResponse.json({ success: true, message: 'No valid SKUs found in order' });
         }
 
-        console.log(`Processing webhook for Order #${orderId}: Affected ${Object.keys(totalDeductions).length} single SKUs (WooCommerce already deducted stock)`);
+        // Step 1: Deduct component single SKU stocks for combo SKU orders
+        // WooCommerce doesn't know about component breakdown, so we need to deduct them
+        const singleSkuUpdates: Array<{ sku: string; previousStock: number; newStock: number }> = [];
+        
+        if (singleSkuDeductions.length > 0) {
+            console.log(`Deducting component single SKU stocks for ${singleSkuDeductions.length} component deductions`);
+            
+            // Group deductions by SKU (in case multiple combos use same component)
+            const deductionMap = new Map<string, number>();
+            const wcIdMap = new Map<string, number>();
+            
+            for (const deduction of singleSkuDeductions) {
+                deductionMap.set(deduction.sku, (deductionMap.get(deduction.sku) || 0) + deduction.quantity);
+                wcIdMap.set(deduction.sku, deduction.wcProductId);
+            }
 
-        // Recalculate and update combo SKU availability in WooCommerce
-        // WooCommerce has already deducted single SKU stock, so we just need to recalculate combos
-        // Note: allCombos already fetched above on line 57
+            // Deduct each component SKU in WooCommerce
+            for (const [sku, totalQty] of deductionMap.entries()) {
+                const wcProductId = wcIdMap.get(sku);
+                if (!wcProductId) continue;
+
+                try {
+                    // Get current stock
+                    const currentProduct = await getProduct(wcProductId);
+                    const currentStock = currentProduct.stock_quantity || 0;
+                    
+                    // Calculate new stock (deduct)
+                    const newStock = Math.max(0, currentStock - totalQty);
+                    
+                    // Update in WooCommerce
+                    await updateProductStock(wcProductId, newStock);
+                    
+                    singleSkuUpdates.push({
+                        sku,
+                        previousStock: currentStock,
+                        newStock
+                    });
+                    
+                    console.log(`✅ Deducted ${totalQty} from ${sku} (${currentStock} → ${newStock})`);
+                } catch (e: any) {
+                    console.error(`❌ Failed to deduct stock for component ${sku}:`, e.message);
+                }
+            }
+        }
+
+        console.log(`Processing webhook for Order #${orderId}: Affected ${Object.keys(totalDeductions).length} single SKUs`);
+        if (comboSkusInOrder.length > 0) {
+            console.log(`  - ${comboSkusInOrder.length} combo SKU(s) ordered (component stocks deducted)`);
+        }
+        if (singleSkuUpdates.length > 0) {
+            console.log(`  - ${singleSkuUpdates.length} component single SKU(s) deducted in WooCommerce`);
+        }
+
+        // Step 2: Recalculate and update combo SKU availability in WooCommerce
+        // Find all combos that use the affected single SKUs (including those we just deducted)
         const affectedCombos = allCombos.filter((c: any) => {
             const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
             return components.some((comp: any) => Object.keys(totalDeductions).includes(comp.sku));
@@ -132,16 +195,26 @@ export async function POST(request: Request) {
         const comboUpdates: Array<{ sku: string; newStock: number }> = [];
 
         if (affectedCombos.length > 0) {
-            // Build stock map: fetch current stock from WooCommerce (already deducted by WooCommerce)
+            console.log(`Recalculating ${affectedCombos.length} affected combo SKU(s)`);
+            
+            // Build stock map: fetch current stock from WooCommerce (after deductions)
             const stockMap: Record<string, number> = {};
 
-            // Get current stock for all affected single SKUs (WooCommerce already deducted)
+            // Use updated stock from singleSkuUpdates if available, otherwise fetch from WC
+            for (const update of singleSkuUpdates) {
+                stockMap[update.sku] = update.newStock; // Use the stock we just updated
+            }
+
+            // Get current stock for all affected single SKUs
             for (const [sku] of Object.entries(totalDeductions)) {
+                // Skip if we already have it from singleSkuUpdates
+                if (stockMap.hasOwnProperty(sku)) continue;
+                
                 const singleSku = singleSkuMap.get(sku);
                 if (singleSku && singleSku.woocommerce_product_id) {
                     try {
                         const p = await getProduct(singleSku.woocommerce_product_id);
-                        stockMap[sku] = p.stock_quantity || 0; // Current stock after WooCommerce deduction
+                        stockMap[sku] = p.stock_quantity || 0; // Current stock (WC deducted for direct orders)
                     } catch (e) {
                         console.warn(`Failed to fetch current stock for ${sku}`, e);
                         stockMap[sku] = 0;
@@ -198,26 +271,58 @@ export async function POST(request: Request) {
             }
         }
 
-        // Log Activity
-        await logActivity({
-            userId: 'system-webhook', // Special system user
-            action: 'webhook_order_processed',
-            entityType: 'order',
+        // Get IP address and user agent from request
+        const ipAddress = request.headers.get('x-forwarded-for') || 
+                         request.headers.get('x-real-ip') || 
+                         'unknown';
+        const userAgent = request.headers.get('user-agent') || 'unknown';
+
+        // Extract SKUs from line items for logging
+        const orderSkus = lineItems.map((item: any) => item.sku).filter(Boolean);
+        
+        // Log to WC Webhook Logs
+        await logWcWebhook({
+            webhookType: 'order',
+            webhookEvent: `order.${status}`,
             entityId: orderId,
+            entityName: `Order #${orderId}`,
+            status: status,
+            affectedSkus: orderSkus,
+            comboUpdates: comboUpdates.map(u => ({ 
+                sku: u.sku, 
+                newStock: u.newStock 
+            })),
             details: { 
                 orderId, 
-                status, 
+                status,
+                lineItems: lineItems.map((item: any) => ({
+                    sku: item.sku,
+                    name: item.name,
+                    quantity: item.quantity
+                })),
+                comboSkusOrdered: comboSkusInOrder,
+                componentDeductions: singleSkuUpdates.map(u => ({
+                    sku: u.sku,
+                    previousStock: u.previousStock,
+                    newStock: u.newStock
+                })),
                 affectedSingleSkus: Object.keys(totalDeductions),
-                note: 'WooCommerce automatically deducted single SKU stock. Webhook only updated combo SKU availability.',
-                comboUpdates: comboUpdates.map(u => u.sku)
+                note: comboSkusInOrder.length > 0 
+                    ? 'Combo SKU(s) ordered. System deducted component single SKU stocks and updated combo availability.'
+                    : 'Single SKU(s) ordered. WooCommerce deducted stock. System updated combo SKU availability.'
             },
+            ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
+            userAgent,
             success: true
         });
 
         return NextResponse.json({ 
             success: true, 
-            message: 'Combo SKU availability updated. Single SKU stock was already deducted by WooCommerce.',
+            message: comboSkusInOrder.length > 0
+                ? 'Combo SKU order processed: Component single SKU stocks deducted and combo availability updated.'
+                : 'Single SKU order processed: WooCommerce deducted stock and combo availability updated.',
             affectedSingleSkus: Object.keys(totalDeductions).length,
+            componentDeductions: singleSkuUpdates.length,
             comboUpdates: comboUpdates.length
         });
 

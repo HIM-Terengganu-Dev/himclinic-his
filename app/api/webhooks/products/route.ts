@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
-import { getAllComboSkus, getAllSingleSkus, logActivity } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook } from '@/lib/db/queries';
 
 export async function POST(request: Request) {
     console.log("!!! PRODUCT WEBHOOK HIT !!! Method:", request.method);
@@ -139,19 +139,35 @@ export async function POST(request: Request) {
             }
         }
 
-        // Log Activity
-        await logActivity({
-            userId: 'system-webhook', // Special system user
-            action: 'webhook_product_updated',
-            entityType: 'product',
+        // Get IP address and user agent from request
+        const ipAddress = request.headers.get('x-forwarded-for') || 
+                         request.headers.get('x-real-ip') || 
+                         'unknown';
+        const userAgent = request.headers.get('user-agent') || 'unknown';
+
+        // Log to WC Webhook Logs
+        await logWcWebhook({
+            webhookType: 'product',
+            webhookEvent: 'product.updated',
             entityId: productId,
+            entitySku: singleSku.sku,
+            entityName: payload.name || singleSku.name || singleSku.sku,
+            status: 'stock_reconciled',
+            stockQuantity: stockQuantity,
+            affectedSkus: [singleSku.sku],
+            comboUpdates: comboUpdates.map(u => ({ 
+                sku: u.sku, 
+                newStock: u.newStock 
+            })),
             details: { 
                 productId,
                 singleSku: singleSku.sku,
                 newStock: stockQuantity,
                 note: 'Product stock updated in WooCommerce. Combo SKU availability recalculated.',
-                comboUpdates: comboUpdates.map(u => u.sku)
+                comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock }))
             },
+            ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
+            userAgent,
             success: true
         });
 
