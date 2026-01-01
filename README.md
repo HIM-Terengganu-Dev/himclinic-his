@@ -69,19 +69,30 @@ The system listens to WooCommerce webhooks to automatically sync inventory chang
 
 ### Order Webhook (`/api/webhooks/orders`)
 
-**Event:** `order.processing` (paid orders ready for fulfillment)
+**Events:** 
+- `order.processing` (paid orders ready for fulfillment)
+- `order.cancelled` / `order.refunded` (order cancellation/refund)
 
-**Behavior:**
+**Processing Orders (`order.processing`):**
 1. Verifies webhook signature using HMAC SHA256
 2. Processes only orders with `processing` status
 3. For combo SKU orders:
-   - Deducts component single SKU stocks in WooCommerce
+   - Deducts component single SKU stocks in WooCommerce (HIS system handles this)
    - Recalculates affected combo SKU availability
    - Updates combo SKUs back to WooCommerce
 4. For single SKU orders:
-   - WooCommerce handles stock deduction automatically
+   - WooCommerce handles stock deduction automatically (marked as WC-side)
+   - System tracks the deduction for audit purposes
    - System recalculates and updates affected combo SKUs
-5. Logs all details (component deductions, combo updates) to `wc_webhook_logs` table
+5. Logs all details (component deductions with WC/HIS indicators, combo updates) to `wc_webhook_logs` table
+
+**Cancelled/Refunded Orders (`order.cancelled` / `order.refunded`):**
+1. Verifies webhook signature using HMAC SHA256
+2. Restores stock that was previously deducted:
+   - For combo SKU orders: Restores component single SKU stocks
+   - For single SKU orders: Restores direct single SKU stocks
+3. Recalculates affected combo SKU availability after restoration
+4. Logs all restoration details (component restorations, combo updates) to `wc_webhook_logs` table
 
 ### Webhook Security
 
@@ -183,7 +194,11 @@ WOOCOMMERCE_WEBHOOK_SECRET=your-webhook-secret
    - Create webhook for `product.updated` → `POST /api/webhooks/products`
    - Use the same secret from `WOOCOMMERCE_WEBHOOK_SECRET` for both
 
-## Activity Log Tabs
+## Activity Log
+
+The Activity Log provides comprehensive audit trails for all inventory changes:
+
+### Activity Log Tabs
 
 The Activity Log page has two tabs:
 
@@ -199,10 +214,31 @@ Shows all manual activities performed by users through the system:
 ### WooCommerce Tab
 
 Shows all stock changes triggered from WooCommerce:
-- Order processing (with component deductions for combo SKUs)
+
+**Order Events:**
+- **Processing Orders**: Shows all SKUs ordered, component deductions (with WC/HIS indicators), and combo updates
+  - Component Deductions display:
+    - Red text: Stock deducted (previousStock → newStock)
+    - "(WC)" indicator: Deducted by WooCommerce (for single SKU orders)
+    - No indicator: Deducted by HIS system (for combo SKU component breakdowns)
+- **Cancelled/Refunded Orders**: Shows component restorations (green text) and combo updates
+  - Component Restorations display:
+    - Green text: Stock restored (previousStock → newStock)
+    - "(WC)" indicator: Restored by WooCommerce (for single SKU orders)
+    - No indicator: Restored by HIS system (for combo SKU component breakdowns)
+
+**Product Events:**
 - Product stock updates/reconciliations
-- Combo SKU recalculations
-- All webhook events with full details
+- Shows the single SKU that was edited and its new stock quantity
+- Displays affected combo SKU recalculations
+
+**Display Fields:**
+- **SKU Column**: 
+  - Orders: Shows all SKUs ordered (comma/newline separated)
+  - Products: Shows the single SKU that was edited
+- **Stock Column**: Shows stock quantity (for product events)
+- **Component Deductions/Restorations**: Shows detailed breakdown of stock changes
+- **Combo Updates**: Shows recalculated combo SKU availability
 
 ## Combo SKU Calculation
 

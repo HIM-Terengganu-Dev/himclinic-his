@@ -271,9 +271,24 @@ CREATE TABLE inventory_management.wc_webhook_logs (
 
 **Purpose:** Tracks all stock changes and triggers from WooCommerce side (orders, product reconciliations, manual stock updates in WooCommerce). Displayed in the "WooCommerce" tab of the Activity Log.
 
+**Key Fields:**
+- `entity_sku`: SKU that was ordered/edited (for quick reference)
+- `affected_skus`: JSONB array of all SKUs affected
+- `stock_quantity`: Stock quantity after change (for product events)
+- `details`: JSONB containing:
+  - `lineItems`: Order line items (what customer ordered)
+  - `componentDeductions`: Stock deductions with WC/HIS indicators
+  - `componentRestorations`: Stock restorations for cancelled orders
+  - `comboUpdates`: Recalculated combo SKU availability
+
 **To create this table**, run the migration:
 ```bash
 psql 'postgresql://...' -f database/migration_wc_webhook_logs.sql
+```
+
+**To backfill missing SKU and stock data** for existing records:
+```bash
+psql 'postgresql://...' -f database/migration_backfill_wc_webhook_sku.sql
 ```
 
 ## Useful Queries
@@ -339,20 +354,60 @@ WHERE components::text LIKE '%him1%';
 ### View WooCommerce Webhook Logs
 
 ```sql
--- Recent webhook events
+-- Recent webhook events with component deductions/restorations
 SELECT 
     created_at,
     webhook_type,
     webhook_event,
-    entity_name,
+    entity_id,
     entity_sku,
     status,
     stock_quantity,
+    affected_skus,
+    jsonb_array_length(details->'componentDeductions') as component_deductions_count,
+    jsonb_array_length(details->'componentRestorations') as component_restorations_count,
+    jsonb_array_length(details->'comboUpdates') as combo_updates_count,
     success,
     error_message
 FROM inventory_management.wc_webhook_logs
 ORDER BY created_at DESC
 LIMIT 20;
+```
+
+### View Order Cancellations with Component Restorations
+
+```sql
+SELECT 
+    entity_id as order_id,
+    entity_sku,
+    created_at,
+    details->'componentRestorations' as component_restorations,
+    details->'comboUpdates' as combo_updates
+FROM inventory_management.wc_webhook_logs
+WHERE webhook_type = 'order'
+AND webhook_event IN ('order.cancelled', 'order.refunded')
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+### View Component Deductions by SKU
+
+```sql
+SELECT 
+    wwl.entity_id as order_id,
+    wwl.created_at,
+    deduction->>'sku' as component_sku,
+    (deduction->>'previousStock')::integer as previous_stock,
+    (deduction->>'newStock')::integer as new_stock,
+    CASE 
+        WHEN deduction->>'isWcSide' = 'true' THEN 'WooCommerce'
+        ELSE 'HIS System'
+    END as deducted_by
+FROM inventory_management.wc_webhook_logs wwl,
+     jsonb_array_elements(wwl.details->'componentDeductions') as deduction
+WHERE wwl.webhook_type = 'order'
+AND wwl.webhook_event = 'order.processing'
+ORDER BY wwl.created_at DESC;
 
 -- View order webhooks
 SELECT * FROM inventory_management.wc_webhook_logs 

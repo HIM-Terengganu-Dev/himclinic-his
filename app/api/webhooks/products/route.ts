@@ -12,13 +12,20 @@ export async function POST(request: Request) {
         const headersList = Object.fromEntries(request.headers.entries());
         console.log('Product Webhook Headers:', JSON.stringify(headersList, null, 2));
 
-        const signature = request.headers.get('x-wc-webhook-signature') || request.headers.get('X-WC-Webhook-Signature');
+        // Try multiple header name variations (WooCommerce uses X-WC-Webhook-Signature)
+        const signature = request.headers.get('x-wc-webhook-signature') || 
+                         request.headers.get('X-WC-Webhook-Signature') ||
+                         request.headers.get('X-WC-WEBHOOK-SIGNATURE') ||
+                         (headersList as any)['x-wc-webhook-signature'] ||
+                         (headersList as any)['X-WC-Webhook-Signature'];
         const secret = process.env.WOOCOMMERCE_WEBHOOK_SECRET;
 
         if (!secret || !signature) {
             console.error('Product Webhook Error: Missing secret or signature', {
                 hasSecret: !!secret,
-                hasSignature: !!signature
+                hasSignature: !!signature,
+                allHeaderKeys: Object.keys(headersList),
+                signatureHeaderPresent: 'x-wc-webhook-signature' in headersList || 'X-WC-Webhook-Signature' in headersList
             });
             return NextResponse.json({ error: 'Missing secret or signature' }, { status: 401 });
         }
@@ -37,10 +44,8 @@ export async function POST(request: Request) {
 
         const payload = JSON.parse(bodyText);
         const productId = payload.id;
-        const stockQuantity = payload.stock_quantity;
+        let stockQuantity = payload.stock_quantity;
         const sku = payload.sku;
-
-        console.log(`Product Webhook: Product ID ${productId}, SKU: ${sku}, Stock: ${stockQuantity}`);
 
         // Get SKU mappings from database (source of truth)
         const allSingleSkus = await getAllSingleSkus();
@@ -58,6 +63,22 @@ export async function POST(request: Request) {
             });
         }
 
+        // If stock_quantity is not in payload or is null/undefined, fetch it from WooCommerce
+        if (stockQuantity === null || stockQuantity === undefined) {
+            try {
+                const currentProduct = await getProduct(productId);
+                stockQuantity = currentProduct.stock_quantity ?? 0;
+                console.log(`Product Webhook: Stock quantity not in payload, fetched from WC: ${stockQuantity}`);
+            } catch (e: any) {
+                console.error(`Failed to fetch stock quantity for product ${productId}:`, e.message);
+                stockQuantity = 0;
+            }
+        }
+
+        // Ensure stockQuantity is a number
+        stockQuantity = typeof stockQuantity === 'number' ? stockQuantity : (parseFloat(String(stockQuantity)) || 0);
+
+        console.log(`Product Webhook: Product ID ${productId}, SKU: ${sku}, Stock: ${stockQuantity}`);
         console.log(`✅ Found single SKU ${singleSku.sku} (WC ID: ${productId}) - Stock updated to ${stockQuantity}`);
 
         // Find all combo SKUs that use this single SKU

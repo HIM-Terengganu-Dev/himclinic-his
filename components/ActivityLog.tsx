@@ -495,8 +495,42 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                 )}
                                             </td>
                                             <td className="px-6 py-4">
-                                                {log.entity_sku && (
+                                                {/* For orders: Show all SKUs from affected_skus (what customer ordered) */}
+                                                {log.webhook_type === 'order' && log.affected_skus && Array.isArray(log.affected_skus) && log.affected_skus.length > 0 ? (
+                                                    <div className="font-mono text-xs text-gray-700">
+                                                        {log.affected_skus.map((sku: string, idx: number) => (
+                                                            <span key={idx}>
+                                                                {sku}
+                                                                {idx < log.affected_skus!.length - 1 && (
+                                                                    <>
+                                                                        ,<br />
+                                                                    </>
+                                                                )}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                ) : log.webhook_type === 'product' && log.entity_sku ? (
+                                                    /* For products: Show entitySku (the SKU that was manually edited) */
                                                     <span className="text-gray-700 font-mono text-xs">{log.entity_sku}</span>
+                                                ) : log.affected_skus && Array.isArray(log.affected_skus) && log.affected_skus.length > 0 ? (
+                                                    /* Fallback for orders: Show affected_skus if available */
+                                                    <div className="font-mono text-xs text-gray-700">
+                                                        {log.affected_skus.map((sku: string, idx: number) => (
+                                                            <span key={idx}>
+                                                                {sku}
+                                                                {idx < log.affected_skus!.length - 1 && (
+                                                                    <>
+                                                                        ,<br />
+                                                                    </>
+                                                                )}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                ) : log.entity_sku ? (
+                                                    /* Fallback for products: Show entity_sku */
+                                                    <span className="text-gray-700 font-mono text-xs">{log.entity_sku}</span>
+                                                ) : (
+                                                    <span className="text-gray-400 text-xs">—</span>
                                                 )}
                                             </td>
                                             <td className="px-6 py-4">
@@ -505,14 +539,41 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                 )}
                                             </td>
                                             <td className="px-6 py-4">
-                                                {log.details?.componentDeductions && Array.isArray(log.details.componentDeductions) && log.details.componentDeductions.length > 0 ? (
+                                                {/* Show component restorations for cancelled orders */}
+                                                {log.details?.componentRestorations && Array.isArray(log.details.componentRestorations) && log.details.componentRestorations.length > 0 ? (
+                                                    <div className="max-w-xs">
+                                                        {log.details.componentRestorations.map((restoration: any, idx: number) => (
+                                                            <div key={idx} className="text-xs text-gray-600 mb-1">
+                                                                <div className="flex items-center gap-1">
+                                                                    <span className="font-mono">{restoration.sku}</span>: 
+                                                                    <span className="text-gray-400 ml-1">{restoration.previousStock}</span>
+                                                                    <span className="mx-1">→</span>
+                                                                    <span className="text-green-600 font-medium">{restoration.newStock}</span>
+                                                                    {restoration.isWcSide && (
+                                                                        <span className="text-xs text-blue-600 ml-1" title="Restored by WooCommerce">
+                                                                            (WC)
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : log.details?.componentDeductions && Array.isArray(log.details.componentDeductions) && log.details.componentDeductions.length > 0 ? (
+                                                    /* Show component deductions for processing orders */
                                                     <div className="max-w-xs">
                                                         {log.details.componentDeductions.map((deduction: any, idx: number) => (
                                                             <div key={idx} className="text-xs text-gray-600 mb-1">
-                                                                <span className="font-mono">{deduction.sku}</span>: 
-                                                                <span className="text-gray-400 ml-1">{deduction.previousStock}</span>
-                                                                <span className="mx-1">→</span>
-                                                                <span className="text-red-600 font-medium">{deduction.newStock}</span>
+                                                                <div className="flex items-center gap-1">
+                                                                    <span className="font-mono">{deduction.sku}</span>: 
+                                                                    <span className="text-gray-400 ml-1">{deduction.previousStock}</span>
+                                                                    <span className="mx-1">→</span>
+                                                                    <span className="text-red-600 font-medium">{deduction.newStock}</span>
+                                                                    {deduction.isWcSide && (
+                                                                        <span className="text-xs text-blue-600 ml-1" title="Deducted by WooCommerce">
+                                                                            (WC)
+                                                                        </span>
+                                                                    )}
+                                                                </div>
                                                             </div>
                                                         ))}
                                                     </div>

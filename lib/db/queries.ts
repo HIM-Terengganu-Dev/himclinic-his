@@ -340,6 +340,58 @@ export async function logWcWebhook(data: {
     );
 }
 
+export async function getWcWebhookLogByOrderId(orderId: number, webhookEvent?: string) {
+    let sql = `
+        SELECT 
+            *,
+            to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
+        FROM inventory_management.wc_webhook_logs
+        WHERE webhook_type = 'order'
+        AND entity_id = $1
+    `;
+    const params: any[] = [orderId];
+    
+    if (webhookEvent) {
+        sql += ` AND webhook_event = $2`;
+        params.push(webhookEvent);
+    }
+    
+    sql += ` ORDER BY created_at DESC LIMIT 1`;
+    
+    const result = await query(sql, params);
+    if (result.rows.length === 0) {
+        return null;
+    }
+    
+    const row = result.rows[0];
+    if (row.created_at_gmt8) {
+        row.created_at = row.created_at_gmt8;
+    }
+    // Parse JSONB fields
+    if (row.affected_skus && typeof row.affected_skus === 'string') {
+        try {
+            row.affected_skus = JSON.parse(row.affected_skus);
+        } catch (e) {
+            row.affected_skus = [];
+        }
+    }
+    if (row.combo_updates && typeof row.combo_updates === 'string') {
+        try {
+            row.combo_updates = JSON.parse(row.combo_updates);
+        } catch (e) {
+            row.combo_updates = [];
+        }
+    }
+    if (row.details && typeof row.details === 'string') {
+        try {
+            row.details = JSON.parse(row.details);
+        } catch (e) {
+            row.details = {};
+        }
+    }
+    return row;
+}
+
 export async function getWcWebhookLogs(filters: {
     webhookType?: 'order' | 'product';
     webhookEvent?: string;
