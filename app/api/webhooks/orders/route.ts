@@ -392,10 +392,46 @@ export async function POST(request: Request) {
 
 /**
  * Handle order cancellation: Restore stock that was deducted
+ * Only restores stock if:
+ * 1. Order was previously in "processing" status (stock was deducted)
+ * 2. Order date is after January 1, 2026
  */
 async function handleOrderCancellation(orderId: number, payload: any, request?: Request) {
     try {
         console.log(`🔄 Processing cancellation for Order #${orderId}`);
+
+        // Check if order was previously in "processing" status (stock was deducted)
+        const previousProcessingLog = await getWcWebhookLogByOrderId(orderId, 'order.processing');
+        if (!previousProcessingLog) {
+            console.log(`⏭️ Order #${orderId} was never in "processing" status - no stock to restore`);
+            return NextResponse.json({ 
+                success: true, 
+                message: 'Order was never in processing status - no stock was deducted, skipping restoration' 
+            });
+        }
+
+        // Check if order date is after January 1, 2026
+        const orderDate = payload.date_created || payload.date_created_gmt;
+        if (!orderDate) {
+            console.warn(`⚠️ Order #${orderId} has no date_created - skipping restoration`);
+            return NextResponse.json({ 
+                success: true, 
+                message: 'Order has no creation date - skipping restoration' 
+            });
+        }
+
+        const orderDateObj = new Date(orderDate);
+        const cutoffDate = new Date('2026-01-01T00:00:00Z');
+        
+        if (orderDateObj < cutoffDate) {
+            console.log(`⏭️ Order #${orderId} created before Jan 1, 2026 (${orderDate}) - skipping restoration`);
+            return NextResponse.json({ 
+                success: true, 
+                message: `Order created before Jan 1, 2026 - skipping restoration (order date: ${orderDate})` 
+            });
+        }
+
+        console.log(`✅ Order #${orderId} meets restoration criteria: was in processing status and created after Jan 1, 2026`);
 
         // Get line items from cancelled order
         const lineItems = payload.line_items;
@@ -459,8 +495,9 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
         }
 
         // Step 1: Restore stock for component single SKUs (combo orders)
-        const restoredUpdates: Array<{ sku: string; previousStock: number; newStock: number; restoredQty: number }> = [];
-        const wcSideRestorations: Array<{ sku: string; previousStock: number; newStock: number; restoredQty: number }> = [];
+        // These are always restored by HIS system (since HIS deducted them for combo orders)
+        const restoredUpdates: Array<{ sku: string; previousStock: number; newStock: number; restoredQty: number; changeMadeBy: 'HIS' }> = [];
+        const wcSideRestorations: Array<{ sku: string; previousStock: number; newStock: number; restoredQty: number; changeMadeBy: 'HIS' | 'WC' }> = [];
 
         // Restore combo component stocks (HIS system deducted these)
         if (componentRestorations.length > 0) {
@@ -489,7 +526,8 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         sku,
                         previousStock: currentStock,
                         newStock,
-                        restoredQty: totalQty
+                        restoredQty: totalQty,
+                        changeMadeBy: 'HIS' // HIS system always restores combo component stocks
                     });
 
                     console.log(`✅ Restored ${totalQty} to ${sku} (${currentStock} → ${newStock})`);
@@ -499,7 +537,9 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             }
         }
 
-        // Step 2: Restore direct single SKU stocks (WC-side)
+        // Step 2: Track single SKU stock restorations (WC handles these automatically)
+        // For single SKU orders, WooCommerce automatically restores stock on cancellation
+        // HIS system only needs to read and track what WC did - no updateProductStock() call needed
         const directSingleSkus = Object.keys(totalRestorations).filter(sku => {
             return !componentRestorations.some(r => r.sku === sku);
         });
@@ -509,22 +549,52 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             const singleSku = singleSkuMap.get(sku);
             if (singleSku && singleSku.woocommerce_product_id) {
                 try {
+                    // Get current stock from WooCommerce (WC already restored it)
                     const currentProduct = await getProduct(singleSku.woocommerce_product_id);
                     const currentStock = currentProduct.stock_quantity || 0;
-                    const newStock = currentStock + restoreQty; // Restore stock
-
-                    await updateProductStock(singleSku.woocommerce_product_id, newStock);
-
+                    
+                    // Get previous stock from processing webhook log
+                    let previousStockFromLog: number | null = null;
+                    let originalChangeMadeBy: 'HIS' | 'WC' = 'WC'; // Default to WC for single SKU orders
+                    
+                    if (previousProcessingLog && previousProcessingLog.details) {
+                        const details = typeof previousProcessingLog.details === 'string' 
+                            ? JSON.parse(previousProcessingLog.details) 
+                            : previousProcessingLog.details;
+                        const componentDeductions = details.componentDeductions || [];
+                        const deduction = componentDeductions.find((d: any) => d.sku === sku);
+                        if (deduction) {
+                            previousStockFromLog = deduction.previousStock;
+                            // Determine who made the original deduction
+                            originalChangeMadeBy = deduction.isWcSide === true ? 'WC' : 'HIS';
+                        }
+                    }
+                    
+                    // Calculate what the stock was before WC restored it
+                    const stockBeforeRestore = previousStockFromLog !== null 
+                        ? previousStockFromLog 
+                        : currentStock - restoreQty;
+                    
+                    // WC already restored the stock - just track it
+                    // No updateProductStock() call needed for single SKU orders
+                    const changeMadeBy = 'WC'; // WC handles restoration for single SKU orders
+                    const actualPreviousStock = stockBeforeRestore;
+                    const actualNewStock = currentStock;
+                    const actualRestoredQty = currentStock - stockBeforeRestore;
+                    
+                    console.log(`📝 WC restored ${actualRestoredQty} to ${sku} (${actualPreviousStock} → ${actualNewStock}) - WC made change (single SKU order)`);
+                    
                     wcSideRestorations.push({
                         sku,
-                        previousStock: currentStock,
-                        newStock,
-                        restoredQty: restoreQty
-                    });
+                        previousStock: actualPreviousStock,
+                        newStock: actualNewStock,
+                        restoredQty: actualRestoredQty,
+                        changeMadeBy: changeMadeBy, // WC made the restoration
+                        originalDeductionBy: originalChangeMadeBy // Who made the original deduction
+                    } as any);
 
-                    console.log(`✅ Restored ${restoreQty} to ${sku} (${currentStock} → ${newStock}) - WC side`);
                 } catch (e: any) {
-                    console.error(`❌ Failed to restore stock for ${sku}:`, e.message);
+                    console.error(`❌ Failed to read stock for ${sku}:`, e.message);
                 }
             }
         }
@@ -643,20 +713,24 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         previousStock: r.previousStock,
                         newStock: r.newStock,
                         restoredQty: r.restoredQty,
-                        isWcSide: true
+                        changeMadeBy: r.changeMadeBy, // Who made the restoration (always 'HIS')
+                        originalDeductionBy: (r as any).originalDeductionBy || 'WC', // Who made the original deduction
+                        isWcSide: (r as any).originalDeductionBy === 'WC' // Legacy field for backward compatibility
                     })),
                     ...restoredUpdates.map(r => ({
                         sku: r.sku,
                         previousStock: r.previousStock,
                         newStock: r.newStock,
                         restoredQty: r.restoredQty,
-                        isWcSide: false
+                        changeMadeBy: r.changeMadeBy, // Always 'HIS' for combo components
+                        originalDeductionBy: 'HIS', // Combo components are always deducted by HIS
+                        isWcSide: false // Legacy field
                     }))
                 ],
                 comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
                 note: comboSkusInOrder.length > 0
-                    ? 'Order cancelled. System restored component single SKU stocks and updated combo availability.'
-                    : 'Order cancelled. Stock restored (WC side). System updated combo SKU availability.'
+                    ? 'Order cancelled. HIS system restored component single SKU stocks (from combo orders) and updated combo availability. Single SKU stocks restored by WC.'
+                    : 'Order cancelled. Single SKU stocks restored by WC automatically. System updated combo SKU availability.'
             },
             ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
             userAgent,
@@ -666,8 +740,8 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
         return NextResponse.json({
             success: true,
             message: 'Order cancellation processed: Stock restored',
-            restoredComponents: restoredUpdates.length,
-            restoredSingleSkus: wcSideRestorations.length,
+            restoredComponents: restoredUpdates.length, // Combo component stocks restored by HIS
+            restoredSingleSkus: wcSideRestorations.length, // Single SKU stocks restored by WC (tracked only)
             comboUpdates: comboUpdates.length
         });
 
