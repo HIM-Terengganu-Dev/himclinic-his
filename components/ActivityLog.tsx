@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import { formatDateTimeWithSecondsGMT8 } from '@/lib/utils/date';
@@ -52,6 +52,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [filterDateTo, setFilterDateTo] = useState('');
     const [filterOrderStatus, setFilterOrderStatus] = useState('');
     const [singleSkus, setSingleSkus] = useState<Array<{ sku: string; name: string }>>([]);
+    const topScrollRef = useRef<HTMLDivElement>(null);
+    const bottomScrollRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         // Fetch single SKUs for filter dropdown
@@ -135,6 +137,54 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     useEffect(() => {
         fetchLogs();
     }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab]);
+
+    // Sync scroll between top and bottom scrollbars
+    useEffect(() => {
+        const topScroll = topScrollRef.current;
+        const bottomScroll = bottomScrollRef.current;
+        
+        if (!topScroll || !bottomScroll) return;
+
+        // Function to sync table width to top scrollbar
+        const syncWidth = () => {
+            const table = bottomScroll.querySelector('table');
+            if (table) {
+                const tableWidth = table.scrollWidth;
+                const topScrollContent = topScroll.querySelector('div');
+                if (topScrollContent) {
+                    topScrollContent.style.minWidth = `${tableWidth}px`;
+                }
+            }
+        };
+
+        // Initial sync and on resize
+        syncWidth();
+        const resizeObserver = new ResizeObserver(syncWidth);
+        if (bottomScroll) {
+            resizeObserver.observe(bottomScroll);
+        }
+
+        const handleTopScroll = () => {
+            if (bottomScroll) {
+                bottomScroll.scrollLeft = topScroll.scrollLeft;
+            }
+        };
+
+        const handleBottomScroll = () => {
+            if (topScroll) {
+                topScroll.scrollLeft = bottomScroll.scrollLeft;
+            }
+        };
+
+        topScroll.addEventListener('scroll', handleTopScroll);
+        bottomScroll.addEventListener('scroll', handleBottomScroll);
+
+        return () => {
+            resizeObserver.disconnect();
+            topScroll.removeEventListener('scroll', handleTopScroll);
+            bottomScroll.removeEventListener('scroll', handleBottomScroll);
+        };
+    }, [logs.length, wcLogs.length, activeTab]);
 
     const handleExport = () => {
         const headers = activeTab === 'manual' 
@@ -397,9 +447,23 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
                 </div>
             ) : (
-                <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                        <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-100">
+                <div className="relative">
+                    {/* Top horizontal scrollbar (above header) */}
+                    <div 
+                        ref={topScrollRef}
+                        className="overflow-x-auto overflow-y-hidden mb-0 border-b border-gray-200 rounded-t-lg"
+                        style={{ height: '17px' }}
+                    >
+                        <div style={{ height: '1px', minWidth: '100%' }}></div>
+                    </div>
+                    
+                    {/* Table container with both scrollbars */}
+                    <div 
+                        ref={bottomScrollRef}
+                        className="overflow-auto max-h-[600px] border-x border-b border-gray-200 rounded-b-lg"
+                    >
+                        <table className="w-full text-left text-sm">
+                        <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-100 sticky top-0 z-10">
                             <tr>
                                 {activeTab === 'manual' ? (
                                     <>
@@ -659,7 +723,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 </tr>
                             )}
                         </tbody>
-                    </table>
+                        </table>
+                    </div>
                 </div>
             )}
         </div>
