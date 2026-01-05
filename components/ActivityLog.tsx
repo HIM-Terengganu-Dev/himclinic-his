@@ -659,8 +659,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     <span className="text-gray-400 ml-1">{restoration.previousStock}</span>
                                                                     <span className="mx-1">→</span>
                                                                     <span className="text-green-600 font-medium">{restoration.newStock}</span>
-                                                                    {restoration.isWcSide && (
-                                                                        <span className="text-xs text-blue-600 ml-1" title="Restored by WooCommerce">
+                                                                    {!restoration.hisWrote && (
+                                                                        <span className="text-xs text-blue-600 ml-1" title="Restored by WooCommerce (HIS only tracked)">
                                                                             (WC)
                                                                         </span>
                                                                     )}
@@ -678,8 +678,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     <span className="text-gray-400 ml-1">{deduction.previousStock}</span>
                                                                     <span className="mx-1">→</span>
                                                                     <span className="text-red-600 font-medium">{deduction.newStock}</span>
-                                                                    {deduction.isWcSide && (
-                                                                        <span className="text-xs text-blue-600 ml-1" title="Deducted by WooCommerce">
+                                                                    {!deduction.hisWrote && (
+                                                                        <span className="text-xs text-blue-600 ml-1" title="Deducted by WooCommerce (HIS only tracked)">
                                                                             (WC)
                                                                         </span>
                                                                     )}

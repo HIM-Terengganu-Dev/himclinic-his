@@ -384,13 +384,15 @@ export async function POST(request: Request) {
                         previousStock: u.previousStock,
                         newStock: u.newStock,
                         deductedQty: u.deductedQty,
-                        isWcSide: true
+                        isWcSide: true, // WC deducted, HIS only tracked (no write)
+                        hisWrote: false // HIS did NOT write
                     })),
                     ...singleSkuUpdates.map(u => ({
                         sku: u.sku,
                         previousStock: u.previousStock,
                         newStock: u.newStock,
-                        isWcSide: false
+                        isWcSide: false, // HIS deducted (wrote)
+                        hisWrote: true // HIS wrote this change
                     }))
                 ],
                 affectedSingleSkus: Object.keys(totalDeductions),
@@ -604,23 +606,31 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         ? previousStockFromLog 
                         : currentStock - restoreQty;
                     
-                    // WC already restored the stock - just track it
-                    // No updateProductStock() call needed for single SKU orders
-                    const changeMadeBy = 'WC'; // WC handles restoration for single SKU orders
-                    const actualPreviousStock = stockBeforeRestore;
-                    const actualNewStock = currentStock;
+                    // Calculate actual restoration quantity
                     const actualRestoredQty = currentStock - stockBeforeRestore;
                     
-                    console.log(`📝 WC restored ${actualRestoredQty} to ${sku} (${actualPreviousStock} → ${actualNewStock}) - WC made change (single SKU order)`);
-                    
-                    wcSideRestorations.push({
-                        sku,
-                        previousStock: actualPreviousStock,
-                        newStock: actualNewStock,
-                        restoredQty: actualRestoredQty,
-                        changeMadeBy: changeMadeBy, // WC made the restoration
-                        originalDeductionBy: originalChangeMadeBy // Who made the original deduction
-                    } as any);
+                    // Only log if there was an actual change (restoredQty > 0)
+                    // If WC didn't restore (e.g., 80 → 80), there's no change to track
+                    if (actualRestoredQty > 0) {
+                        // WC already restored the stock - just track it
+                        // No updateProductStock() call needed for single SKU orders
+                        const changeMadeBy = 'WC'; // WC handles restoration for single SKU orders
+                        const actualPreviousStock = stockBeforeRestore;
+                        const actualNewStock = currentStock;
+                        
+                        console.log(`📝 WC restored ${actualRestoredQty} to ${sku} (${actualPreviousStock} → ${actualNewStock}) - WC made change (single SKU order)`);
+                        
+                        wcSideRestorations.push({
+                            sku,
+                            previousStock: actualPreviousStock,
+                            newStock: actualNewStock,
+                            restoredQty: actualRestoredQty,
+                            changeMadeBy: changeMadeBy, // WC made the restoration
+                            originalDeductionBy: originalChangeMadeBy // Who made the original deduction
+                        } as any);
+                    } else {
+                        console.log(`⏭️ Skipping log for ${sku}: No restoration occurred (${stockBeforeRestore} → ${currentStock}, restoredQty: ${actualRestoredQty})`);
+                    }
 
                 } catch (e: any) {
                     console.error(`❌ Failed to read stock for ${sku}:`, e.message);
@@ -742,9 +752,10 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         previousStock: r.previousStock,
                         newStock: r.newStock,
                         restoredQty: r.restoredQty,
-                        changeMadeBy: r.changeMadeBy, // Who made the restoration (always 'HIS')
+                        changeMadeBy: r.changeMadeBy, // Who made the restoration (always 'WC' for single SKUs)
                         originalDeductionBy: (r as any).originalDeductionBy || 'WC', // Who made the original deduction
-                        isWcSide: (r as any).originalDeductionBy === 'WC' // Legacy field for backward compatibility
+                        isWcSide: true, // WC restored, HIS only tracked (no write)
+                        hisWrote: false // HIS did NOT write
                     })),
                     ...restoredUpdates.map(r => ({
                         sku: r.sku,
@@ -753,7 +764,8 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         restoredQty: r.restoredQty,
                         changeMadeBy: r.changeMadeBy, // Always 'HIS' for combo components
                         originalDeductionBy: 'HIS', // Combo components are always deducted by HIS
-                        isWcSide: false // Legacy field
+                        isWcSide: false, // HIS restored (wrote)
+                        hisWrote: true // HIS wrote this change
                     }))
                 ],
                 comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
