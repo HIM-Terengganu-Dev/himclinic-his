@@ -409,61 +409,72 @@ export async function getWcWebhookLogs(filters: {
     dateTo?: string;
     orderStatus?: string;
 }) {
-    let sql = `
-        SELECT 
-            *,
-            to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
-        FROM inventory_management.wc_webhook_logs
-        WHERE 1=1
-    `;
+    // Build WHERE clause for both count and data queries
+    let whereClause = `WHERE 1=1`;
     const params: any[] = [];
     let pIdx = 1;
 
     if (filters.webhookType) {
-        sql += ` AND webhook_type = $${pIdx++}`;
+        whereClause += ` AND webhook_type = $${pIdx++}`;
         params.push(filters.webhookType);
     }
 
     if (filters.webhookEvent) {
-        sql += ` AND webhook_event = $${pIdx++}`;
+        whereClause += ` AND webhook_event = $${pIdx++}`;
         params.push(filters.webhookEvent);
     }
 
     if (filters.entitySku) {
-        sql += ` AND entity_sku = $${pIdx++}`;
+        whereClause += ` AND entity_sku = $${pIdx++}`;
         params.push(filters.entitySku);
     }
 
     if (filters.dateFrom) {
-        sql += ` AND created_at >= $${pIdx++}`;
+        whereClause += ` AND created_at >= $${pIdx++}`;
         params.push(filters.dateFrom);
     }
 
     if (filters.dateTo) {
-        sql += ` AND created_at <= $${pIdx++}`;
+        whereClause += ` AND created_at <= $${pIdx++}`;
         params.push(filters.dateTo);
     }
 
     if (filters.orderStatus) {
-        sql += ` AND status = $${pIdx++}`;
+        whereClause += ` AND status = $${pIdx++}`;
         params.push(filters.orderStatus);
     }
 
-    sql += ` ORDER BY created_at DESC`;
+    // Get total count
+    const countSql = `SELECT COUNT(*) as total FROM inventory_management.wc_webhook_logs ${whereClause}`;
+    const countResult = await query(countSql, params);
+    const total = parseInt(countResult.rows[0].total);
+
+    // Get paginated data
+    let dataSql = `
+        SELECT 
+            *,
+            to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
+        FROM inventory_management.wc_webhook_logs
+        ${whereClause}
+        ORDER BY created_at DESC
+    `;
+
+    const dataParams = [...params];
+    let dataPIdx = params.length + 1;
 
     if (filters.limit) {
-        sql += ` LIMIT $${pIdx++}`;
-        params.push(filters.limit);
+        dataSql += ` LIMIT $${dataPIdx++}`;
+        dataParams.push(filters.limit);
     }
 
     if (filters.offset) {
-        sql += ` OFFSET $${pIdx++}`;
-        params.push(filters.offset);
+        dataSql += ` OFFSET $${dataPIdx++}`;
+        dataParams.push(filters.offset);
     }
 
-    const result = await query(sql, params);
+    const result = await query(dataSql, dataParams);
     // Replace created_at with GMT+8 version if available
-    return result.rows.map(row => {
+    const rows = result.rows.map(row => {
         if (row.created_at_gmt8) {
             row.created_at = row.created_at_gmt8;
         }
@@ -491,6 +502,8 @@ export async function getWcWebhookLogs(filters: {
         }
         return row;
     });
+
+    return { rows, total };
 }
 
 /**

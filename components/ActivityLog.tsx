@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import { formatDateTimeWithSecondsGMT8 } from '@/lib/utils/date';
-import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2, Package, ShoppingCart } from 'lucide-react';
+import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface ActivityLogEntry {
     id: number;
@@ -52,6 +52,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [filterDateTo, setFilterDateTo] = useState('');
     const [filterOrderStatus, setFilterOrderStatus] = useState('');
     const [singleSkus, setSingleSkus] = useState<Array<{ sku: string; name: string }>>([]);
+    const [wcCurrentPage, setWcCurrentPage] = useState(1);
+    const [wcTotalCount, setWcTotalCount] = useState(0);
     const topScrollRef = useRef<HTMLDivElement>(null);
     const bottomScrollRef = useRef<HTMLDivElement>(null);
 
@@ -99,6 +101,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         try {
             const queryParams = new URLSearchParams();
             if (limit) queryParams.append('limit', limit.toString());
+            const offset = (wcCurrentPage - 1) * (limit || 20);
+            queryParams.append('offset', offset.toString());
             if (filterType) {
                 if (filterType === 'order') {
                     queryParams.append('type', 'order');
@@ -116,6 +120,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
 
             const data = await res.json();
             setWcLogs(data.logs || []);
+            setWcTotalCount(data.total || 0);
         } catch (error) {
             console.error('Error fetching webhook logs:', error);
         }
@@ -134,9 +139,14 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         }
     };
 
+    // Reset to page 1 when filters change
+    useEffect(() => {
+        setWcCurrentPage(1);
+    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab]);
+
     useEffect(() => {
         fetchLogs();
-    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab]);
+    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab, wcCurrentPage]);
 
     // Sync scroll between top and bottom scrollbars
     useEffect(() => {
@@ -725,6 +735,83 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         </tbody>
                         </table>
                     </div>
+                    
+                    {/* Pagination controls for WooCommerce tab */}
+                    {activeTab === 'woocommerce' && wcTotalCount > (limit || 20) && (
+                        <div className="mt-4 flex items-center justify-between border-t border-gray-200 pt-4">
+                            <div className="text-sm text-gray-600">
+                                Showing {((wcCurrentPage - 1) * (limit || 20)) + 1} to {Math.min(wcCurrentPage * (limit || 20), wcTotalCount)} of {wcTotalCount} entries
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setWcCurrentPage(prev => Math.max(1, prev - 1))}
+                                    disabled={wcCurrentPage === 1}
+                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                                        wcCurrentPage === 1
+                                            ? 'border-gray-200 text-gray-400 cursor-not-allowed'
+                                            : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                                    }`}
+                                >
+                                    <div className="flex items-center gap-1">
+                                        <ChevronLeft size={16} />
+                                        Previous
+                                    </div>
+                                </button>
+                                
+                                <div className="flex items-center gap-1">
+                                    {Array.from({ length: Math.ceil(wcTotalCount / (limit || 20)) }, (_, i) => i + 1)
+                                        .filter(page => {
+                                            const totalPages = Math.ceil(wcTotalCount / (limit || 20));
+                                            // Show first page, last page, current page, and pages around current
+                                            return page === 1 || 
+                                                   page === totalPages || 
+                                                   (page >= wcCurrentPage - 1 && page <= wcCurrentPage + 1);
+                                        })
+                                        .map((page, idx, arr) => {
+                                            const totalPages = Math.ceil(wcTotalCount / (limit || 20));
+                                            const showEllipsisBefore = idx > 0 && arr[idx - 1] < page - 1;
+                                            const showEllipsisAfter = idx < arr.length - 1 && arr[idx + 1] > page + 1;
+                                            
+                                            return (
+                                                <div key={page} className="flex items-center gap-1">
+                                                    {showEllipsisBefore && (
+                                                        <span className="px-2 text-gray-400">...</span>
+                                                    )}
+                                                    <button
+                                                        onClick={() => setWcCurrentPage(page)}
+                                                        className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                                                            wcCurrentPage === page
+                                                                ? 'border-blue-500 bg-blue-50 text-blue-600'
+                                                                : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                                                        }`}
+                                                    >
+                                                        {page}
+                                                    </button>
+                                                    {showEllipsisAfter && (
+                                                        <span className="px-2 text-gray-400">...</span>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                </div>
+                                
+                                <button
+                                    onClick={() => setWcCurrentPage(prev => Math.min(Math.ceil(wcTotalCount / (limit || 20)), prev + 1))}
+                                    disabled={wcCurrentPage >= Math.ceil(wcTotalCount / (limit || 20))}
+                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                                        wcCurrentPage >= Math.ceil(wcTotalCount / (limit || 20))
+                                            ? 'border-gray-200 text-gray-400 cursor-not-allowed'
+                                            : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                                    }`}
+                                >
+                                    <div className="flex items-center gap-1">
+                                        Next
+                                        <ChevronRight size={16} />
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

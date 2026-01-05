@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
         const dateTo = searchParams.get('dateTo') || undefined;
         const orderStatus = searchParams.get('orderStatus') || undefined;
 
-        const logs = await getWcWebhookLogs({
+        const result = await getWcWebhookLogs({
             webhookType,
             webhookEvent,
             limit,
@@ -30,7 +30,12 @@ export async function GET(req: NextRequest) {
             orderStatus
         });
 
-        return NextResponse.json({ logs });
+        return NextResponse.json({ 
+            logs: result.rows,
+            total: result.total,
+            limit,
+            offset
+        });
     } catch (error) {
         console.error('Error fetching webhook logs:', error);
         return NextResponse.json(
