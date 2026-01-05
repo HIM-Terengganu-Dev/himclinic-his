@@ -106,6 +106,7 @@ export async function createProcurementUpdate(data: {
     newQuantity?: number;
     notes?: string;
     returnCondition?: 'lost' | 'damaged' | 'good';
+    orderId?: number;
     createdBy: number;
 }) {
     // Validate operation value
@@ -129,10 +130,10 @@ export async function createProcurementUpdate(data: {
         
         const result = await client.query(
             `INSERT INTO inventory_management.procurement_updates
-       (single_sku_id, operation, quantity, previous_quantity, new_quantity, notes, return_condition, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (single_sku_id, operation, quantity, previous_quantity, new_quantity, notes, return_condition, order_id, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-            [data.singleSkuId, data.operation, data.quantity, data.previousQuantity || null, data.newQuantity || null, notesValue, data.returnCondition || null, data.createdBy]
+            [data.singleSkuId, data.operation, data.quantity, data.previousQuantity || null, data.newQuantity || null, notesValue, data.returnCondition || null, data.orderId || null, data.createdBy]
         );
 
         // Also log to activity_logs
@@ -149,6 +150,7 @@ export async function createProcurementUpdate(data: {
             newQuantity: entry.new_quantity,
             notes: entry.notes,
             returnCondition: entry.return_condition || null,
+            orderId: entry.order_id || null,
             createdBy: entry.created_by,
             createdAt: entry.created_at
         };

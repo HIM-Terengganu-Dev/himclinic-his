@@ -480,6 +480,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         Return: {log.details.returnCondition.charAt(0).toUpperCase() + log.details.returnCondition.slice(1)}
                                                                     </span>
                                                                 )}
+                                                                {log.details.orderId && (
+                                                                    <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800" title="WooCommerce Order ID">
+                                                                        Order #{log.details.orderId}
+                                                                    </span>
+                                                                )}
                                                             </span>
                                                             {log.details.notes && (
                                                                 <div className="text-xs text-gray-400">{log.details.notes}</div>

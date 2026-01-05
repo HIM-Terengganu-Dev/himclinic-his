@@ -98,19 +98,19 @@ export async function POST(request: Request) {
 
     // 7. Log to Database (Procurement History & Activity Log)
     try {
-      const notesWithOrder = orderId 
-        ? (notes ? `${notes} (Order #${orderId})` : `Order #${orderId}`)
-        : notes;
+      // Parse orderId to integer if provided
+      const orderIdInt = orderId ? parseInt(String(orderId)) : undefined;
       
-      console.log(`📝 Logging refund/return to DB: SKU=${sku}, Condition=${condition}, Quantity=${qty}, UserId=${userId}`);
+      console.log(`📝 Logging refund/return to DB: SKU=${sku}, Condition=${condition}, Quantity=${qty}, OrderId=${orderIdInt || 'none'}, UserId=${userId}`);
       const procurementRecord = await createProcurementUpdate({
         singleSkuId: singleSku.id,
         operation: 'add', // Always 'add' for refund/return
         quantity: qty,
         previousQuantity: currentWooStock,
         newQuantity,
-        notes: notesWithOrder,
+        notes: notes || undefined,
         returnCondition: condition as 'lost' | 'damaged' | 'good',
+        orderId: orderIdInt,
         createdBy: userId
       });
       console.log(`✅ Successfully logged refund/return: ID=${procurementRecord.id}, Condition=${condition}`);
