@@ -169,7 +169,27 @@ export async function POST(request: Request) {
                     console.log(`📝 Tracked WC-side deduction for ${sku}: ${previousStock} → ${currentStock} (deducted ${deductedQty})`);
                 } catch (e: any) {
                     console.error(`❌ Failed to fetch stock for WC-side deduction tracking ${sku}:`, e.message);
+                    // Even if fetch fails, still track it as WC-side since WC already deducted it
+                    // Use deductedQty as fallback for previousStock calculation
+                    wcSideDeductions.push({
+                        sku,
+                        previousStock: deductedQty, // Fallback: assume previous was at least the deducted amount
+                        newStock: 0, // Fallback: unknown current stock
+                        deductedQty,
+                        isWcSide: true
+                    });
+                    console.log(`⚠️ Tracked WC-side deduction for ${sku} with fallback values (fetch failed)`);
                 }
+            } else {
+                // SKU not found in map or missing WC product ID - still track as WC-side
+                console.warn(`⚠️ SKU ${sku} not found in singleSkuMap or missing WC product ID, but tracking as WC-side deduction`);
+                wcSideDeductions.push({
+                    sku,
+                    previousStock: deductedQty, // Fallback
+                    newStock: 0, // Fallback
+                    deductedQty,
+                    isWcSide: true
+                });
             }
         }
 
@@ -220,11 +240,12 @@ export async function POST(request: Request) {
         }
 
         console.log(`Processing webhook for Order #${orderId}: Affected ${Object.keys(totalDeductions).length} single SKUs`);
+        console.log(`  - Direct single SKUs (WC-side): ${wcSideDeductions.length}`, wcSideDeductions.map(d => d.sku));
         if (comboSkusInOrder.length > 0) {
             console.log(`  - ${comboSkusInOrder.length} combo SKU(s) ordered (component stocks deducted)`);
         }
         if (singleSkuUpdates.length > 0) {
-            console.log(`  - ${singleSkuUpdates.length} component single SKU(s) deducted in WooCommerce`);
+            console.log(`  - ${singleSkuUpdates.length} component single SKU(s) deducted by HIS system:`, singleSkuUpdates.map(d => d.sku));
         }
 
         // Step 2: Recalculate and update combo SKU availability in WooCommerce
