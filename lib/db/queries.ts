@@ -105,6 +105,7 @@ export async function createProcurementUpdate(data: {
     previousQuantity?: number;
     newQuantity?: number;
     notes?: string;
+    returnCondition?: 'lost' | 'damaged' | 'good';
     createdBy: number;
 }) {
     // Validate operation value
@@ -128,10 +129,10 @@ export async function createProcurementUpdate(data: {
         
         const result = await client.query(
             `INSERT INTO inventory_management.procurement_updates
-       (single_sku_id, operation, quantity, previous_quantity, new_quantity, notes, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (single_sku_id, operation, quantity, previous_quantity, new_quantity, notes, return_condition, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-            [data.singleSkuId, data.operation, data.quantity, data.previousQuantity || null, data.newQuantity || null, notesValue, data.createdBy]
+            [data.singleSkuId, data.operation, data.quantity, data.previousQuantity || null, data.newQuantity || null, notesValue, data.returnCondition || null, data.createdBy]
         );
 
         // Also log to activity_logs
@@ -147,18 +148,22 @@ export async function createProcurementUpdate(data: {
             previousQuantity: entry.previous_quantity,
             newQuantity: entry.new_quantity,
             notes: entry.notes,
+            returnCondition: entry.return_condition || null,
             createdBy: entry.created_by,
             createdAt: entry.created_at
         };
+        
+        // Determine action type based on return condition
+        const action = data.returnCondition ? 'refund_return' : 'procurement_update';
         
         try {
             await client.query(
                 `INSERT INTO inventory_management.activity_logs
            (user_id, action, entity_type, entity_id, details, success)
-           VALUES ($1, 'procurement_update', 'procurement_update', $2, $3, true)`,
-                [data.createdBy, entry.id, JSON.stringify(details)]
+           VALUES ($1, $2, 'procurement_update', $3, $4, true)`,
+                [data.createdBy, action, entry.id, JSON.stringify(details)]
             );
-            console.log(`✅ Activity log entry created for procurement update ID=${entry.id}`);
+            console.log(`✅ Activity log entry created for ${action} ID=${entry.id}`);
         } catch (activityLogError: any) {
             // If activity log insert fails, log the error but don't rollback the procurement update
             // The procurement update is the primary record, activity log is secondary
@@ -400,6 +405,7 @@ export async function getWcWebhookLogs(filters: {
     offset?: number;
     dateFrom?: string;
     dateTo?: string;
+    orderStatus?: string;
 }) {
     let sql = `
         SELECT 
@@ -434,6 +440,11 @@ export async function getWcWebhookLogs(filters: {
     if (filters.dateTo) {
         sql += ` AND created_at <= $${pIdx++}`;
         params.push(filters.dateTo);
+    }
+
+    if (filters.orderStatus) {
+        sql += ` AND status = $${pIdx++}`;
+        params.push(filters.orderStatus);
     }
 
     sql += ` ORDER BY created_at DESC`;

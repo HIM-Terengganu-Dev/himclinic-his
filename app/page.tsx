@@ -2,9 +2,10 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSession, signOut } from 'next-auth/react';
-import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, ClipboardCheck, CheckCircle } from 'lucide-react';
+import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, ClipboardCheck, CheckCircle, ArrowLeftCircle } from 'lucide-react';
 import InventoryDashboard from '@/components/InventoryDashboard';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
+import ReturnRefund from '@/components/ReturnRefund';
 import ActivityLog from '@/components/ActivityLog';
 import SkuManagement from '@/components/SkuManagement';
 import LoginPage from '@/components/LoginPage';
@@ -12,7 +13,7 @@ import { InventoryStock, ComboAvailability } from '@/types/inventory';
 
 export default function Home() {
   const { data: session, status } = useSession();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'activity' | 'sku'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'return-refund' | 'activity' | 'sku'>('dashboard');
   const [inventory, setInventory] = useState<InventoryStock>({});
   const [comboAvailability, setComboAvailability] = useState<ComboAvailability[]>([]);
   const [singleSkuList, setSingleSkuList] = useState<Array<{ sku: string; name: string; id?: number }>>([]);
@@ -402,6 +403,18 @@ export default function Home() {
                 {activeTab === 'procurement' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
 
+              <button
+                onClick={() => setActiveTab('return-refund')}
+                className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'return-refund'
+                  ? 'text-orange-600 bg-orange-50/50'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+              >
+                <ArrowLeftCircle size={18} />
+                Refund/Return
+                {activeTab === 'return-refund' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-orange-600" />}
+              </button>
+
               {/* SKU Management tab hidden from UI but backend code remains */}
               {/* {isAdmin && (
                 <button
@@ -459,6 +472,10 @@ export default function Home() {
 
             {activeTab === 'procurement' && (
               <ProcurementUpdate onStockUpdated={fetchInventory} />
+            )}
+
+            {activeTab === 'return-refund' && (
+              <ReturnRefund onStockUpdated={fetchInventory} />
             )}
 
             {activeTab === 'activity' && (

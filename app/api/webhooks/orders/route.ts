@@ -41,7 +41,8 @@ export async function POST(request: Request) {
         const status = payload.status;
 
         // Handle order cancellation: restore stock
-        if (status === 'cancelled' || status === 'refunded') {
+        // Note: refunded orders do NOT automatically restore stock - staff must manually QC returned items first
+        if (status === 'cancelled') {
             return await handleOrderCancellation(orderId, payload, request);
         }
 

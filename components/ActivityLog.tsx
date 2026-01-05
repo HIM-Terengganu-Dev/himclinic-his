@@ -50,6 +50,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [filterSku, setFilterSku] = useState('');
     const [filterDateFrom, setFilterDateFrom] = useState('');
     const [filterDateTo, setFilterDateTo] = useState('');
+    const [filterOrderStatus, setFilterOrderStatus] = useState('');
     const [singleSkus, setSingleSkus] = useState<Array<{ sku: string; name: string }>>([]);
 
     useEffect(() => {
@@ -106,6 +107,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             if (filterSku) queryParams.append('sku', filterSku);
             if (filterDateFrom) queryParams.append('dateFrom', filterDateFrom);
             if (filterDateTo) queryParams.append('dateTo', filterDateTo);
+            if (filterOrderStatus) queryParams.append('orderStatus', filterOrderStatus);
 
             const res = await fetch(`/api/webhook-logs?${queryParams.toString()}`);
             if (!res.ok) throw new Error('Failed to fetch webhook logs');
@@ -132,12 +134,12 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
 
     useEffect(() => {
         fetchLogs();
-    }, [filterType, filterSku, filterDateFrom, filterDateTo, activeTab]);
+    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab]);
 
     const handleExport = () => {
         const headers = activeTab === 'manual' 
             ? ['Timestamp', 'User', 'Action', 'SKU', 'Success', 'Details', 'Error']
-            : ['Timestamp', 'Type', 'Event', 'Entity', 'SKU', 'Stock', 'Status', 'Combo Updates', 'Success', 'Error'];
+            : ['Timestamp', 'Type', 'Event', 'Entity', 'SKU', 'Status', 'Combo Updates', 'Success', 'Error'];
         
         const data = activeTab === 'manual' ? logs : wcLogs;
         
@@ -169,7 +171,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         `"${log.webhook_event}"`,
                         `"${log.entity_name || `#${log.entity_id}`}"`,
                         `"${log.entity_sku || ''}"`,
-                        log.stock_quantity ?? '',
                         `"${log.status || ''}"`,
                         `"${JSON.stringify(log.combo_updates || []).replace(/"/g, '""')}"`,
                         log.success ? 'Yes' : 'No',
@@ -191,6 +192,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const getActionLabel = (log: ActivityLogEntry) => {
         const action = log.action;
         
+        if (action === 'refund_return') {
+            return 'Refund/Return';
+        }
+        
         if (action === 'procurement_update' && log.details) {
             const operation = log.details.operation;
             switch (operation) {
@@ -211,6 +216,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     };
 
     const getActionColor = (log: ActivityLogEntry) => {
+        if (log.action === 'refund_return') {
+            return 'bg-orange-100 text-orange-800 border border-orange-200';
+        }
+        
         if (log.action === 'procurement_update' && log.details) {
             const operation = log.details.operation;
             switch (operation) {
@@ -284,6 +293,21 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 </select>
                                 <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                             </div>
+
+                            {activeTab === 'woocommerce' && (filterType === '' || filterType === 'order') && (
+                                <div className="relative">
+                                    <select
+                                        value={filterOrderStatus}
+                                        onChange={(e) => setFilterOrderStatus(e.target.value)}
+                                        className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white"
+                                    >
+                                        <option value="">All Order Statuses</option>
+                                        <option value="processing">Processing</option>
+                                        <option value="cancelled">Cancelled</option>
+                                    </select>
+                                    <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                                </div>
+                            )}
 
                             <div className="relative">
                                 <select
@@ -393,7 +417,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                         <th className="px-6 py-4">Event</th>
                                         <th className="px-6 py-4">Entity</th>
                                         <th className="px-6 py-4">SKU</th>
-                                        <th className="px-6 py-4">Stock</th>
                                         <th className="px-6 py-4">Component Deductions</th>
                                         <th className="px-6 py-4">Combo Updates</th>
                                         <th className="px-6 py-4">Status</th>
@@ -444,11 +467,24 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                             </td>
                                             <td className="px-6 py-4">
                                                 <div className="max-w-xs truncate text-gray-600">
-                                                    {log.action === 'procurement_update' && log.details ? (
-                                                        <span>
-                                                            {log.details.operation === 'add' ? 'Added' : log.details.operation === 'subtract' ? 'Deducted' : 'Set to'} <strong>{log.details.quantity}</strong> units
-                                                            {log.details.notes && <span className="text-gray-400 ml-1">- {log.details.notes}</span>}
-                                                        </span>
+                                                    {(log.action === 'procurement_update' || log.action === 'refund_return') && log.details ? (
+                                                        <div className="space-y-1">
+                                                            <span>
+                                                                {log.details.operation === 'add' ? 'Added' : log.details.operation === 'subtract' ? 'Deducted' : 'Set to'} <strong>{log.details.quantity}</strong> units
+                                                                {log.details.returnCondition && (
+                                                                    <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                                                        log.details.returnCondition === 'good' ? 'bg-green-100 text-green-800' :
+                                                                        log.details.returnCondition === 'damaged' ? 'bg-orange-100 text-orange-800' :
+                                                                        'bg-red-100 text-red-800'
+                                                                    }`}>
+                                                                        Return: {log.details.returnCondition.charAt(0).toUpperCase() + log.details.returnCondition.slice(1)}
+                                                                    </span>
+                                                                )}
+                                                            </span>
+                                                            {log.details.notes && (
+                                                                <div className="text-xs text-gray-400">{log.details.notes}</div>
+                                                            )}
+                                                        </div>
                                                     ) : (
                                                         <span className="truncate">{JSON.stringify(log.details)}</span>
                                                     )}
@@ -534,11 +570,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                 )}
                                             </td>
                                             <td className="px-6 py-4">
-                                                {log.stock_quantity !== null && log.stock_quantity !== undefined && (
-                                                    <span className="text-gray-700 font-medium">{log.stock_quantity}</span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
                                                 {/* Show component restorations for cancelled orders */}
                                                 {log.details?.componentRestorations && Array.isArray(log.details.componentRestorations) && log.details.componentRestorations.length > 0 ? (
                                                     <div className="max-w-xs">
@@ -617,7 +648,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 )
                             ) : (
                                 <tr>
-                                    <td colSpan={activeTab === 'manual' ? 6 : 9} className="px-6 py-12 text-center text-gray-500">
+                                    <td colSpan={activeTab === 'manual' ? 6 : 8} className="px-6 py-12 text-center text-gray-500">
                                         No {activeTab === 'manual' ? 'activity' : 'webhook'} logs found matching your filters.
                                     </td>
                                 </tr>

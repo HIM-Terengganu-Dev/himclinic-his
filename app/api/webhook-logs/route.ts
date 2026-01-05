@@ -17,6 +17,7 @@ export async function GET(req: NextRequest) {
         const entitySku = searchParams.get('sku') || undefined;
         const dateFrom = searchParams.get('dateFrom') || undefined;
         const dateTo = searchParams.get('dateTo') || undefined;
+        const orderStatus = searchParams.get('orderStatus') || undefined;
 
         const logs = await getWcWebhookLogs({
             webhookType,
@@ -25,7 +26,8 @@ export async function GET(req: NextRequest) {
             offset,
             entitySku,
             dateFrom,
-            dateTo
+            dateTo,
+            orderStatus
         });
 
         return NextResponse.json({ logs });
