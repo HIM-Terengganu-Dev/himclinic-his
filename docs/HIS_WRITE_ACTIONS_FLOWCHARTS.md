@@ -100,8 +100,17 @@ The HIS system writes to WooCommerce in the following scenarios:
 - ✅ **Cancellation:** Restore component single SKU stocks (combo orders) + Update combo availability
 
 **Notes:**
-- Single SKU orders: WooCommerce handles deduction/restoration automatically. HIS only tracks.
-- Cancellation: Only restores if order was previously in "processing" status AND created after Jan 1, 2026.
+- **Single SKU orders:** WooCommerce handles deduction/restoration automatically. HIS only tracks these changes (marked as `isWcSide: true` in activity logs).
+- **Combo SKU orders:** 
+  - **Combo SKU format:** Combo SKUs are stored and processed as single strings (e.g., "kom/tad5(30tab)+tad20(4tab)"). The "+" character is part of the SKU string, NOT a separator. Do NOT split combo SKUs by "+".
+  - **WooCommerce behavior:** WooCommerce does NOT deduct component stocks for combo SKUs because WC doesn't know about combo breakdowns. WC only sees the combo SKU as a single product.
+  - **HIS responsibility:** HIS system must deduct ALL component stocks, even if a component is also a standalone single SKU that exists independently.
+  - **Component tracking:** All combo component deductions/restorations are marked as HIS-side (`isWcSide: false`), not WC-side. They will NOT show "(WC)" label in activity logs.
+  - **Example:** When combo SKU "kom/tad5(30tab)+tad20(4tab)" is ordered:
+    - WC does NOT deduct any component stocks
+    - HIS deducts "tad5/10tab" (3x quantity) - marked as HIS-side
+    - HIS deducts "tad20/4tab" (1x quantity) - marked as HIS-side, even though "tad20/4tab" exists as a standalone single SKU
+- **Cancellation:** Only restores if order was previously in "processing" status AND created after Jan 1, 2026.
 
 ---
 
@@ -432,8 +441,13 @@ All user-triggered writes:
 
 ## Notes
 
-- **Single SKU Orders:** WooCommerce handles stock deduction/restoration automatically. HIS only tracks these changes.
-- **Combo SKU Orders:** HIS system must handle component stock changes because WooCommerce doesn't know about combo breakdowns.
+- **Single SKU Orders:** WooCommerce handles stock deduction/restoration automatically. HIS only tracks these changes (marked as `isWcSide: true` in activity logs).
+- **Combo SKU Orders:** 
+  - Combo SKUs are stored and processed as single strings (e.g., "kom/tad5(30tab)+tad20(4tab)"). The "+" is part of the SKU string, not a separator.
+  - WooCommerce does NOT deduct component stocks for combo SKUs because WC doesn't know about combo breakdowns.
+  - HIS system must handle ALL component stock changes, even if a component is also a standalone single SKU.
+  - All combo component deductions/restorations are marked as HIS-side (`isWcSide: false`), not WC-side.
+  - Example: When "kom/tad5(30tab)+tad20(4tab)" is ordered, HIS deducts both "tad5/10tab" and "tad20/4tab" components, even though "tad20/4tab" exists independently as a single SKU.
 - **Combo Availability:** Always recalculated after any single SKU stock change to ensure accuracy.
 - **Source of Truth:** WooCommerce is the source of truth for stock quantities. HIS reads from WC before making updates.
 

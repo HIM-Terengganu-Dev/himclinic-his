@@ -91,6 +91,10 @@ export async function POST(request: Request) {
             // Validate against database: Check if it's a combo SKU
             else if (comboSkuMap.has(sku)) {
                 // Combo SKU: break down to component single SKUs and deduct them
+                // IMPORTANT: WooCommerce does NOT deduct component stocks for combo SKUs.
+                // HIS system must deduct ALL components, even if a component is also a standalone single SKU.
+                // Example: "kom/tad5(30tab)+tad20(4tab)" is one combo SKU. When ordered, WC doesn't deduct
+                // "tad20/4tab" even though it exists as a single SKU. HIS must deduct it as a combo component.
                 const combo = comboSkuMap.get(sku);
                 if (!combo) continue;
 
@@ -101,6 +105,7 @@ export async function POST(request: Request) {
                     : JSON.parse(combo.components || '[]');
 
                 // Calculate deductions for each component
+                // All combo components are deducted by HIS (isWcSide: false), not WC
                 for (const comp of components) {
                     if (!comp.sku || !comp.quantity) {
                         console.warn(`⚠️ Invalid component in combo ${sku}:`, comp);
@@ -114,9 +119,10 @@ export async function POST(request: Request) {
                     }
 
                     const deductedQty = comp.quantity * quantity;
+                    // Add to totalDeductions for tracking
                     totalDeductions[comp.sku] = (totalDeductions[comp.sku] || 0) + deductedQty;
                     
-                    // Track component deduction for WooCommerce update
+                    // Track component deduction - HIS will deduct these (not WC)
                     const componentSkuData = singleSkuMap.get(comp.sku);
                     if (componentSkuData && componentSkuData.woocommerce_product_id) {
                         singleSkuDeductions.push({
@@ -126,7 +132,7 @@ export async function POST(request: Request) {
                         });
                     }
                 }
-                console.log(`✅ Found combo SKU ${sku} in database, breaking down to components - will deduct component stocks`);
+                console.log(`✅ Found combo SKU ${sku} in database, breaking down to components - HIS will deduct component stocks (WC does not deduct combo components)`);
             } 
             else {
                 // SKU not found in database - skip it
@@ -143,8 +149,9 @@ export async function POST(request: Request) {
         const wcSideDeductions: Array<{ sku: string; previousStock: number; newStock: number; deductedQty: number; isWcSide: true }> = [];
         
         // Track single SKUs that were directly ordered (not components of combos)
+        // Components of combos are in singleSkuDeductions and will be handled by HIS
         const directSingleSkus = Object.keys(totalDeductions).filter(sku => {
-            // Skip SKUs that are components (they'll be in singleSkuDeductions)
+            // Skip SKUs that are components of combos (they'll be in singleSkuDeductions and handled by HIS)
             return !singleSkuDeductions.some(d => d.sku === sku);
         });
 
