@@ -69,13 +69,15 @@ Create new API endpoint specifically for refund/return handling:
 ```
 
 **Behavior:**
-- Always uses `operation = 'add'` (stock in)
 - Always requires `condition` field
 - Stores condition in `return_condition` column
-- Restores stock to WooCommerce (regardless of condition - condition is metadata)
+- **Stock Restoration Logic:**
+  - **Good condition:** Restores stock to WooCommerce (`operation = 'add'`)
+  - **Damaged condition:** Does NOT restore stock (logged only, `operation = 'set'`)
+  - **Lost condition:** Does NOT restore stock (logged only, `operation = 'set'`)
 - Logs to `procurement_updates` table with `return_condition` set
 - Logs to `activity_logs` table with action `refund_return`
-- Updates combo SKU availability
+- Updates combo SKU availability (only if stock was restored)
 
 **Alternative:** Reuse `/api/procurement/update` with a flag?
 - **Pros:** Less code duplication
@@ -121,9 +123,9 @@ Create new component for refund/return handling:
    - SKU selection (dropdown)
    - Quantity input
    - **Condition dropdown (Required):**
-     - Good - Item is in good condition, restore stock
-     - Damaged - Item is damaged (track but restore stock)
-     - Lost - Item is lost (track but restore stock)
+     - Good - Item is in good condition, stock will be restored
+     - Damaged - Item is damaged, stock will NOT be restored (logged only)
+     - Lost - Item is lost, stock will NOT be restored (logged only)
    - Notes (optional)
    - Order ID (optional - for linking to original order)
 
@@ -149,7 +151,8 @@ Create new component for refund/return handling:
 
 5. **Success Message:**
    - Show condition selected
-   - Example: "Return processed successfully. Condition: Good. Stock restored."
+   - Example (Good): "Return processed successfully. Condition: Good. Stock restored."
+   - Example (Damaged/Lost): "Return processed successfully. Condition: Damaged. Stock not restored (damaged condition)."
 
 **File:** `app/page.tsx`
 
@@ -234,10 +237,10 @@ Create new component for refund/return handling:
 
 ### Phase 4: Testing & Documentation
 1. Test scenarios:
-   - Refund with "Good" condition
-   - Refund with "Damaged" condition
-   - Refund with "Lost" condition
-   - Verify stock restoration (should always restore regardless of condition)
+   - Refund with "Good" condition (should restore stock)
+   - Refund with "Damaged" condition (should NOT restore stock)
+   - Refund with "Lost" condition (should NOT restore stock)
+   - Verify stock restoration only occurs for "Good" condition
    - Verify activity log displays correctly
    - Verify procurement update UI is unchanged
    - Verify separation between tabs
@@ -249,19 +252,18 @@ Create new component for refund/return handling:
 ## Decision Points
 
 ### 1. Stock Restoration Behavior for All Conditions
-**Decision:** Always restore stock regardless of condition (Good/Damaged/Lost)
+**Decision:** Only restore stock if condition is "Good". For "Damaged" and "Lost" conditions, do not restore stock (log only).
 
 **Rationale:** 
-- Physical inventory should match system inventory
-- Condition is for reporting/audit purposes, not for stock calculation
-- Damaged/Lost items are still physically in inventory (even if unusable)
-- Staff can manually adjust if needed
-- Simpler implementation
+- Damaged items cannot be resold and should not be counted as available stock
+- Lost items are not physically present and should not be counted as available stock
+- Only items in "Good" condition can be returned to inventory for resale
+- This ensures inventory accuracy and prevents counting unusable items as available stock
 
-**Alternative:** Only restore if condition is "Good"
-- **Pros:** More strict, prevents restoring unusable items
-- **Cons:** Inventory count won't match physical stock
-- **Decision:** Not chosen - prefer inventory accuracy
+**Alternative:** Always restore stock regardless of condition
+- **Pros:** Physical inventory matches system inventory
+- **Cons:** Counts unusable items (damaged/lost) as available stock, leading to overselling
+- **Decision:** Not chosen - prefer accurate available stock counts
 
 ### 2. Database Structure
 **Decision:** Add column to `procurement_updates` table (Option 1)
@@ -338,8 +340,8 @@ Create new component for refund/return handling:
 
 - [ ] Database migration runs successfully
 - [ ] Refund with "Good" condition restores stock
-- [ ] Refund with "Damaged" condition restores stock
-- [ ] Refund with "Lost" condition restores stock
+- [ ] Refund with "Damaged" condition does NOT restore stock (logged only)
+- [ ] Refund with "Lost" condition does NOT restore stock (logged only)
 - [ ] Return condition appears in activity log
 - [ ] Activity log shows correct action type
 - [ ] Procurement Update UI is unchanged

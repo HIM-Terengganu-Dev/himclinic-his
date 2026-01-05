@@ -123,9 +123,13 @@ export default function ReturnRefund({ onStockUpdated }: ReturnRefundProps) {
         <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-4">
           <p className="text-sm text-orange-800">
             <strong>💡 Refund/Return Handling:</strong> Use this section to process refunded or returned items. 
-            Staff must physically QC items first, then select the condition (Good/Damaged/Lost). 
-            Stock will be restored regardless of condition for inventory accuracy.
+            Staff must physically QC items first, then select the condition:
           </p>
+          <ul className="text-sm text-orange-800 mt-2 ml-4 list-disc space-y-1">
+            <li><strong>Good:</strong> Item is in good condition - Stock will be restored</li>
+            <li><strong>Damaged:</strong> Item is damaged - Stock will NOT be restored (logged only)</li>
+            <li><strong>Lost:</strong> Item is lost - Stock will NOT be restored (logged only)</li>
+          </ul>
         </div>
 
         {/* Error Message */}
@@ -148,21 +152,21 @@ export default function ReturnRefund({ onStockUpdated }: ReturnRefundProps) {
 
             <div className="space-y-4">
               <div className="bg-white border border-gray-200 rounded-lg p-4">
-                <h4 className="font-semibold text-gray-900 mb-2">Updated Single SKU</h4>
+                <h4 className="font-semibold text-gray-900 mb-2">Refund/Return Details</h4>
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-gray-700">{result.sku}</span>
-                  <span className="text-lg font-bold text-green-600">{result.newLocalQuantity} units</span>
+                  <span className="text-lg font-bold text-gray-900">{result.newLocalQuantity} units</span>
                 </div>
                 <div className="flex items-center gap-2 text-sm mb-2">
-                  {result.singleSkuUpdatedInWooCommerce ? (
+                  {result.stockRestored ? (
                     <>
                       <CheckCircle className="w-4 h-4 text-green-600" />
-                      <span className="text-green-700">Synced to WooCommerce ✓</span>
+                      <span className="text-green-700">Stock restored in WooCommerce ✓</span>
                     </>
                   ) : (
                     <>
-                      <XCircle className="w-4 h-4 text-yellow-600" />
-                      <span className="text-yellow-700">Local only (WooCommerce sync failed)</span>
+                      <XCircle className="w-4 h-4 text-orange-600" />
+                      <span className="text-orange-700">Stock not restored (condition: {getConditionLabel(result.condition)})</span>
                     </>
                   )}
                 </div>
