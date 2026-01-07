@@ -39,7 +39,9 @@ export async function updateLastLogin(id: number) {
 
 export async function getAllSingleSkus() {
     const result = await query(
-        `SELECT * FROM inventory_management.single_skus ORDER BY sku`
+        `SELECT * FROM inventory_management.single_skus 
+         WHERE LOWER(COALESCE(description, '')) NOT IN ('not for sale', 'dummy sku')
+         ORDER BY sku`
     );
     return result.rows;
 }
@@ -70,6 +72,23 @@ export async function createSingleSku(data: {
 }
 
 export async function getAllComboSkus() {
+    const result = await query(
+        `SELECT * FROM inventory_management.combo_skus 
+         WHERE LOWER(COALESCE(description, '')) NOT IN ('not for sale', 'dummy sku')
+         ORDER BY sku`
+    );
+    return result.rows;
+}
+
+// Admin functions to get all SKUs including "not for sale" and "dummy sku" items
+export async function getAllSingleSkusAdmin() {
+    const result = await query(
+        `SELECT * FROM inventory_management.single_skus ORDER BY sku`
+    );
+    return result.rows;
+}
+
+export async function getAllComboSkusAdmin() {
     const result = await query(
         `SELECT * FROM inventory_management.combo_skus ORDER BY sku`
     );

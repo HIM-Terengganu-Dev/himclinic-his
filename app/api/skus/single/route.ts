@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth/middleware';
-import { createSingleSku, getSingleSkuByCode, getAllSingleSkus } from '@/lib/db/queries';
+import { createSingleSku, getSingleSkuByCode, getAllSingleSkusAdmin } from '@/lib/db/queries';
 import { logActivity } from '@/lib/db/queries';
 // We'll need a service to create product in WooCommerce
 import { createProduct } from '@/lib/services/woocommerce'; // Need to implement this
@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
 
-        const skus = await getAllSingleSkus();
+        const skus = await getAllSingleSkusAdmin();
         return NextResponse.json({ skus });
     } catch (error) {
         console.error('Error fetching single SKUs:', error);

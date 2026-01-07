@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth/middleware';
-import { createComboSku, getSingleSkuByCode, getAllComboSkus, createSingleSku } from '@/lib/db/queries';
+import { createComboSku, getSingleSkuByCode, getAllComboSkusAdmin, createSingleSku } from '@/lib/db/queries';
 import { logActivity } from '@/lib/db/queries';
 import { createProduct } from '@/lib/services/woocommerce';
 
@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
 
-        const skus = await getAllComboSkus();
+        const skus = await getAllComboSkusAdmin();
         return NextResponse.json({ skus });
     } catch (error) {
         console.error('Error fetching combo SKUs:', error);
