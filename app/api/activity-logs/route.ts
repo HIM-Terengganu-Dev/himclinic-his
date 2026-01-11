@@ -21,8 +21,10 @@ export async function GET(req: NextRequest) {
         const dateTo = searchParams.get('dateTo') || undefined;
 
         // Handle detailed filter types (procurement_update:add, procurement_update:subtract, procurement_update:set)
-        let operation: string | undefined = undefined;
-        if (type && type.includes(':')) {
+        // Frontend may send operation as a separate query parameter, or it may be in the type parameter with a colon
+        let operation: string | undefined = searchParams.get('operation') || undefined;
+        if (type && type.includes(':') && !operation) {
+            // If operation is not provided separately, try to extract it from type parameter
             const [actionType, op] = type.split(':');
             type = actionType; // Set type to base action
             operation = op; // Extract operation

@@ -52,6 +52,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [filterDateTo, setFilterDateTo] = useState('');
     const [filterOrderStatus, setFilterOrderStatus] = useState('');
     const [singleSkus, setSingleSkus] = useState<Array<{ sku: string; name: string }>>([]);
+    const [comboSkus, setComboSkus] = useState<Array<{ sku: string; name: string }>>([]);
     const [wcCurrentPage, setWcCurrentPage] = useState(1);
     const [wcTotalCount, setWcTotalCount] = useState(0);
     const topScrollRef = useRef<HTMLDivElement>(null);
@@ -67,6 +68,16 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                 }
             })
             .catch(err => console.error('Failed to fetch SKUs:', err));
+        
+        // Fetch combo SKUs for WooCommerce filter dropdown
+        fetch('/api/skus/combo')
+            .then(res => res.json())
+            .then(data => {
+                if (data.skus) {
+                    setComboSkus(data.skus.map((s: any) => ({ sku: s.sku, name: s.name })));
+                }
+            })
+            .catch(err => console.error('Failed to fetch combo SKUs:', err));
     }, []);
 
     const fetchManualLogs = async () => {
@@ -376,11 +387,26 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                     className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white"
                                 >
                                     <option value="">All SKUs</option>
-                                    {singleSkus.map((sku) => (
-                                        <option key={sku.sku} value={sku.sku}>
-                                            {sku.sku}
-                                        </option>
-                                    ))}
+                                    {activeTab === 'woocommerce' ? (
+                                        <>
+                                            {singleSkus.map((sku) => (
+                                                <option key={sku.sku} value={sku.sku}>
+                                                    {sku.sku}
+                                                </option>
+                                            ))}
+                                            {comboSkus.map((sku) => (
+                                                <option key={sku.sku} value={sku.sku}>
+                                                    {sku.sku}
+                                                </option>
+                                            ))}
+                                        </>
+                                    ) : (
+                                        singleSkus.map((sku) => (
+                                            <option key={sku.sku} value={sku.sku}>
+                                                {sku.sku}
+                                            </option>
+                                        ))
+                                    )}
                                 </select>
                                 <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                             </div>
