@@ -353,6 +353,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                             <option value="procurement_update:add">Manual Stock In</option>
                                             <option value="procurement_update:subtract">Manual Stock Out</option>
                                             <option value="procurement_update:set">Reconciliation</option>
+                                            <option value="stock_take_adjustment">Stock Take Adjustment</option>
                                         </>
                                     ) : (
                                         <>
