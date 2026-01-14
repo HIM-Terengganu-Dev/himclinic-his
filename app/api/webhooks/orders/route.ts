@@ -51,6 +51,40 @@ export async function POST(request: Request) {
             return NextResponse.json({ success: true, message: `Order status is ${status}, skipping stock update` });
         }
 
+        // Check if this order was already processed (idempotency protection)
+        // Prevents double deduction if order goes: processing → pending → processing
+        // BUT allows reprocessing if order was cancelled (stock was restored)
+        const previousProcessingLog = await getWcWebhookLogByOrderId(orderId, 'order.processing');
+        if (previousProcessingLog && previousProcessingLog.success) {
+            // Check if order was cancelled after processing (stock was restored, so we can process again)
+            const cancellationLog = await getWcWebhookLogByOrderId(orderId, 'order.cancelled');
+            if (cancellationLog) {
+                // Compare timestamps to see if cancellation happened after processing
+                const processingTime = new Date(previousProcessingLog.created_at).getTime();
+                const cancellationTime = new Date(cancellationLog.created_at).getTime();
+                if (cancellationTime > processingTime) {
+                    // Order was cancelled after processing - stock was restored, so we can process again
+                    console.log(`✅ Order #${orderId} was previously processed but then cancelled (stock restored) - reprocessing`);
+                } else {
+                    // Cancellation happened before processing (shouldn't happen, but skip to be safe)
+                    console.log(`⏭️ Order #${orderId} was already processed successfully - skipping duplicate processing to prevent double deduction`);
+                    return NextResponse.json({ 
+                        success: true, 
+                        message: `Order #${orderId} was already processed - skipping duplicate processing to prevent double stock deduction`,
+                        previousProcessingTime: previousProcessingLog.created_at
+                    });
+                }
+            } else {
+                // Order was already processed and not cancelled - skip to prevent double deduction
+                console.log(`⏭️ Order #${orderId} was already processed successfully - skipping duplicate processing to prevent double deduction`);
+                return NextResponse.json({ 
+                    success: true, 
+                    message: `Order #${orderId} was already processed - skipping duplicate processing to prevent double stock deduction`,
+                    previousProcessingTime: previousProcessingLog.created_at
+                });
+            }
+        }
+
         // Get all line items from webhook payload
         // WooCommerce webhook includes line_items in the payload
         const lineItems = payload.line_items;
@@ -70,6 +104,7 @@ export async function POST(request: Request) {
         // For combo SKUs, we need to manually deduct component single SKUs
         // For direct single SKU orders, WooCommerce already deducted them
         const totalDeductions: Record<string, number> = {};
+        const directSingleSkuOrders: Record<string, number> = {}; // Track SKUs directly ordered (WC-side)
         const singleSkuDeductions: Array<{ sku: string; quantity: number; wcProductId: number }> = [];
         const comboSkusInOrder: Array<{ sku: string; quantity: number }> = [];
 
@@ -86,6 +121,7 @@ export async function POST(request: Request) {
             if (singleSkuMap.has(sku)) {
                 // Direct single SKU order: WooCommerce already deducted stock
                 totalDeductions[sku] = (totalDeductions[sku] || 0) + quantity;
+                directSingleSkuOrders[sku] = (directSingleSkuOrders[sku] || 0) + quantity; // Track direct orders separately
                 console.log(`✅ Found single SKU ${sku} in database, quantity: ${quantity} (WC already deducted)`);
             } 
             // Validate against database: Check if it's a combo SKU
@@ -149,15 +185,17 @@ export async function POST(request: Request) {
         const wcSideDeductions: Array<{ sku: string; previousStock: number; newStock: number; deductedQty: number; isWcSide: true }> = [];
         
         // Track single SKUs that were directly ordered (not components of combos)
-        // Components of combos are in singleSkuDeductions and will be handled by HIS
-        const directSingleSkus = Object.keys(totalDeductions).filter(sku => {
-            // Skip SKUs that are components of combos (they'll be in singleSkuDeductions and handled by HIS)
-            return !singleSkuDeductions.some(d => d.sku === sku);
-        });
+        // IMPORTANT: A SKU can be BOTH directly ordered AND a component of a combo.
+        // In that case, the directly ordered quantity is WC-side, and the component quantity is HIS-side.
+        // Use directSingleSkuOrders to identify which SKUs were directly ordered (regardless of whether they're also components)
+        const directSingleSkus = Object.keys(directSingleSkuOrders);
 
         // Fetch current stock for direct single SKUs to calculate previous stock
+        // Use directSingleSkuOrders[sku] instead of totalDeductions[sku] because:
+        // - If SKU is only directly ordered: directSingleSkuOrders[sku] = totalDeductions[sku]
+        // - If SKU is both directly ordered AND a component: directSingleSkuOrders[sku] = only the direct order quantity
         for (const sku of directSingleSkus) {
-            const deductedQty = totalDeductions[sku];
+            const deductedQty = directSingleSkuOrders[sku]; // Only the directly ordered quantity (WC-side)
             const singleSku = singleSkuMap.get(sku);
             if (singleSku && singleSku.woocommerce_product_id) {
                 try {
@@ -357,53 +395,91 @@ export async function POST(request: Request) {
         const totalQuantity = lineItems.reduce((sum: number, item: any) => sum + (item.quantity || 0), 0);
         
         // Log to WC Webhook Logs
-        await logWcWebhook({
-            webhookType: 'order',
-            webhookEvent: `order.${status}`,
-            entityId: orderId,
-            entityName: `Order #${orderId}`,
-            entitySku: firstSku, // Show first SKU in order for display
-            status: status,
-            affectedSkus: orderSkus,
-            comboUpdates: comboUpdates.map(u => ({ 
-                sku: u.sku, 
-                newStock: u.newStock 
-            })),
-            details: { 
-                orderId, 
-                status,
-                lineItems: lineItems.map((item: any) => ({
-                    sku: item.sku,
-                    name: item.name,
-                    quantity: item.quantity
+        // CRITICAL: If this fails, stock has already been deducted but won't be logged!
+        // This is a known issue - stock changes happen before logging
+        try {
+            await logWcWebhook({
+                webhookType: 'order',
+                webhookEvent: `order.${status}`,
+                entityId: orderId,
+                entityName: `Order #${orderId}`,
+                entitySku: firstSku, // Show first SKU in order for display
+                status: status,
+                affectedSkus: orderSkus,
+                comboUpdates: comboUpdates.map(u => ({ 
+                    sku: u.sku, 
+                    newStock: u.newStock 
                 })),
-                comboSkusOrdered: comboSkusInOrder,
-                componentDeductions: [
-                    ...wcSideDeductions.map(u => ({
-                        sku: u.sku,
-                        previousStock: u.previousStock,
-                        newStock: u.newStock,
-                        deductedQty: u.deductedQty,
-                        isWcSide: true, // WC deducted, HIS only tracked (no write)
-                        hisWrote: false // HIS did NOT write
+                details: { 
+                    orderId, 
+                    status,
+                    lineItems: lineItems.map((item: any) => ({
+                        sku: item.sku,
+                        name: item.name,
+                        quantity: item.quantity
                     })),
-                    ...singleSkuUpdates.map(u => ({
-                        sku: u.sku,
-                        previousStock: u.previousStock,
-                        newStock: u.newStock,
-                        isWcSide: false, // HIS deducted (wrote)
-                        hisWrote: true // HIS wrote this change
-                    }))
-                ],
-                affectedSingleSkus: Object.keys(totalDeductions),
-                note: comboSkusInOrder.length > 0 
-                    ? 'Combo SKU(s) ordered. System deducted component single SKU stocks and updated combo availability.'
-                    : 'Single SKU(s) ordered. WooCommerce deducted stock. System updated combo SKU availability.'
-            },
-            ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
-            userAgent,
-            success: true
-        });
+                    comboSkusOrdered: comboSkusInOrder,
+                    componentDeductions: [
+                        ...wcSideDeductions.map(u => ({
+                            sku: u.sku,
+                            previousStock: u.previousStock,
+                            newStock: u.newStock,
+                            deductedQty: u.deductedQty,
+                            isWcSide: true, // WC deducted, HIS only tracked (no write)
+                            hisWrote: false // HIS did NOT write
+                        })),
+                        ...singleSkuUpdates.map(u => ({
+                            sku: u.sku,
+                            previousStock: u.previousStock,
+                            newStock: u.newStock,
+                            isWcSide: false, // HIS deducted (wrote)
+                            hisWrote: true // HIS wrote this change
+                        }))
+                    ],
+                    affectedSingleSkus: Object.keys(totalDeductions),
+                    note: comboSkusInOrder.length > 0 
+                        ? 'Combo SKU(s) ordered. System deducted component single SKU stocks and updated combo availability.'
+                        : 'Single SKU(s) ordered. WooCommerce deducted stock. System updated combo SKU availability.'
+                },
+                ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
+                userAgent,
+                success: true
+            });
+        } catch (logError: any) {
+            // CRITICAL ERROR: Stock was already deducted but logging failed!
+            // IMPORTANT: We do NOT rollback or auto-reconcile. Stock changes remain in WooCommerce.
+            // Manual reconciliation is required by the user. We only log the error for detection.
+            console.error(`❌ CRITICAL: Failed to log webhook for Order #${orderId} after stock was deducted!`, {
+                error: logError.message,
+                orderId,
+                componentDeductions: singleSkuUpdates,
+                wcSideDeductions: wcSideDeductions
+            });
+            
+            // Try to log the error to activity_logs as a fallback
+            // This allows users to detect unlogged stock changes and manually reconcile
+            try {
+                await import('@/lib/db/queries').then(m => m.logActivity({
+                    action: 'webhook_log_failed_after_stock_deduction',
+                    entityType: 'order',
+                    entityId: orderId,
+                    details: {
+                        orderId,
+                        error: logError.message,
+                        componentDeductions: singleSkuUpdates,
+                        wcSideDeductions: wcSideDeductions,
+                        note: 'CRITICAL: Stock was deducted but webhook log failed. This creates unlogged stock changes! Manual reconciliation required.'
+                    },
+                    success: false,
+                    errorMessage: `Webhook log failed after stock deduction: ${logError.message}`
+                }));
+            } catch (fallbackError) {
+                console.error('❌ Failed to log error to activity_logs as fallback:', fallbackError);
+            }
+            
+            // Still return success because stock was deducted (business operation succeeded)
+            // Stock changes are NOT rolled back - manual reconciliation is required
+        }
 
         return NextResponse.json({ 
             success: true, 
@@ -728,55 +804,88 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
         const orderSkus = lineItems.map((item: any) => item.sku).filter(Boolean);
         const firstSku = orderSkus.length > 0 ? orderSkus[0] : undefined;
 
-        await logWcWebhook({
-            webhookType: 'order',
-            webhookEvent: `order.${payload.status}`,
-            entityId: orderId,
-            entityName: `Order #${orderId}`,
-            entitySku: firstSku,
-            status: payload.status,
-            affectedSkus: orderSkus,
-            comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
-            details: {
-                orderId,
+        try {
+            await logWcWebhook({
+                webhookType: 'order',
+                webhookEvent: `order.${payload.status}`,
+                entityId: orderId,
+                entityName: `Order #${orderId}`,
+                entitySku: firstSku,
                 status: payload.status,
-                lineItems: lineItems.map((item: any) => ({
-                    sku: item.sku,
-                    name: item.name,
-                    quantity: item.quantity
-                })),
-                comboSkusCancelled: comboSkusInOrder,
-                componentRestorations: [
-                    ...wcSideRestorations.map(r => ({
-                        sku: r.sku,
-                        previousStock: r.previousStock,
-                        newStock: r.newStock,
-                        restoredQty: r.restoredQty,
-                        changeMadeBy: r.changeMadeBy, // Who made the restoration (always 'WC' for single SKUs)
-                        originalDeductionBy: (r as any).originalDeductionBy || 'WC', // Who made the original deduction
-                        isWcSide: true, // WC restored, HIS only tracked (no write)
-                        hisWrote: false // HIS did NOT write
-                    })),
-                    ...restoredUpdates.map(r => ({
-                        sku: r.sku,
-                        previousStock: r.previousStock,
-                        newStock: r.newStock,
-                        restoredQty: r.restoredQty,
-                        changeMadeBy: r.changeMadeBy, // Always 'HIS' for combo components
-                        originalDeductionBy: 'HIS', // Combo components are always deducted by HIS
-                        isWcSide: false, // HIS restored (wrote)
-                        hisWrote: true // HIS wrote this change
-                    }))
-                ],
+                affectedSkus: orderSkus,
                 comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
-                note: comboSkusInOrder.length > 0
-                    ? 'Order cancelled. HIS system restored component single SKU stocks (from combo orders) and updated combo availability. Single SKU stocks restored by WC.'
-                    : 'Order cancelled. Single SKU stocks restored by WC automatically. System updated combo SKU availability.'
-            },
-            ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
-            userAgent,
-            success: true
-        });
+                details: {
+                    orderId,
+                    status: payload.status,
+                    lineItems: lineItems.map((item: any) => ({
+                        sku: item.sku,
+                        name: item.name,
+                        quantity: item.quantity
+                    })),
+                    comboSkusCancelled: comboSkusInOrder,
+                    componentRestorations: [
+                        ...wcSideRestorations.map(r => ({
+                            sku: r.sku,
+                            previousStock: r.previousStock,
+                            newStock: r.newStock,
+                            restoredQty: r.restoredQty,
+                            changeMadeBy: r.changeMadeBy, // Who made the restoration (always 'WC' for single SKUs)
+                            originalDeductionBy: (r as any).originalDeductionBy || 'WC', // Who made the original deduction
+                            isWcSide: true, // WC restored, HIS only tracked (no write)
+                            hisWrote: false // HIS did NOT write
+                        })),
+                        ...restoredUpdates.map(r => ({
+                            sku: r.sku,
+                            previousStock: r.previousStock,
+                            newStock: r.newStock,
+                            restoredQty: r.restoredQty,
+                            changeMadeBy: r.changeMadeBy, // Always 'HIS' for combo components
+                            originalDeductionBy: 'HIS', // Combo components are always deducted by HIS
+                            isWcSide: false, // HIS restored (wrote)
+                            hisWrote: true // HIS wrote this change
+                        }))
+                    ],
+                    comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
+                    note: comboSkusInOrder.length > 0
+                        ? 'Order cancelled. HIS system restored component single SKU stocks (from combo orders) and updated combo availability. Single SKU stocks restored by WC.'
+                        : 'Order cancelled. Single SKU stocks restored by WC automatically. System updated combo SKU availability.'
+                },
+                ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
+                userAgent,
+                success: true
+            });
+        } catch (logError: any) {
+            // CRITICAL ERROR: Stock was already restored but logging failed!
+            // IMPORTANT: We do NOT rollback or auto-reconcile. Stock restorations remain in WooCommerce.
+            // Manual reconciliation is required by the user. We only log the error for detection.
+            console.error(`❌ CRITICAL: Failed to log cancellation webhook for Order #${orderId} after stock was restored!`, {
+                error: logError.message,
+                orderId,
+                componentRestorations: restoredUpdates,
+                wcSideRestorations: wcSideRestorations
+            });
+            
+            // Try to log the error to activity_logs as a fallback
+            // This allows users to detect unlogged stock changes and manually reconcile
+            try {
+                await import('@/lib/db/queries').then(m => m.logActivity({
+                    action: 'webhook_log_failed_after_stock_restoration',
+                    entityType: 'order',
+                    entityId: orderId,
+                    details: {
+                        orderId,
+                        error: logError.message,
+                        componentRestorations: restoredUpdates,
+                        wcSideRestorations: wcSideRestorations,
+                        note: 'CRITICAL: Stock was restored but webhook log failed. This creates unlogged stock changes! Manual reconciliation required.'
+                    },
+                    success: false,
+                    errorMessage: `Cancellation webhook log failed after stock restoration: ${logError.message}`
+                }));
+            } catch (fallbackError) {
+                console.error('❌ Failed to log error to activity_logs as fallback:', fallbackError);
+            }
+        }
 
         return NextResponse.json({
             success: true,

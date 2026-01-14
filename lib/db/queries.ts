@@ -552,6 +552,225 @@ export async function getWcWebhookLogs(filters: {
 }
 
 /**
+ * Find orders with duplicate processing (same order processed multiple times)
+ * Useful for detecting double deduction issues, especially for combo SKUs
+ */
+export async function findDuplicateProcessingOrders() {
+    const sql = `
+        SELECT 
+            entity_id as order_id,
+            COUNT(*) as processing_count,
+            ARRAY_AGG(id ORDER BY created_at) as log_ids,
+            ARRAY_AGG(created_at ORDER BY created_at) as processing_times,
+            ARRAY_AGG(success ORDER BY created_at) as success_statuses
+        FROM inventory_management.wc_webhook_logs
+        WHERE webhook_type = 'order'
+        AND webhook_event = 'order.processing'
+        GROUP BY entity_id
+        HAVING COUNT(*) > 1
+        ORDER BY processing_count DESC, entity_id DESC
+    `;
+    
+    const result = await query(sql, []);
+    
+    // For each duplicate order, get detailed component deduction info
+    const detailedResults = await Promise.all(
+        result.rows.map(async (row: any) => {
+            const detailSql = `
+                SELECT 
+                    id,
+                    created_at,
+                    success,
+                    details->'componentDeductions' as component_deductions,
+                    details->'comboSkusOrdered' as combo_skus_ordered
+                FROM inventory_management.wc_webhook_logs
+                WHERE entity_id = $1
+                AND webhook_event = 'order.processing'
+                ORDER BY created_at
+            `;
+            const detailResult = await query(detailSql, [row.order_id]);
+            
+            return {
+                order_id: row.order_id,
+                processing_count: row.processing_count,
+                log_ids: row.log_ids,
+                processing_times: row.processing_times,
+                success_statuses: row.success_statuses,
+                details: detailResult.rows.map((r: any) => {
+                    // Parse JSONB fields
+                    let componentDeductions = r.component_deductions;
+                    if (typeof componentDeductions === 'string') {
+                        try {
+                            componentDeductions = JSON.parse(componentDeductions);
+                        } catch (e) {
+                            componentDeductions = [];
+                        }
+                    }
+                    
+                    let comboSkusOrdered = r.combo_skus_ordered;
+                    if (typeof comboSkusOrdered === 'string') {
+                        try {
+                            comboSkusOrdered = JSON.parse(comboSkusOrdered);
+                        } catch (e) {
+                            comboSkusOrdered = [];
+                        }
+                    }
+                    
+                    return {
+                        log_id: r.id,
+                        created_at: r.created_at,
+                        success: r.success,
+                        component_deductions: componentDeductions,
+                        combo_skus_ordered: comboSkusOrdered,
+                        has_combo_sku: Array.isArray(comboSkusOrdered) && comboSkusOrdered.length > 0
+                    };
+                })
+            };
+        })
+    );
+    
+    return detailedResults;
+}
+
+/**
+ * Investigate stock changes for a specific SKU between two orders
+ * Useful for debugging missing stock changes
+ */
+export async function investigateStockChangesBetweenOrders(
+    sku: string,
+    orderId1: number,
+    orderId2: number
+) {
+    // Get order timestamps
+    const orderTimesSql = `
+        SELECT 
+            MIN(created_at) - INTERVAL '1 day' as start_time,
+            MAX(created_at) + INTERVAL '1 day' as end_time
+        FROM inventory_management.wc_webhook_logs
+        WHERE entity_id IN ($1, $2)
+        AND webhook_event = 'order.processing'
+    `;
+    const orderTimes = await query(orderTimesSql, [orderId1, orderId2]);
+    if (orderTimes.rows.length === 0) {
+        return { error: 'One or both orders not found' };
+    }
+    const { start_time, end_time } = orderTimes.rows[0];
+
+    // Get manual procurement updates
+    const manualSql = `
+        SELECT 
+            pu.created_at,
+            'Manual: ' || pu.operation as activity_type,
+            ss.sku,
+            pu.previous_quantity as stock_before,
+            pu.new_quantity as stock_after,
+            pu.quantity as change_amount,
+            pu.notes,
+            NULL::text as order_id,
+            'HIS' as source
+        FROM inventory_management.procurement_updates pu
+        JOIN inventory_management.single_skus ss ON pu.single_sku_id = ss.id
+        WHERE ss.sku = $1
+        AND pu.created_at BETWEEN $2 AND $3
+        ORDER BY pu.created_at
+    `;
+    const manual = await query(manualSql, [sku, start_time, end_time]);
+
+    // Get order deductions
+    const orderDeductionsSql = `
+        SELECT 
+            w.created_at,
+            'Order: Deduction' as activity_type,
+            deduction->>'sku' as sku,
+            (deduction->>'previousStock')::int as stock_before,
+            (deduction->>'newStock')::int as stock_after,
+            (deduction->>'deductedQty')::int as change_amount,
+            NULL as notes,
+            w.entity_id::text as order_id,
+            CASE 
+                WHEN (deduction->>'isWcSide')::boolean THEN 'WC'
+                ELSE 'HIS'
+            END as source
+        FROM inventory_management.wc_webhook_logs w,
+             jsonb_array_elements(w.details->'componentDeductions') AS deduction
+        WHERE w.webhook_type = 'order'
+        AND w.webhook_event = 'order.processing'
+        AND deduction->>'sku' = $1
+        AND w.created_at BETWEEN $2 AND $3
+        ORDER BY w.created_at
+    `;
+    const orderDeductions = await query(orderDeductionsSql, [sku, start_time, end_time]);
+
+    // Get order restorations
+    const orderRestorationsSql = `
+        SELECT 
+            w.created_at,
+            'Order: Restoration' as activity_type,
+            restoration->>'sku' as sku,
+            (restoration->>'previousStock')::int as stock_before,
+            (restoration->>'newStock')::int as stock_after,
+            (restoration->>'restoredQty')::int as change_amount,
+            NULL as notes,
+            w.entity_id::text as order_id,
+            CASE 
+                WHEN (restoration->>'isWcSide')::boolean THEN 'WC'
+                ELSE 'HIS'
+            END as source
+        FROM inventory_management.wc_webhook_logs w,
+             jsonb_array_elements(w.details->'componentRestorations') AS restoration
+        WHERE w.webhook_type = 'order'
+        AND w.webhook_event LIKE 'order.cancelled%'
+        AND restoration->>'sku' = $1
+        AND w.created_at BETWEEN $2 AND $3
+        ORDER BY w.created_at
+    `;
+    const orderRestorations = await query(orderRestorationsSql, [sku, start_time, end_time]);
+
+    // Get product updates
+    const productUpdatesSql = `
+        SELECT 
+            w.created_at,
+            'Product: Update' as activity_type,
+            w.entity_sku as sku,
+            w.previous_stock_quantity as stock_before,
+            w.stock_quantity as stock_after,
+            w.stock_quantity - w.previous_stock_quantity as change_amount,
+            NULL as notes,
+            NULL::text as order_id,
+            'WC' as source
+        FROM inventory_management.wc_webhook_logs w
+        WHERE w.webhook_type = 'product'
+        AND w.entity_sku = $1
+        AND w.created_at BETWEEN $2 AND $3
+        ORDER BY w.created_at
+    `;
+    const productUpdates = await query(productUpdatesSql, [sku, start_time, end_time]);
+
+    // Combine all results
+    const allChanges = [
+        ...manual.rows,
+        ...orderDeductions.rows,
+        ...orderRestorations.rows,
+        ...productUpdates.rows
+    ].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+    return {
+        sku,
+        orderId1,
+        orderId2,
+        timeRange: { start_time, end_time },
+        changes: allChanges,
+        summary: {
+            total_changes: allChanges.length,
+            manual_changes: manual.rows.length,
+            order_deductions: orderDeductions.rows.length,
+            order_restorations: orderRestorations.rows.length,
+            product_updates: productUpdates.rows.length
+        }
+    };
+}
+
+/**
  * STOCK TAKE OPERATIONS
  */
 

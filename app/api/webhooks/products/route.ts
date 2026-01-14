@@ -63,11 +63,27 @@ export async function POST(request: Request) {
             });
         }
 
+        // Get previous stock quantity (before this update)
+        // Note: WooCommerce webhook fires AFTER stock is updated, so we need to fetch current stock
+        // which is now the new stock. Previous stock might be in payload or we calculate it.
+        let previousStockQuantity: number | undefined = undefined;
+        
+        // Check if previous stock is in payload
+        if (payload.previous_stock_quantity !== null && payload.previous_stock_quantity !== undefined) {
+            previousStockQuantity = typeof payload.previous_stock_quantity === 'number' 
+                ? payload.previous_stock_quantity 
+                : parseFloat(String(payload.previous_stock_quantity)) || undefined;
+        }
+        
         // If stock_quantity is not in payload or is null/undefined, fetch it from WooCommerce
         if (stockQuantity === null || stockQuantity === undefined) {
             try {
                 const currentProduct = await getProduct(productId);
                 stockQuantity = currentProduct.stock_quantity ?? 0;
+                // If we don't have previous stock, we can't calculate it (stock already updated)
+                if (previousStockQuantity === undefined) {
+                    previousStockQuantity = undefined; // Will be logged as null
+                }
                 console.log(`Product Webhook: Stock quantity not in payload, fetched from WC: ${stockQuantity}`);
             } catch (e: any) {
                 console.error(`Failed to fetch stock quantity for product ${productId}:`, e.message);
@@ -167,30 +183,67 @@ export async function POST(request: Request) {
         const userAgent = request.headers.get('user-agent') || 'unknown';
 
         // Log to WC Webhook Logs
-        await logWcWebhook({
-            webhookType: 'product',
-            webhookEvent: 'product.updated',
-            entityId: productId,
-            entitySku: singleSku.sku,
-            entityName: payload.name || singleSku.name || singleSku.sku,
-            status: 'stock_reconciled',
-            stockQuantity: stockQuantity,
-            affectedSkus: [singleSku.sku],
-            comboUpdates: comboUpdates.map(u => ({ 
-                sku: u.sku, 
-                newStock: u.newStock 
-            })),
-            details: { 
+        try {
+            await logWcWebhook({
+                webhookType: 'product',
+                webhookEvent: 'product.updated',
+                entityId: productId,
+                entitySku: singleSku.sku,
+                entityName: payload.name || singleSku.name || singleSku.sku,
+                status: 'stock_reconciled',
+                stockQuantity: stockQuantity,
+                previousStockQuantity: previousStockQuantity,
+                affectedSkus: [singleSku.sku],
+                comboUpdates: comboUpdates.map(u => ({ 
+                    sku: u.sku, 
+                    newStock: u.newStock 
+                })),
+                details: { 
+                    productId,
+                    singleSku: singleSku.sku,
+                    previousStock: previousStockQuantity,
+                    newStock: stockQuantity,
+                    note: 'Product stock updated in WooCommerce. Combo SKU availability recalculated.',
+                    comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock }))
+                },
+                ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
+                userAgent,
+                success: true
+            });
+        } catch (logError: any) {
+            // CRITICAL ERROR: Combo SKU availability was updated but logging failed!
+            // IMPORTANT: We do NOT rollback or auto-reconcile. Combo updates remain in WooCommerce.
+            // Manual reconciliation is required by the user. We only log the error for detection.
+            console.error(`❌ CRITICAL: Failed to log product webhook for Product #${productId} (SKU: ${singleSku.sku})!`, {
+                error: logError.message,
                 productId,
-                singleSku: singleSku.sku,
-                newStock: stockQuantity,
-                note: 'Product stock updated in WooCommerce. Combo SKU availability recalculated.',
-                comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock }))
-            },
-            ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
-            userAgent,
-            success: true
-        });
+                sku: singleSku.sku,
+                previousStock: previousStockQuantity,
+                newStock: stockQuantity
+            });
+            
+            // Try to log the error to activity_logs as a fallback
+            // This allows users to detect unlogged changes and manually reconcile
+            try {
+                await import('@/lib/db/queries').then(m => m.logActivity({
+                    action: 'webhook_log_failed_product_update',
+                    entityType: 'product',
+                    entityId: productId,
+                    details: {
+                        productId,
+                        sku: singleSku.sku,
+                        previousStock: previousStockQuantity,
+                        newStock: stockQuantity,
+                        error: logError.message,
+                        note: 'CRITICAL: Product webhook log failed. Combo SKU availability was updated but log failed. Manual reconciliation required.'
+                    },
+                    success: false,
+                    errorMessage: `Product webhook log failed: ${logError.message}`
+                }));
+            } catch (fallbackError) {
+                console.error('❌ Failed to log error to activity_logs as fallback:', fallbackError);
+            }
+        }
 
         return NextResponse.json({ 
             success: true, 
