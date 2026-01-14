@@ -444,8 +444,34 @@ export async function getWcWebhookLogs(filters: {
     }
 
     if (filters.entitySku) {
-        whereClause += ` AND entity_sku = $${pIdx++}`;
+        // Filter by SKU in multiple places:
+        // 1. entity_sku column
+        // 2. affected_skus array
+        // 3. componentDeductions array in details JSONB
+        // 4. componentRestorations array in details JSONB
+        const skuParam = pIdx++;
+        const affectedSkusParam = pIdx++;
+        const componentDeductionsParam = pIdx++;
+        const componentRestorationsParam = pIdx++;
+        
+        whereClause += ` AND (
+            entity_sku = $${skuParam} OR
+            (affected_skus IS NOT NULL AND affected_skus::jsonb @> $${affectedSkusParam}::jsonb) OR
+            (details IS NOT NULL AND details ? 'componentDeductions' AND EXISTS (
+                SELECT 1 
+                FROM jsonb_array_elements(details->'componentDeductions') AS deduction
+                WHERE deduction->>'sku' = $${componentDeductionsParam}
+            )) OR
+            (details IS NOT NULL AND details ? 'componentRestorations' AND EXISTS (
+                SELECT 1 
+                FROM jsonb_array_elements(details->'componentRestorations') AS restoration
+                WHERE restoration->>'sku' = $${componentRestorationsParam}
+            ))
+        )`;
         params.push(filters.entitySku);
+        params.push(JSON.stringify([filters.entitySku])); // For affected_skus array check
+        params.push(filters.entitySku); // For componentDeductions check
+        params.push(filters.entitySku); // For componentRestorations check
     }
 
     if (filters.dateFrom) {
