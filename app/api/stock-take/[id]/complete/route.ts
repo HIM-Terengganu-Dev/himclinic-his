@@ -138,9 +138,11 @@ export async function POST(
             : `Stock Take Adjustment - ${stockTake.month}/${stockTake.year}`;
 
           // Update WooCommerce stock to physical quantity (Reconciliation)
+          // IMPORTANT: Write actual physical quantity (without pending-consult) to WC
+          // WC is not aware of pending-consult, so we write the actual physical count
           await updateProductStock(
             singleSku.woocommerce_product_id,
-            item.physical_quantity
+            item.physical_quantity // Actual physical quantity, not including pending-consult
           );
 
           // Create procurement update record
@@ -279,7 +281,9 @@ export async function POST(
           if (comboLimit === Infinity) comboLimit = 0;
 
           try {
-            await updateProductStock(combo.woocommerce_product_id, comboLimit);
+            // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
+            // WC is not aware of pending-consult, so we write the actual calculated quantity
+            await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
             comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
             console.log(`✅ Updated combo ${combo.sku} in WooCommerce: ${comboLimit} units`);
           } catch (e: any) {

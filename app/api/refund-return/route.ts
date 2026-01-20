@@ -57,10 +57,12 @@ export async function POST(request: Request) {
     }
 
     // 4. Fetch CURRENT stock from WooCommerce
+    // IMPORTANT: This is the actual WC stock (without pending-consult additions)
+    // Pending stock is only for dashboard display, never used in calculations or writes
     let currentWooStock = 0;
     try {
       const wooProduct = await getProduct(singleSku.woocommerce_product_id);
-      currentWooStock = wooProduct.stock_quantity || 0;
+      currentWooStock = wooProduct.stock_quantity || 0; // Actual WC stock, not including pending-consult
     } catch (error) {
       console.error(`Failed to fetch current stock for ${sku} from WooCommerce`, error);
       return NextResponse.json(
@@ -80,8 +82,10 @@ export async function POST(request: Request) {
       newQuantity = currentWooStock + qty;
 
       // 6. Update WooCommerce Stock (only for good condition)
+      // IMPORTANT: Write actual stock quantity (without pending-consult) to WC
+      // WC is not aware of pending-consult, so we write the actual quantity
       try {
-        await updateProductStock(singleSku.woocommerce_product_id, newQuantity);
+        await updateProductStock(singleSku.woocommerce_product_id, newQuantity); // Actual stock, not including pending-consult
         singleSkuUpdated = true;
         console.log(`✅ Updated single SKU ${sku} in WooCommerce (refund/return): ${newQuantity} units (condition: ${condition})`);
       } catch (error) {
@@ -184,7 +188,9 @@ export async function POST(request: Request) {
           if (comboLimit === Infinity) comboLimit = 0;
 
           try {
-            await updateProductStock(combo.woocommerce_product_id, comboLimit);
+            // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
+            // WC is not aware of pending-consult, so we write the actual calculated quantity
+            await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
             wooCommerceUpdates.push({
               sku: combo.sku,
               name: combo.name,

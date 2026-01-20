@@ -51,10 +51,12 @@ export async function POST(request: Request) {
     if (operation === 'add' || operation === 'subtract' || operation === 'set') {
       // 3. Fetch CURRENT stock from WooCommerce to ensure accuracy
       // This is the "Source of Truth" check
+      // IMPORTANT: This is the actual WC stock (without pending-consult additions)
+      // Pending stock is only for dashboard display, never used in calculations or writes
       let currentWooStock = 0;
       try {
         const wooProduct = await getProduct(singleSku.woocommerce_product_id);
-        currentWooStock = wooProduct.stock_quantity || 0;
+        currentWooStock = wooProduct.stock_quantity || 0; // Actual WC stock, not including pending-consult
       } catch (error) {
         console.error(`Failed to fetch current stock for ${sku} from WooCommerce`, error);
         // Fallback? Or fail? Fail is safer for data integrity.
@@ -78,9 +80,11 @@ export async function POST(request: Request) {
       if (newQuantity < 0) newQuantity = 0;
 
       // 5. Update WooCommerce Stock (Writing to Source of Truth)
+      // IMPORTANT: Write actual stock quantity (without pending-consult) to WC
+      // WC is not aware of pending-consult, so we write the actual quantity
       let singleSkuUpdated = false;
       try {
-        await updateProductStock(singleSku.woocommerce_product_id, newQuantity);
+        await updateProductStock(singleSku.woocommerce_product_id, newQuantity); // Actual stock, not including pending-consult
         singleSkuUpdated = true;
         console.log(`✅ Updated single SKU ${sku} in WooCommerce: ${newQuantity} units`);
       } catch (error) {
@@ -224,8 +228,10 @@ export async function POST(request: Request) {
           }
           if (comboLimit === Infinity) comboLimit = 0;
 
-          try {
-            await updateProductStock(combo.woocommerce_product_id, comboLimit);
+            try {
+              // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
+              // WC is not aware of pending-consult, so we write the actual calculated quantity
+              await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
             wooCommerceUpdates.push({
               sku: combo.sku,
               name: combo.name,

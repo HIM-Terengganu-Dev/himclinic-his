@@ -160,7 +160,8 @@ export async function POST(request: Request) {
             let comboLimit = Infinity;
 
             for (const comp of components) {
-                const stock = stockMap[comp.sku] || 0;
+                // stockMap contains actual WC stock (without pending-consult)
+                const stock = stockMap[comp.sku] || 0; // Actual WC stock
                 const canMake = Math.floor(stock / comp.quantity);
                 if (canMake < comboLimit) comboLimit = canMake;
             }
@@ -168,7 +169,9 @@ export async function POST(request: Request) {
             if (comboLimit === Infinity) comboLimit = 0;
 
             try {
-                await updateProductStock(combo.woocommerce_product_id, comboLimit);
+                // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
+                // WC is not aware of pending-consult, so we write the actual calculated quantity
+                await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
                 comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
                 console.log(`✅ Updated combo ${combo.sku} in WooCommerce: ${comboLimit} units`);
             } catch (e: any) {

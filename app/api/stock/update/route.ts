@@ -13,7 +13,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const updatedProduct = await updateProductStock(productId, stockQuantity);
+    // IMPORTANT: Write actual stock quantity (without pending-consult) to WC
+    // WC is not aware of pending-consult, so we write the actual quantity
+    const updatedProduct = await updateProductStock(productId, stockQuantity); // Actual stock, not including pending-consult
 
     return NextResponse.json({
       success: true,

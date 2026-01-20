@@ -290,15 +290,17 @@ export async function POST(request: Request) {
                 if (!wcProductId) continue;
 
                 try {
-                    // Get current stock
+                    // Get current stock from WC (actual stock, not including pending-consult)
+                    // IMPORTANT: Always use actual WC stock for calculations and writes
                     const currentProduct = await getProduct(wcProductId);
-                    const currentStock = currentProduct.stock_quantity || 0;
+                    const currentStock = currentProduct.stock_quantity || 0; // Actual WC stock
                     
                     // Calculate new stock (deduct)
                     const newStock = Math.max(0, currentStock - totalQty);
                     
-                    // Update in WooCommerce
-                    await updateProductStock(wcProductId, newStock);
+                    // Update in WooCommerce with actual stock quantity (without pending-consult)
+                    // WC is not aware of pending-consult, so we write the actual quantity
+                    await updateProductStock(wcProductId, newStock); // Actual stock, not including pending-consult
                     
                     singleSkuUpdates.push({
                         sku,
@@ -400,7 +402,9 @@ export async function POST(request: Request) {
                 if (comboLimit === Infinity) comboLimit = 0;
 
                 try {
-                    await updateProductStock(combo.woocommerce_product_id, comboLimit);
+                    // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
+                    // WC is not aware of pending-consult, so we write the actual calculated quantity
+                    await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
                     comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
                     console.log(`✅ Updated combo ${combo.sku} in WooCommerce: ${comboLimit} units`);
                 } catch (e: any) {
@@ -894,7 +898,9 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     const currentStock = currentProduct.stock_quantity || 0;
                     const newStock = currentStock + totalQty; // Restore stock
 
-                    await updateProductStock(wcProductId, newStock);
+                    // IMPORTANT: Write actual stock quantity (without pending-consult) to WC
+                    // WC is not aware of pending-consult, so we write the actual quantity
+                    await updateProductStock(wcProductId, newStock); // Actual stock, not including pending-consult
 
                     restoredUpdates.push({
                         sku,
@@ -1050,7 +1056,9 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                 if (comboLimit === Infinity) comboLimit = 0;
 
                 try {
-                    await updateProductStock(combo.woocommerce_product_id, comboLimit);
+                    // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
+                    // WC is not aware of pending-consult, so we write the actual calculated quantity
+                    await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
                     comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
                     console.log(`✅ Updated combo ${combo.sku} after cancellation: ${comboLimit} units`);
                 } catch (e: any) {
