@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, addPendingConsultationStock, removePendingConsultationStock } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
 export async function POST(request: Request) {
@@ -43,13 +43,34 @@ export async function POST(request: Request) {
         // Handle order cancellation: restore stock
         // Note: refunded orders do NOT automatically restore stock - staff must manually QC returned items first
         if (status === 'cancelled') {
+            // Check if order was previously in pending-consult status
+            // If so, just remove pending stock tracking and log (don't restore stock - payment was made, refund handled manually)
+            const previousPendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
+            if (previousPendingConsultLog) {
+                // Order was in pending-consult (payment made), now cancelled
+                // Remove pending stock tracking but DON'T restore stock (refund handled manually via procurement tab)
+                await removePendingConsultationStock(orderId);
+                return await handlePendingConsultCancellation(orderId, payload, request);
+            }
+            // Otherwise, handle as normal cancellation (for orders that were in processing status)
             return await handleOrderCancellation(orderId, payload, request);
+        }
+
+        // Handle 'pending-consult' status (Pending Consultation): Track stock deducted by WC
+        // WC reduces stock when payment is successful and order moves to "Pending Consultation"
+        // We need to track this so dashboard shows (stock +X) where X is pending stock
+        if (status === 'pending-consult') {
+            return await handlePendingConsultation(orderId, payload, request);
         }
 
         // Only process 'processing' status orders (paid orders that need stock deduction)
         if (status !== 'processing') {
             return NextResponse.json({ success: true, message: `Order status is ${status}, skipping stock update` });
         }
+
+        // Remove pending consultation stock when order moves to processing
+        // (stock was already deducted when order moved to pending-consult, so we just clean up the tracking)
+        await removePendingConsultationStock(orderId);
 
         // Check if this order was already processed (idempotency protection)
         // Prevents double deduction if order goes: processing → pending → processing
@@ -494,6 +515,220 @@ export async function POST(request: Request) {
     } catch (error) {
         console.error('Webhook Error:', error);
         return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    }
+}
+
+/**
+ * Handle pending-consult cancellation: Order was in pending-consult (payment made) but now cancelled
+ * Remove pending stock tracking but DON'T restore stock (refund handled manually via procurement tab)
+ */
+async function handlePendingConsultCancellation(orderId: number, payload: any, request?: Request) {
+    try {
+        console.log(`📋 Processing pending-consult cancellation for Order #${orderId} (payment was made, refund handled manually)`);
+
+        // Get line items from webhook payload
+        const lineItems = payload.line_items;
+        if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+            return NextResponse.json({ success: true, message: 'No line items in order' });
+        }
+
+        // Get SKU mappings from database
+        const allSingleSkus = await getAllSingleSkus();
+        const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
+
+        // Read current stock from WC for reporting (don't write/restore)
+        const stockReadings: Array<{ sku: string; wcStock: number }> = [];
+
+        for (const item of lineItems) {
+            if (!item.sku) continue;
+            
+            const sku = item.sku;
+            if (singleSkuMap.has(sku)) {
+                const singleSku = singleSkuMap.get(sku);
+                if (singleSku && singleSku.woocommerce_product_id) {
+                    try {
+                        const currentProduct = await getProduct(singleSku.woocommerce_product_id);
+                        const currentStock = currentProduct.stock_quantity || 0;
+                        stockReadings.push({ sku, wcStock: currentStock });
+                    } catch (e: any) {
+                        console.error(`❌ Failed to read stock for ${sku}:`, e.message);
+                    }
+                }
+            }
+        }
+
+        // Get IP address and user agent from request
+        const ipAddress = request?.headers.get('x-forwarded-for') || 
+                         request?.headers.get('x-real-ip') || 
+                         'unknown';
+        const userAgent = request?.headers.get('user-agent') || 'unknown';
+
+        // Extract SKUs from line items for logging
+        const orderSkus = lineItems.map((item: any) => item.sku).filter(Boolean);
+        const firstSku = orderSkus.length > 0 ? orderSkus[0] : undefined;
+
+        // Log to WC Webhook Logs (read-only, no stock restoration)
+        try {
+            await logWcWebhook({
+                webhookType: 'order',
+                webhookEvent: `order.${payload.status}`,
+                entityId: orderId,
+                entityName: `Order #${orderId}`,
+                entitySku: firstSku,
+                status: payload.status,
+                affectedSkus: orderSkus,
+                details: {
+                    orderId,
+                    status: payload.status,
+                    previousStatus: 'pending-consult',
+                    lineItems: lineItems.map((item: any) => ({
+                        sku: item.sku,
+                        name: item.name,
+                        quantity: item.quantity
+                    })),
+                    stockReadings: stockReadings,
+                    note: 'Order cancelled from pending-consult status. Payment was made, so stock NOT auto-restored. Refund must be handled manually via procurement tab. Pending stock tracking removed.'
+                },
+                ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
+                userAgent,
+                success: true
+            });
+        } catch (logError: any) {
+            console.error(`❌ Failed to log webhook for Order #${orderId}:`, logError.message);
+        }
+
+        return NextResponse.json({
+            success: true,
+            message: 'Pending-consult cancellation processed. Stock NOT restored (refund handled manually).',
+            stockReadings: stockReadings.length
+        });
+
+    } catch (error: any) {
+        console.error('Pending-Consult Cancellation Error:', error);
+        return NextResponse.json({ error: 'Internal Server Error', details: error.message }, { status: 500 });
+    }
+}
+
+/**
+ * Handle pending-consult status: Track stock deducted by WC for single SKU orders
+ * WC reduces stock when payment is successful and order moves to "Pending Consultation"
+ * We track this so dashboard can show (stock +X) where X is pending stock
+ */
+async function handlePendingConsultation(orderId: number, payload: any, request?: Request) {
+    try {
+        console.log(`📋 Processing pending-consult for Order #${orderId}`);
+
+        // Get line items from webhook payload
+        const lineItems = payload.line_items;
+        if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+            return NextResponse.json({ success: true, message: 'No line items in order' });
+        }
+
+        // Get SKU mappings from database
+        const allSingleSkus = await getAllSingleSkus();
+        const allCombos = await getAllComboSkus();
+        const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
+        const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
+
+        // Track pending stock for single SKU orders only (ignore combo SKUs)
+        const pendingStockUpdates: Array<{ sku: string; quantity: number; wcStock: number }> = [];
+
+        for (const item of lineItems) {
+            if (!item.sku) {
+                console.warn(`⚠️ Order #${orderId} has line item without SKU: ${item.name || 'Unknown'}`);
+                continue;
+            }
+
+            const sku = item.sku;
+            const quantity = item.quantity || 0;
+
+            // Only process single SKU orders (ignore combo SKUs)
+            if (singleSkuMap.has(sku)) {
+                const singleSku = singleSkuMap.get(sku);
+                if (singleSku && singleSku.woocommerce_product_id) {
+                    try {
+                        // Read current stock from WooCommerce (WC already deducted it)
+                        const currentProduct = await getProduct(singleSku.woocommerce_product_id);
+                        const currentStock = currentProduct.stock_quantity || 0;
+                        
+                        // Store pending consultation stock
+                        await addPendingConsultationStock(orderId, sku, quantity);
+                        
+                        pendingStockUpdates.push({
+                            sku,
+                            quantity,
+                            wcStock: currentStock
+                        });
+                        
+                        console.log(`✅ Tracked pending consultation stock for ${sku}: ${quantity} units (WC stock: ${currentStock})`);
+                    } catch (e: any) {
+                        console.error(`❌ Failed to track pending stock for ${sku}:`, e.message);
+                    }
+                }
+            } else if (comboSkuMap.has(sku)) {
+                // Combo SKU - ignore as per requirements
+                console.log(`⏭️ Skipping combo SKU ${sku} for pending consultation tracking`);
+            } else {
+                console.warn(`⚠️ SKU ${sku} from order #${orderId} not found in database`);
+            }
+        }
+
+        if (pendingStockUpdates.length === 0) {
+            return NextResponse.json({ success: true, message: 'No single SKUs found in order to track' });
+        }
+
+        // Get IP address and user agent from request
+        const ipAddress = request?.headers.get('x-forwarded-for') || 
+                         request?.headers.get('x-real-ip') || 
+                         'unknown';
+        const userAgent = request?.headers.get('user-agent') || 'unknown';
+
+        // Extract SKUs from line items for logging
+        const orderSkus = lineItems.map((item: any) => item.sku).filter(Boolean);
+        const firstSku = orderSkus.length > 0 ? orderSkus[0] : undefined;
+
+        // Log to WC Webhook Logs
+        try {
+            await logWcWebhook({
+                webhookType: 'order',
+                webhookEvent: `order.${payload.status}`,
+                entityId: orderId,
+                entityName: `Order #${orderId}`,
+                entitySku: firstSku,
+                status: payload.status,
+                affectedSkus: orderSkus,
+                details: {
+                    orderId,
+                    status: payload.status,
+                    lineItems: lineItems.map((item: any) => ({
+                        sku: item.sku,
+                        name: item.name,
+                        quantity: item.quantity
+                    })),
+                    pendingStockUpdates: pendingStockUpdates.map(u => ({
+                        sku: u.sku,
+                        quantity: u.quantity,
+                        wcStock: u.wcStock
+                    })),
+                    note: 'Order moved to Pending Consultation (pending-consult). WC deducted stock. System tracking pending stock for dashboard display.'
+                },
+                ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
+                userAgent,
+                success: true
+            });
+        } catch (logError: any) {
+            console.error(`❌ Failed to log webhook for Order #${orderId}:`, logError.message);
+        }
+
+        return NextResponse.json({
+            success: true,
+            message: 'Pending consultation stock tracked',
+            pendingStockUpdates: pendingStockUpdates.length
+        });
+
+    } catch (error: any) {
+        console.error('Pending Consultation Error:', error);
+        return NextResponse.json({ error: 'Internal Server Error', details: error.message }, { status: 500 });
     }
 }
 

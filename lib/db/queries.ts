@@ -228,22 +228,38 @@ export async function logActivity(data: {
     ipAddress?: string;
     userAgent?: string;
 }) {
-    await query(
-        `INSERT INTO inventory_management.activity_logs
-     (user_id, action, entity_type, entity_id, details, success, error_message, ip_address, user_agent)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [
-            typeof data.userId === 'number' ? data.userId : null,
-            data.action,
-            data.entityType,
-            data.entityId,
-            data.details ? JSON.stringify(data.details) : null,
-            data.success ?? true,
-            data.errorMessage,
-            data.ipAddress,
-            data.userAgent
-        ]
-    );
+    try {
+        await query(
+            `INSERT INTO inventory_management.activity_logs
+         (user_id, action, entity_type, entity_id, details, success, error_message, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [
+                typeof data.userId === 'number' ? data.userId : null,
+                data.action,
+                data.entityType,
+                data.entityId,
+                data.details ? JSON.stringify(data.details) : null,
+                data.success ?? true,
+                data.errorMessage,
+                data.ipAddress,
+                data.userAgent
+            ]
+        );
+    } catch (error: any) {
+        // Check if error is due to constraint violation (e.g., CHECK constraint on action column)
+        if (error.code === '23514' || error.message?.includes('check constraint') || error.message?.includes('violates check constraint')) {
+            console.error(`❌ CRITICAL: Failed to insert activity log due to constraint violation!`, {
+                action: data.action,
+                error: error.message,
+                code: error.code,
+                hint: 'The action value may not be allowed by a CHECK constraint or ENUM type on the action column.',
+                suggestion: 'Run docs/CHECK_ACTIVITY_LOGS_SCHEMA.sql to diagnose the issue.'
+            });
+            throw new Error(`Activity log insert failed: Action "${data.action}" violates table constraint. ${error.message}`);
+        }
+        // Re-throw other errors
+        throw error;
+    }
 }
 
 export async function getActivityLogs(filters: {
@@ -963,4 +979,52 @@ export async function markStockTakeItemAdjusted(stockTakeId: number, singleSkuId
         [notes || null, stockTakeId, singleSkuId]
     );
     return result.rows[0];
+}
+
+/**
+ * PENDING CONSULTATION STOCK OPERATIONS
+ */
+
+export async function addPendingConsultationStock(orderId: number, sku: string, quantity: number) {
+    const result = await query(
+        `INSERT INTO inventory_management.pending_consultation_stock (order_id, sku, quantity)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (order_id, sku) DO UPDATE SET quantity = $3
+         RETURNING *`,
+        [orderId, sku, quantity]
+    );
+    return result.rows[0];
+}
+
+export async function removePendingConsultationStock(orderId: number) {
+    const result = await query(
+        `DELETE FROM inventory_management.pending_consultation_stock
+         WHERE order_id = $1
+         RETURNING *`,
+        [orderId]
+    );
+    return result.rows;
+}
+
+export async function getPendingConsultationStockBySku(sku: string) {
+    const result = await query(
+        `SELECT SUM(quantity) as total_quantity
+         FROM inventory_management.pending_consultation_stock
+         WHERE sku = $1`,
+        [sku]
+    );
+    return parseInt(result.rows[0]?.total_quantity || '0', 10);
+}
+
+export async function getAllPendingConsultationStock(): Promise<Record<string, number>> {
+    const result = await query(
+        `SELECT sku, SUM(quantity) as total_quantity
+         FROM inventory_management.pending_consultation_stock
+         GROUP BY sku`
+    );
+    const stockMap: Record<string, number> = {};
+    result.rows.forEach((row: any) => {
+        stockMap[row.sku] = parseInt(row.total_quantity || '0', 10);
+    });
+    return stockMap;
 }

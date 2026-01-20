@@ -17,6 +17,7 @@ export default function Home() {
   const [inventory, setInventory] = useState<InventoryStock>({});
   const [comboAvailability, setComboAvailability] = useState<ComboAvailability[]>([]);
   const [singleSkuList, setSingleSkuList] = useState<Array<{ sku: string; name: string; id?: number }>>([]);
+  const [pendingStock, setPendingStock] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -43,6 +44,7 @@ export default function Home() {
         setInventory(data.singleSkus);
         setComboAvailability(data.comboAvailability);
         setSingleSkuList(data.singleSkuList || []);
+        setPendingStock(data.pendingStock || {});
         setLastUpdated(new Date());
 
         // Show notification if refresh was manually triggered
@@ -464,6 +466,7 @@ export default function Home() {
                     inventory={inventory}
                     comboAvailability={comboAvailability}
                     singleSkuList={singleSkuList}
+                    pendingStock={pendingStock}
                     loading={loading}
                   />
                 </div>

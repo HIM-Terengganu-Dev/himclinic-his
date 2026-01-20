@@ -4,7 +4,7 @@ import {
   calculateAllComboAvailability,
 } from '@/lib/utils/inventory';
 import { getProducts } from '@/lib/services/woocommerce';
-import { getAllSingleSkus, getAllComboSkus } from '@/lib/db/queries';
+import { getAllSingleSkus, getAllComboSkus, getAllPendingConsultationStock } from '@/lib/db/queries';
 import { InventoryStock } from '@/types/inventory';
 
 // Force dynamic rendering to prevent Next.js caching
@@ -64,6 +64,9 @@ export async function GET() {
     // Calculate combo availability using database combos
     const comboAvailability = calculateAllComboAvailability(inventoryStore, comboSkus);
 
+    // Get pending consultation stock (stock deducted by WC when order moves to "pending" status)
+    const pendingStock = await getAllPendingConsultationStock();
+
     // Return SKU list for frontend display
     const singleSkuList = singleSkus.map((sku: any) => ({
       sku: sku.sku,
@@ -76,6 +79,7 @@ export async function GET() {
       singleSkus: inventoryStore,
       comboAvailability,
       singleSkuList, // For frontend to know which SKUs to display
+      pendingStock, // Pending consultation stock: { "sku": quantity, ... }
       initializedFromWooCommerce: true,
     }, {
       headers: {

@@ -13,6 +13,7 @@ interface InventoryDashboardProps {
   inventory: InventoryStock;
   comboAvailability: ComboAvailability[];
   singleSkuList?: SingleSkuInfo[];
+  pendingStock?: Record<string, number>;
   loading: boolean;
 }
 
@@ -20,6 +21,7 @@ export default function InventoryDashboard({
   inventory,
   comboAvailability,
   singleSkuList = [],
+  pendingStock = {},
   loading,
 }: InventoryDashboardProps) {
   if (loading) {
@@ -55,8 +57,10 @@ export default function InventoryDashboard({
                 {singleSkuList.length > 0 ? (
                   singleSkuList.map((sku) => {
                     const quantity = inventory[sku.sku] || 0;
+                    const pendingQty = pendingStock[sku.sku] || 0;
                     const isLowStock = quantity < 5;
                     const isOutOfStock = quantity === 0;
+                    const hasPendingStock = pendingQty > 0;
 
                     return (
                       <tr key={sku.sku} className={`hover:bg-opacity-75 transition-colors ${isOutOfStock ? 'bg-red-50' : isLowStock ? 'bg-yellow-50' : 'bg-white'}`}>
@@ -67,7 +71,17 @@ export default function InventoryDashboard({
                           <span className={`font-bold ${isOutOfStock ? 'text-red-600' : isLowStock ? 'text-yellow-600' : 'text-green-600'}`}>
                             {quantity}
                           </span>
+                          {hasPendingStock && (
+                            <span className="text-yellow-600 font-semibold ml-1">
+                              (+{pendingQty})
+                            </span>
+                          )}
                           <span className="text-gray-500 ml-1 text-xs">units</span>
+                          {hasPendingStock && (
+                            <span className="text-yellow-600 text-xs ml-1" title="Pending Consultation - payment made but order not yet processed">
+                              ⚠️
+                            </span>
+                          )}
                         </td>
                       </tr>
                     );
