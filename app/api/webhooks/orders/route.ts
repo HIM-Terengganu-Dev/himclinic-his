@@ -68,9 +68,15 @@ export async function POST(request: Request) {
             return NextResponse.json({ success: true, message: `Order status is ${status}, skipping stock update` });
         }
 
-        // Remove pending consultation stock when order moves to processing
-        // (stock was already deducted when order moved to pending-consult, so we just clean up the tracking)
-        await removePendingConsultationStock(orderId);
+        // Check if order was previously in pending-consult status
+        // This helps us understand the context: WC already deducted stock (combo SKU or single SKU),
+        // but for combo SKUs, components weren't deducted yet (HIS will deduct them now)
+        const previousPendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
+        if (previousPendingConsultLog) {
+            console.log(`📋 Order #${orderId} was previously in pending-consult - removing pending stock tracking before processing`);
+            // Remove pending consultation stock tracking (WC already deducted, HIS will deduct components for combos if needed)
+            await removePendingConsultationStock(orderId);
+        }
 
         // Check if this order was already processed (idempotency protection)
         // Prevents double deduction if order goes: processing → pending → processing
@@ -261,10 +267,13 @@ export async function POST(request: Request) {
 
         // Step 2: Deduct component single SKU stocks for combo SKU orders
         // WooCommerce doesn't know about component breakdown, so we need to deduct them
+        // Note: If order was in pending-consult, WC already deducted the combo SKU stock itself,
+        // but components were NOT deducted yet, so we still need to deduct components here (no double-deduction)
         const singleSkuUpdates: Array<{ sku: string; previousStock: number; newStock: number; isWcSide?: false }> = [];
         
         if (singleSkuDeductions.length > 0) {
-            console.log(`Deducting component single SKU stocks for ${singleSkuDeductions.length} component deductions`);
+            const wasPendingConsult = previousPendingConsultLog !== null;
+            console.log(`Deducting component single SKU stocks for ${singleSkuDeductions.length} component deductions${wasPendingConsult ? ' (order was in pending-consult, components not deducted yet)' : ''}`);
             
             // Group deductions by SKU (in case multiple combos use same component)
             const deductionMap = new Map<string, number>();
@@ -630,8 +639,8 @@ async function handlePendingConsultation(orderId: number, payload: any, request?
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
         const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
 
-        // Track pending stock for single SKU orders only (ignore combo SKUs)
-        const pendingStockUpdates: Array<{ sku: string; quantity: number; wcStock: number }> = [];
+        // Track pending stock for both single SKU and combo SKU orders
+        const pendingStockUpdates: Array<{ sku: string; quantity: number; wcStock: number; isCombo: boolean }> = [];
 
         for (const item of lineItems) {
             if (!item.sku) {
@@ -642,7 +651,7 @@ async function handlePendingConsultation(orderId: number, payload: any, request?
             const sku = item.sku;
             const quantity = item.quantity || 0;
 
-            // Only process single SKU orders (ignore combo SKUs)
+            // Process single SKU orders
             if (singleSkuMap.has(sku)) {
                 const singleSku = singleSkuMap.get(sku);
                 if (singleSku && singleSku.woocommerce_product_id) {
@@ -657,17 +666,39 @@ async function handlePendingConsultation(orderId: number, payload: any, request?
                         pendingStockUpdates.push({
                             sku,
                             quantity,
-                            wcStock: currentStock
+                            wcStock: currentStock,
+                            isCombo: false
                         });
                         
-                        console.log(`✅ Tracked pending consultation stock for ${sku}: ${quantity} units (WC stock: ${currentStock})`);
+                        console.log(`✅ Tracked pending consultation stock for single SKU ${sku}: ${quantity} units (WC stock: ${currentStock})`);
                     } catch (e: any) {
                         console.error(`❌ Failed to track pending stock for ${sku}:`, e.message);
                     }
                 }
             } else if (comboSkuMap.has(sku)) {
-                // Combo SKU - ignore as per requirements
-                console.log(`⏭️ Skipping combo SKU ${sku} for pending consultation tracking`);
+                // Combo SKU - track it (WC deducted combo SKU stock, but components not deducted yet)
+                const combo = comboSkuMap.get(sku);
+                if (combo && combo.woocommerce_product_id) {
+                    try {
+                        // Read current combo SKU stock from WooCommerce (WC already deducted it)
+                        const currentProduct = await getProduct(combo.woocommerce_product_id);
+                        const currentStock = currentProduct.stock_quantity || 0;
+                        
+                        // Store pending consultation stock for combo SKU
+                        await addPendingConsultationStock(orderId, sku, quantity);
+                        
+                        pendingStockUpdates.push({
+                            sku,
+                            quantity,
+                            wcStock: currentStock,
+                            isCombo: true
+                        });
+                        
+                        console.log(`✅ Tracked pending consultation stock for combo SKU ${sku}: ${quantity} units (WC stock: ${currentStock}, components not deducted yet)`);
+                    } catch (e: any) {
+                        console.error(`❌ Failed to track pending stock for combo SKU ${sku}:`, e.message);
+                    }
+                }
             } else {
                 console.warn(`⚠️ SKU ${sku} from order #${orderId} not found in database`);
             }
@@ -708,9 +739,10 @@ async function handlePendingConsultation(orderId: number, payload: any, request?
                     pendingStockUpdates: pendingStockUpdates.map(u => ({
                         sku: u.sku,
                         quantity: u.quantity,
-                        wcStock: u.wcStock
+                        wcStock: u.wcStock,
+                        isCombo: u.isCombo
                     })),
-                    note: 'Order moved to Pending Consultation (pending-consult). WC deducted stock. System tracking pending stock for dashboard display.'
+                    note: 'Order moved to Pending Consultation (pending-consult). WC deducted stock (combo SKU stock for combos, single SKU stock for singles). System tracking pending stock for dashboard display. For combo SKUs, components will be deducted when order moves to processing.'
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,
