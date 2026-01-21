@@ -985,13 +985,13 @@ export async function markStockTakeItemAdjusted(stockTakeId: number, singleSkuId
  * PENDING CONSULTATION STOCK OPERATIONS
  */
 
-export async function addPendingConsultationStock(orderId: number, sku: string, quantity: number) {
+export async function addPendingConsultationStock(orderId: number, sku: string, quantity: number, status: 'pending-consult' | 'pending-review' = 'pending-consult') {
     const result = await query(
-        `INSERT INTO inventory_management.pending_consultation_stock (order_id, sku, quantity)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (order_id, sku) DO UPDATE SET quantity = $3
+        `INSERT INTO inventory_management.pending_consultation_stock (order_id, sku, quantity, status)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (order_id, sku) DO UPDATE SET quantity = $3, status = $4
          RETURNING *`,
-        [orderId, sku, quantity]
+        [orderId, sku, quantity, status]
     );
     return result.rows[0];
 }
@@ -1014,6 +1014,16 @@ export async function getPendingConsultationStockBySku(sku: string) {
         [sku]
     );
     return parseInt(result.rows[0]?.total_quantity || '0', 10);
+}
+
+export async function getPendingConsultationStockByOrderAndSku(orderId: number, sku: string) {
+    const result = await query(
+        `SELECT quantity
+         FROM inventory_management.pending_consultation_stock
+         WHERE order_id = $1 AND sku = $2`,
+        [orderId, sku]
+    );
+    return result.rows.length > 0 ? parseInt(result.rows[0].quantity || '0', 10) : 0;
 }
 
 export async function getAllPendingConsultationStock(): Promise<Record<string, number>> {

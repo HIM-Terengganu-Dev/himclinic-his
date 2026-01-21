@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, addPendingConsultationStock, removePendingConsultationStock } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, addPendingConsultationStock, removePendingConsultationStock, getPendingConsultationStockByOrderAndSku } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
 export async function POST(request: Request) {
@@ -272,14 +272,14 @@ export async function POST(request: Request) {
 
         // Step 2: Deduct component single SKU stocks for combo SKU orders
         // WooCommerce doesn't know about component breakdown, so we need to deduct them
-        // Note: If order was in pending-consult or pending-review, WC already deducted the combo SKU stock itself,
-        // but components were NOT deducted yet, so we still need to deduct components here (no double-deduction)
+        // IMPORTANT: If order was in pending-consult or pending-review, components were ALREADY deducted,
+        // so we should NOT deduct again - just remove pending tracking
         const singleSkuUpdates: Array<{ sku: string; previousStock: number; newStock: number; isWcSide?: false }> = [];
         
         if (singleSkuDeductions.length > 0) {
             const wasPending = previousPendingLog !== null;
             const previousPendingStatus = previousPendingConsultLog ? 'pending-consult' : (previousPendingReviewLog ? 'pending-review' : null);
-            console.log(`Deducting component single SKU stocks for ${singleSkuDeductions.length} component deductions${wasPending ? ` (order was in ${previousPendingStatus}, components not deducted yet)` : ''}`);
+            console.log(`Processing component single SKU stocks for ${singleSkuDeductions.length} component deductions${wasPending ? ` (order was in ${previousPendingStatus}, components already deducted - will skip deduction and remove pending tracking)` : ' (will deduct components)'}`);
             
             // Group deductions by SKU (in case multiple combos use same component)
             const deductionMap = new Map<string, number>();
@@ -290,34 +290,51 @@ export async function POST(request: Request) {
                 wcIdMap.set(deduction.sku, deduction.wcProductId);
             }
 
-            // Deduct each component SKU in WooCommerce
+            // Process each component SKU
             for (const [sku, totalQty] of deductionMap.entries()) {
                 const wcProductId = wcIdMap.get(sku);
                 if (!wcProductId) continue;
 
                 try {
-                    // Get current stock from WC (actual stock, not including pending-consult)
-                    // IMPORTANT: Always use actual WC stock for calculations and writes
-                    const currentProduct = await getProduct(wcProductId);
-                    const currentStock = currentProduct.stock_quantity || 0; // Actual WC stock
+                    // Check if this component was already deducted in pending-consult/review
+                    const pendingQty = await getPendingConsultationStockByOrderAndSku(orderId, sku);
                     
-                    // Calculate new stock (deduct)
-                    const newStock = Math.max(0, currentStock - totalQty);
-                    
-                    // Update in WooCommerce with actual stock quantity (without pending-consult)
-                    // WC is not aware of pending-consult, so we write the actual quantity
-                    await updateProductStock(wcProductId, newStock); // Actual stock, not including pending-consult
-                    
-                    singleSkuUpdates.push({
-                        sku,
-                        previousStock: currentStock,
-                        newStock,
-                        isWcSide: false
-                    });
-                    
-                    console.log(`✅ Deducted ${totalQty} from ${sku} (${currentStock} → ${newStock})`);
+                    if (pendingQty > 0) {
+                        // Component was already deducted in pending-consult/review
+                        // Just read current stock for logging, but don't deduct again
+                        const currentProduct = await getProduct(wcProductId);
+                        const currentStock = currentProduct.stock_quantity || 0;
+                        
+                        singleSkuUpdates.push({
+                            sku,
+                            previousStock: currentStock + pendingQty, // Previous stock before pending deduction
+                            newStock: currentStock, // Current stock (already deducted)
+                            isWcSide: false
+                        });
+                        
+                        console.log(`⏭️ Skipped deduction for ${sku} (already deducted ${pendingQty} in ${previousPendingStatus}, current stock: ${currentStock})`);
+                    } else {
+                        // Component was NOT deducted yet - deduct now
+                        const currentProduct = await getProduct(wcProductId);
+                        const currentStock = currentProduct.stock_quantity || 0; // Actual WC stock
+                        
+                        // Calculate new stock (deduct)
+                        const newStock = Math.max(0, currentStock - totalQty);
+                        
+                        // Update in WooCommerce with actual stock quantity
+                        await updateProductStock(wcProductId, newStock);
+                        
+                        singleSkuUpdates.push({
+                            sku,
+                            previousStock: currentStock,
+                            newStock,
+                            isWcSide: false
+                        });
+                        
+                        console.log(`✅ Deducted ${totalQty} from ${sku} (${currentStock} → ${newStock})`);
+                    }
                 } catch (e: any) {
-                    console.error(`❌ Failed to deduct stock for component ${sku}:`, e.message);
+                    console.error(`❌ Failed to process ${sku}:`, e.message);
                 }
             }
         }
@@ -688,8 +705,8 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                         const currentProduct = await getProduct(singleSku.woocommerce_product_id);
                         const currentStock = currentProduct.stock_quantity || 0;
                         
-                        // Store pending consultation stock
-                        await addPendingConsultationStock(orderId, sku, quantity);
+                        // Store pending consultation stock with status
+                        await addPendingConsultationStock(orderId, sku, quantity, status);
                         
                         pendingStockUpdates.push({
                             sku,
@@ -704,27 +721,66 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                     }
                 }
             } else if (comboSkuMap.has(sku)) {
-                // Combo SKU - track it (WC deducted combo SKU stock, but components not deducted yet)
+                // Combo SKU - deduct component stocks immediately and track components (not combo SKU)
+                // WC deducted combo SKU stock, but components need to be deducted by HIS immediately
+                // This ensures dashboard shows correct component stock (e.g., 71+1 instead of 72+1)
                 const combo = comboSkuMap.get(sku);
                 if (combo && combo.woocommerce_product_id) {
                     try {
-                        // Read current combo SKU stock from WooCommerce (WC already deducted it)
-                        const currentProduct = await getProduct(combo.woocommerce_product_id);
-                        const currentStock = currentProduct.stock_quantity || 0;
+                        // Parse components from database JSONB field
+                        const components = Array.isArray(combo.components) 
+                            ? combo.components 
+                            : JSON.parse(combo.components || '[]');
                         
-                        // Store pending consultation stock for combo SKU
-                        await addPendingConsultationStock(orderId, sku, quantity);
-                        
-                        pendingStockUpdates.push({
-                            sku,
-                            quantity,
-                            wcStock: currentStock,
-                            isCombo: true
-                        });
-                        
-                        console.log(`✅ Tracked pending consultation stock for combo SKU ${sku}: ${quantity} units (WC stock: ${currentStock}, components not deducted yet)`);
+                        // Deduct component stocks immediately (same as processing does)
+                        for (const comp of components) {
+                            if (!comp.sku || !comp.quantity) {
+                                console.warn(`⚠️ Invalid component in combo ${sku}:`, comp);
+                                continue;
+                            }
+                            
+                            // Validate component SKU exists in database
+                            if (!singleSkuMap.has(comp.sku)) {
+                                console.warn(`⚠️ Component SKU ${comp.sku} from combo ${sku} not found in database`);
+                                continue;
+                            }
+                            
+                            const componentSku = singleSkuMap.get(comp.sku);
+                            if (!componentSku || !componentSku.woocommerce_product_id) {
+                                console.warn(`⚠️ Component SKU ${comp.sku} missing WooCommerce product ID`);
+                                continue;
+                            }
+                            
+                            const deductedQty = comp.quantity * quantity;
+                            
+                            try {
+                                // Get current stock from WC
+                                const currentProduct = await getProduct(componentSku.woocommerce_product_id);
+                                const currentStock = currentProduct.stock_quantity || 0;
+                                
+                                // Calculate new stock (deduct)
+                                const newStock = Math.max(0, currentStock - deductedQty);
+                                
+                                // Update in WooCommerce with actual stock quantity
+                                await updateProductStock(componentSku.woocommerce_product_id, newStock);
+                                
+                                // Track pending consultation stock for component (not combo SKU)
+                                await addPendingConsultationStock(orderId, comp.sku, deductedQty, status);
+                                
+                                pendingStockUpdates.push({
+                                    sku: comp.sku,
+                                    quantity: deductedQty,
+                                    wcStock: newStock,
+                                    isCombo: false // Track as component, not combo
+                                });
+                                
+                                console.log(`✅ Deducted and tracked pending consultation stock for combo component ${comp.sku}: ${deductedQty} units (${currentStock} → ${newStock})`);
+                            } catch (e: any) {
+                                console.error(`❌ Failed to deduct/track component ${comp.sku} for combo ${sku}:`, e.message);
+                            }
+                        }
                     } catch (e: any) {
-                        console.error(`❌ Failed to track pending stock for combo SKU ${sku}:`, e.message);
+                        console.error(`❌ Failed to process combo SKU ${sku}:`, e.message);
                     }
                 }
             } else {

@@ -64,40 +64,10 @@ export async function GET() {
     // Calculate combo availability using database combos
     const comboAvailability = calculateAllComboAvailability(inventoryStore, comboSkus);
 
-    // Get pending consultation stock (stock deducted by WC when order moves to "pending-consult" status)
-    // This includes both single SKU and combo SKU orders
+    // Get pending consultation stock (stock deducted by WC when order moves to "pending-consult" or "pending-review" status)
+    // For single SKU orders: tracks the single SKU directly
+    // For combo SKU orders: tracks component SKUs (components are deducted immediately when pending-consult/review)
     const pendingStock = await getAllPendingConsultationStock();
-    
-    // Calculate pending component stock from pending combo SKU orders
-    // For each pending combo SKU, calculate how much component stock is "reserved"
-    const pendingComponentStock: Record<string, number> = {};
-    
-    // Get all combo SKUs to calculate component breakdown
-    for (const combo of comboSkus) {
-        const comboPendingQty = pendingStock[combo.sku] || 0;
-        if (comboPendingQty > 0) {
-            // Parse components from database JSONB field
-            const components = Array.isArray(combo.components) 
-                ? combo.components 
-                : JSON.parse(combo.components || '[]');
-            
-            // For each component, add the pending quantity (component.quantity * comboPendingQty)
-            for (const comp of components) {
-                if (comp.sku && comp.quantity) {
-                    const componentPendingQty = comp.quantity * comboPendingQty;
-                    pendingComponentStock[comp.sku] = (pendingComponentStock[comp.sku] || 0) + componentPendingQty;
-                }
-            }
-        }
-    }
-    
-    // Merge single SKU pending stock with component pending stock
-    // Component pending stock takes precedence (if a SKU is both a single SKU and a component, show component pending)
-    const finalPendingStock: Record<string, number> = { ...pendingStock };
-    for (const [sku, qty] of Object.entries(pendingComponentStock)) {
-        // Add component pending stock (may add to existing if SKU was also directly ordered)
-        finalPendingStock[sku] = (finalPendingStock[sku] || 0) + qty;
-    }
 
     // Return SKU list for frontend display
     const singleSkuList = singleSkus.map((sku: any) => ({
@@ -111,7 +81,7 @@ export async function GET() {
       singleSkus: inventoryStore,
       comboAvailability,
       singleSkuList, // For frontend to know which SKUs to display
-      pendingStock: finalPendingStock, // Pending consultation stock: includes single SKU + component stock from combo SKUs
+      pendingStock: pendingStock, // Pending consultation stock: single SKUs and combo components (components deducted immediately)
       initializedFromWooCommerce: true,
     }, {
       headers: {
