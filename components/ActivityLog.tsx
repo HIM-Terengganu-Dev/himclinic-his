@@ -277,6 +277,17 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             }
         }
         
+        // Webhook log failure actions
+        if (action === 'webhook_log_failed_after_stock_deduction') {
+            return '⚠️ Webhook Log Failed (Stock Deducted)';
+        }
+        if (action === 'webhook_log_failed_after_stock_restoration') {
+            return '⚠️ Webhook Log Failed (Stock Restored)';
+        }
+        if (action === 'webhook_log_failed_product_update') {
+            return '⚠️ Webhook Log Failed (Product Updated)';
+        }
+        
         switch (action) {
             case 'procurement_update': return 'Stock Update';
             case 'sku_created': return 'Created SKU';
@@ -303,6 +314,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         
         if (log.action.includes('sku')) return 'bg-purple-100 text-purple-800';
         if (log.action.includes('error')) return 'bg-red-100 text-red-800';
+        if (log.action.includes('webhook_log_failed')) return 'bg-red-100 text-red-800 border border-red-200'; // Critical errors
         if (log.action.includes('stock_take')) return 'bg-indigo-100 text-indigo-800';
         return 'bg-gray-100 text-gray-800';
     };
@@ -317,8 +329,12 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         return event.replace(/_/g, ' ').toUpperCase();
     };
 
-    const getWebhookTypeColor = (type: string) => {
-        if (type === 'order') return 'bg-green-100 text-green-800';
+    const getWebhookTypeColor = (type: string, status?: string) => {
+        if (type === 'order') {
+            // Show yellow for pending-consult status
+            if (status === 'pending-consult') return 'bg-yellow-100 text-yellow-800 border border-yellow-200';
+            return 'bg-green-100 text-green-800';
+        }
         if (type === 'product') return 'bg-blue-100 text-blue-800';
         return 'bg-gray-100 text-gray-800';
     };
@@ -591,6 +607,37 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 <div className="text-xs text-gray-400">{log.details.notes}</div>
                                                             )}
                                                         </div>
+                                                    ) : log.action.includes('webhook_log_failed') && log.details ? (
+                                                        <div className="space-y-1">
+                                                            <div className="text-xs font-medium text-red-700">
+                                                                {log.details.note || 'Webhook log failed - manual reconciliation required'}
+                                                            </div>
+                                                            {log.details.orderId && (
+                                                                <div className="text-xs">
+                                                                    <span className="font-medium">Order:</span> #{log.details.orderId}
+                                                                </div>
+                                                            )}
+                                                            {log.details.componentDeductions && Array.isArray(log.details.componentDeductions) && log.details.componentDeductions.length > 0 && (
+                                                                <div className="text-xs">
+                                                                    <span className="font-medium">Affected:</span> {log.details.componentDeductions.map((d: any) => d.sku).join(', ')}
+                                                                </div>
+                                                            )}
+                                                            {log.details.componentRestorations && Array.isArray(log.details.componentRestorations) && log.details.componentRestorations.length > 0 && (
+                                                                <div className="text-xs">
+                                                                    <span className="font-medium">Affected:</span> {log.details.componentRestorations.map((r: any) => r.sku).join(', ')}
+                                                                </div>
+                                                            )}
+                                                            {log.details.sku && (
+                                                                <div className="text-xs">
+                                                                    <span className="font-medium">SKU:</span> {log.details.sku}
+                                                                </div>
+                                                            )}
+                                                            {log.error_message && (
+                                                                <div className="text-xs text-red-600 mt-1">
+                                                                    <span className="font-medium">Error:</span> {log.error_message}
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     ) : (
                                                         <span className="truncate">{JSON.stringify(log.details)}</span>
                                                     )}
@@ -618,7 +665,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                 {formatDateTimeWithSecondsGMT8(log.created_at)}
                                             </td>
                                             <td className="px-6 py-4">
-                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getWebhookTypeColor(log.webhook_type)}`}>
+                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getWebhookTypeColor(log.webhook_type, log.status)}`}>
                                                     {log.webhook_type === 'order' ? <ShoppingCart size={12} className="mr-1" /> : <Package size={12} className="mr-1" />}
                                                     {log.webhook_type}
                                                 </span>
