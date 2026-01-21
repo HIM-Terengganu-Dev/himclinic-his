@@ -631,6 +631,18 @@ async function handlePendingConsultation(orderId: number, payload: any, request?
     try {
         console.log(`📋 Processing pending-consult for Order #${orderId}`);
 
+        // Check if this order was already processed in pending-consult status (idempotency protection)
+        // Prevents double tracking if order goes: pending-consult → other status → pending-consult
+        const previousPendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
+        if (previousPendingConsultLog && previousPendingConsultLog.success) {
+            console.log(`⏭️ Order #${orderId} was already processed in pending-consult status - skipping duplicate tracking to prevent double counting`);
+            return NextResponse.json({ 
+                success: true, 
+                message: `Order #${orderId} was already processed in pending-consult status - skipping duplicate tracking`,
+                previousProcessingTime: previousPendingConsultLog.created_at
+            });
+        }
+
         // Get line items from webhook payload
         const lineItems = payload.line_items;
         if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
