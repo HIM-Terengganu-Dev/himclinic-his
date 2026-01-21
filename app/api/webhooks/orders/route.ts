@@ -43,24 +43,26 @@ export async function POST(request: Request) {
         // Handle order cancellation: restore stock
         // Note: refunded orders do NOT automatically restore stock - staff must manually QC returned items first
         if (status === 'cancelled') {
-            // Check if order was previously in pending-consult status
+            // Check if order was previously in pending-consult or pending-review status
             // If so, just remove pending stock tracking and log (don't restore stock - payment was made, refund handled manually)
             const previousPendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
-            if (previousPendingConsultLog) {
-                // Order was in pending-consult (payment made), now cancelled
+            const previousPendingReviewLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-review');
+            if (previousPendingConsultLog || previousPendingReviewLog) {
+                // Order was in pending-consult or pending-review (payment made), now cancelled
                 // Remove pending stock tracking but DON'T restore stock (refund handled manually via procurement tab)
                 await removePendingConsultationStock(orderId);
-                return await handlePendingConsultCancellation(orderId, payload, request);
+                return await handlePendingCancellation(orderId, payload, request, previousPendingConsultLog ? 'pending-consult' : 'pending-review');
             }
             // Otherwise, handle as normal cancellation (for orders that were in processing status)
             return await handleOrderCancellation(orderId, payload, request);
         }
 
-        // Handle 'pending-consult' status (Pending Consultation): Track stock deducted by WC
-        // WC reduces stock when payment is successful and order moves to "Pending Consultation"
+        // Handle 'pending-consult' and 'pending-review' status: Track stock deducted by WC
+        // WC reduces stock when payment is successful and order moves to "Pending Consultation" or "Pending Review"
         // We need to track this so dashboard shows (stock +X) where X is pending stock
-        if (status === 'pending-consult') {
-            return await handlePendingConsultation(orderId, payload, request);
+        // Both statuses share the same logic and database table
+        if (status === 'pending-consult' || status === 'pending-review') {
+            return await handlePendingStatus(orderId, payload, request, status);
         }
 
         // Only process 'processing' status orders (paid orders that need stock deduction)
@@ -68,12 +70,15 @@ export async function POST(request: Request) {
             return NextResponse.json({ success: true, message: `Order status is ${status}, skipping stock update` });
         }
 
-        // Check if order was previously in pending-consult status
+        // Check if order was previously in pending-consult or pending-review status
         // This helps us understand the context: WC already deducted stock (combo SKU or single SKU),
         // but for combo SKUs, components weren't deducted yet (HIS will deduct them now)
         const previousPendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
-        if (previousPendingConsultLog) {
-            console.log(`📋 Order #${orderId} was previously in pending-consult - removing pending stock tracking before processing`);
+        const previousPendingReviewLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-review');
+        const previousPendingLog = previousPendingConsultLog || previousPendingReviewLog;
+        if (previousPendingLog) {
+            const previousStatus = previousPendingConsultLog ? 'pending-consult' : 'pending-review';
+            console.log(`📋 Order #${orderId} was previously in ${previousStatus} - removing pending stock tracking before processing`);
             // Remove pending consultation stock tracking (WC already deducted, HIS will deduct components for combos if needed)
             await removePendingConsultationStock(orderId);
         }
@@ -267,13 +272,14 @@ export async function POST(request: Request) {
 
         // Step 2: Deduct component single SKU stocks for combo SKU orders
         // WooCommerce doesn't know about component breakdown, so we need to deduct them
-        // Note: If order was in pending-consult, WC already deducted the combo SKU stock itself,
+        // Note: If order was in pending-consult or pending-review, WC already deducted the combo SKU stock itself,
         // but components were NOT deducted yet, so we still need to deduct components here (no double-deduction)
         const singleSkuUpdates: Array<{ sku: string; previousStock: number; newStock: number; isWcSide?: false }> = [];
         
         if (singleSkuDeductions.length > 0) {
-            const wasPendingConsult = previousPendingConsultLog !== null;
-            console.log(`Deducting component single SKU stocks for ${singleSkuDeductions.length} component deductions${wasPendingConsult ? ' (order was in pending-consult, components not deducted yet)' : ''}`);
+            const wasPending = previousPendingLog !== null;
+            const previousPendingStatus = previousPendingConsultLog ? 'pending-consult' : (previousPendingReviewLog ? 'pending-review' : null);
+            console.log(`Deducting component single SKU stocks for ${singleSkuDeductions.length} component deductions${wasPending ? ` (order was in ${previousPendingStatus}, components not deducted yet)` : ''}`);
             
             // Group deductions by SKU (in case multiple combos use same component)
             const deductionMap = new Map<string, number>();
@@ -532,12 +538,13 @@ export async function POST(request: Request) {
 }
 
 /**
- * Handle pending-consult cancellation: Order was in pending-consult (payment made) but now cancelled
+ * Handle pending cancellation: Order was in pending-consult or pending-review (payment made) but now cancelled
  * Remove pending stock tracking but DON'T restore stock (refund handled manually via procurement tab)
  */
-async function handlePendingConsultCancellation(orderId: number, payload: any, request?: Request) {
+async function handlePendingCancellation(orderId: number, payload: any, request?: Request, previousStatus: 'pending-consult' | 'pending-review' = 'pending-consult') {
     try {
-        console.log(`📋 Processing pending-consult cancellation for Order #${orderId} (payment was made, refund handled manually)`);
+        const statusLabel = previousStatus === 'pending-consult' ? 'Pending Consultation' : 'Pending Review';
+        console.log(`📋 Processing ${previousStatus} cancellation for Order #${orderId} (payment was made, refund handled manually)`);
 
         // Get line items from webhook payload
         const lineItems = payload.line_items;
@@ -593,14 +600,14 @@ async function handlePendingConsultCancellation(orderId: number, payload: any, r
                 details: {
                     orderId,
                     status: payload.status,
-                    previousStatus: 'pending-consult',
+                    previousStatus: previousStatus,
                     lineItems: lineItems.map((item: any) => ({
                         sku: item.sku,
                         name: item.name,
                         quantity: item.quantity
                     })),
                     stockReadings: stockReadings,
-                    note: 'Order cancelled from pending-consult status. Payment was made, so stock NOT auto-restored. Refund must be handled manually via procurement tab. Pending stock tracking removed.'
+                    note: `Order cancelled from ${previousStatus} status (${statusLabel}). Payment was made, so stock NOT auto-restored. Refund must be handled manually via procurement tab. Pending stock tracking removed.`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,
@@ -612,7 +619,7 @@ async function handlePendingConsultCancellation(orderId: number, payload: any, r
 
         return NextResponse.json({
             success: true,
-            message: 'Pending-consult cancellation processed. Stock NOT restored (refund handled manually).',
+            message: `${statusLabel} cancellation processed. Stock NOT restored (refund handled manually).`,
             stockReadings: stockReadings.length
         });
 
@@ -623,23 +630,28 @@ async function handlePendingConsultCancellation(orderId: number, payload: any, r
 }
 
 /**
- * Handle pending-consult status: Track stock deducted by WC for single SKU orders
- * WC reduces stock when payment is successful and order moves to "Pending Consultation"
+ * Handle pending status (pending-consult or pending-review): Track stock deducted by WC
+ * WC reduces stock when payment is successful and order moves to "Pending Consultation" or "Pending Review"
  * We track this so dashboard can show (stock +X) where X is pending stock
+ * Both statuses share the same logic and database table
  */
-async function handlePendingConsultation(orderId: number, payload: any, request?: Request) {
+async function handlePendingStatus(orderId: number, payload: any, request: Request, status: 'pending-consult' | 'pending-review') {
     try {
-        console.log(`📋 Processing pending-consult for Order #${orderId}`);
+        const statusLabel = status === 'pending-consult' ? 'Pending Consultation' : 'Pending Review';
+        console.log(`📋 Processing ${status} for Order #${orderId}`);
 
-        // Check if this order was already processed in pending-consult status (idempotency protection)
-        // Prevents double tracking if order goes: pending-consult → other status → pending-consult
+        // Check if this order was already processed in pending-consult or pending-review status (idempotency protection)
+        // Prevents double tracking if order goes: pending-consult/pending-review → other status → pending-consult/pending-review
         const previousPendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
-        if (previousPendingConsultLog && previousPendingConsultLog.success) {
-            console.log(`⏭️ Order #${orderId} was already processed in pending-consult status - skipping duplicate tracking to prevent double counting`);
+        const previousPendingReviewLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-review');
+        const previousPendingLog = previousPendingConsultLog || previousPendingReviewLog;
+        if (previousPendingLog && previousPendingLog.success) {
+            const previousStatus = previousPendingConsultLog ? 'pending-consult' : 'pending-review';
+            console.log(`⏭️ Order #${orderId} was already processed in ${previousStatus} status - skipping duplicate tracking to prevent double counting`);
             return NextResponse.json({ 
                 success: true, 
-                message: `Order #${orderId} was already processed in pending-consult status - skipping duplicate tracking`,
-                previousProcessingTime: previousPendingConsultLog.created_at
+                message: `Order #${orderId} was already processed in ${previousStatus} status - skipping duplicate tracking`,
+                previousProcessingTime: previousPendingLog.created_at
             });
         }
 
@@ -758,7 +770,7 @@ async function handlePendingConsultation(orderId: number, payload: any, request?
                         wcStock: u.wcStock,
                         isCombo: u.isCombo
                     })),
-                    note: 'Order moved to Pending Consultation (pending-consult). WC deducted stock (combo SKU stock for combos, single SKU stock for singles). System tracking pending stock for dashboard display. For combo SKUs, components will be deducted when order moves to processing.'
+                    note: `Order moved to ${statusLabel} (${status}). WC deducted stock (combo SKU stock for combos, single SKU stock for singles). System tracking pending stock for dashboard display. For combo SKUs, components will be deducted when order moves to processing.`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,

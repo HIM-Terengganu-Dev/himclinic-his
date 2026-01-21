@@ -331,8 +331,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
 
     const getWebhookTypeColor = (type: string, status?: string) => {
         if (type === 'order') {
-            // Show yellow for pending-consult status
-            if (status === 'pending-consult') return 'bg-yellow-100 text-yellow-800 border border-yellow-200';
+            // Show yellow for pending-consult and pending-review status
+            if (status === 'pending-consult' || status === 'pending-review') return 'bg-yellow-100 text-yellow-800 border border-yellow-200';
             return 'bg-green-100 text-green-800';
         }
         if (type === 'product') return 'bg-blue-100 text-blue-800';
@@ -391,6 +391,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                     >
                                         <option value="">All Order Statuses</option>
                                         <option value="processing">Processing</option>
+                                        <option value="pending-consult">Pending Consultation</option>
+                                        <option value="pending-review">Pending Review</option>
                                         <option value="cancelled">Cancelled</option>
                                     </select>
                                     <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
