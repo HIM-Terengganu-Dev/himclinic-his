@@ -5,7 +5,8 @@ import {
   createProcurementUpdate,
   getSingleSkuByCode,
   getAllComboSkus,
-  getAllSingleSkus
+  getAllSingleSkus,
+  getPendingConsultationStockBySku
 } from '@/lib/db/queries';
 import { requireAuth } from '@/lib/auth/middleware';
 
@@ -68,12 +69,28 @@ export async function POST(request: Request) {
 
       // 4. Calculate New Quantity
       let newQuantity: number;
+      let reconciliationDetails: { physicalCount: number; pendingStock: number; wcStock: number } | undefined;
       if (operation === 'add') {
         newQuantity = currentWooStock + quantity;
       } else if (operation === 'subtract') {
         newQuantity = currentWooStock - quantity;
-      } else { // set
-        newQuantity = quantity;
+      } else { // set (reconciliation)
+        // For reconciliation: user enters physical count
+        // WC stock should be physical - pending, so dashboard shows: (physical - pending) + pending = physical
+        const pendingStock = await getPendingConsultationStockBySku(sku);
+        newQuantity = quantity - pendingStock; // Physical count minus pending stock
+        
+        // Warn if pending stock exceeds physical count (data integrity issue)
+        if (pendingStock > quantity) {
+          console.warn(`⚠️ WARNING: Reconciliation for ${sku} - Pending stock (${pendingStock}) exceeds physical count (${quantity}). This may indicate a data integrity issue.`);
+        }
+        
+        reconciliationDetails = {
+          physicalCount: quantity,
+          pendingStock: pendingStock,
+          wcStock: newQuantity
+        };
+        console.log(`📊 Reconciliation for ${sku}: Physical=${quantity}, Pending=${pendingStock}, WC Stock=${newQuantity} (dashboard will show ${newQuantity}+${pendingStock}=${quantity})`);
       }
 
       // Ensure no negative stock
@@ -250,6 +267,7 @@ export async function POST(request: Request) {
         singleSkuUpdatedInWooCommerce: singleSkuUpdated,
         affectedComboSKUs: wooCommerceUpdates,
         inventory: { [sku]: newQuantity }, // Partial update response
+        reconciliationDetails, // Only present for reconciliation (set operation)
       });
 
     } else {
