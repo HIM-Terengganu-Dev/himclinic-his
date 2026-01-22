@@ -72,15 +72,15 @@ export async function POST(request: Request) {
 
         // Check if order was previously in pending-consult or pending-review status
         // This helps us understand the context: WC already deducted stock (combo SKU or single SKU),
-        // but for combo SKUs, components weren't deducted yet (HIS will deduct them now)
+        // but for combo SKUs, components were already deducted in pending-consult/review
+        // IMPORTANT: Do NOT remove pending stock tracking yet - we need it to check if components were already deducted
+        // We'll remove it AFTER processing components to prevent double deduction
         const previousPendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
         const previousPendingReviewLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-review');
         const previousPendingLog = previousPendingConsultLog || previousPendingReviewLog;
+        const previousPendingStatus = previousPendingConsultLog ? 'pending-consult' : (previousPendingReviewLog ? 'pending-review' : null);
         if (previousPendingLog) {
-            const previousStatus = previousPendingConsultLog ? 'pending-consult' : 'pending-review';
-            console.log(`📋 Order #${orderId} was previously in ${previousStatus} - removing pending stock tracking before processing`);
-            // Remove pending consultation stock tracking (WC already deducted, HIS will deduct components for combos if needed)
-            await removePendingConsultationStock(orderId);
+            console.log(`📋 Order #${orderId} was previously in ${previousPendingStatus} - will check if components were already deducted before processing`);
         }
 
         // Check if this order was already processed (idempotency protection)
@@ -337,6 +337,13 @@ export async function POST(request: Request) {
                     console.error(`❌ Failed to process ${sku}:`, e.message);
                 }
             }
+        }
+
+        // Remove pending consultation stock tracking AFTER processing components
+        // This prevents double deduction: we check pending stock before deducting, then remove tracking
+        if (previousPendingLog) {
+            console.log(`📋 Order #${orderId} - removing pending stock tracking after processing components`);
+            await removePendingConsultationStock(orderId);
         }
 
         console.log(`Processing webhook for Order #${orderId}: Affected ${Object.keys(totalDeductions).length} single SKUs`);
