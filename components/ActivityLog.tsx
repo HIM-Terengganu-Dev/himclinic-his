@@ -776,8 +776,25 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                         )}
                                                     </td>
                                                     <td className="px-6 py-4">
-                                                        {/* For orders: Show all SKUs from affected_skus (what customer ordered) */}
-                                                        {logEntry.webhook_type === 'order' && logEntry.affected_skus && Array.isArray(logEntry.affected_skus) && logEntry.affected_skus.length > 0 ? (
+                                                        {/* For orders: Show SKUs with quantities from lineItems */}
+                                                        {logEntry.webhook_type === 'order' && logEntry.details?.lineItems && Array.isArray(logEntry.details.lineItems) && logEntry.details.lineItems.length > 0 ? (
+                                                            <div className="font-mono text-xs text-gray-700">
+                                                                {logEntry.details.lineItems.map((item: any, itemIdx: number) => (
+                                                                    <span key={itemIdx}>
+                                                                        {item.sku}
+                                                                        {item.quantity && item.quantity > 0 && (
+                                                                            <span className="text-gray-500 ml-1">(x{item.quantity})</span>
+                                                                        )}
+                                                                        {itemIdx < logEntry.details.lineItems.length - 1 && (
+                                                                            <>
+                                                                                ,<br />
+                                                                            </>
+                                                                        )}
+                                                                    </span>
+                                                                ))}
+                                                            </div>
+                                                        ) : logEntry.webhook_type === 'order' && logEntry.affected_skus && Array.isArray(logEntry.affected_skus) && logEntry.affected_skus.length > 0 ? (
+                                                            /* Fallback: Show affected_skus if lineItems not available */
                                                             <div className="font-mono text-xs text-gray-700">
                                                                 {logEntry.affected_skus.map((sku: string, skuIdx: number) => (
                                                                     <span key={skuIdx}>
