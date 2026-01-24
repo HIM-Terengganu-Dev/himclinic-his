@@ -878,22 +878,17 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                             <div className="font-mono">{deduction.sku}</div>
                                                                             <div className="whitespace-nowrap">
                                                                                 {wasFromPending ? (
-                                                                                    // Processing from pending: :stock→stock+0 (red) to show pending was processed
-                                                                                    // If there are other pending orders, show remaining in yellow
+                                                                                    // Processing from pending: :stock+pending (yellow) → stock+remaining (red)
+                                                                                    // Example: :14+1→14+0 or :14+2→14+1 (red shows remaining pending after deduction)
                                                                                     <>
                                                                                         <span className="text-gray-500">:{deduction.newStock}</span>
+                                                                                        {pendingFromThisOrder > 0 && (
+                                                                                            <span className="text-yellow-600 font-medium">+{pendingFromThisOrder}</span>
+                                                                                        )}
                                                                                         <span className="text-gray-500">→</span>
                                                                                         <span className="text-gray-500">{deduction.newStock}</span>
-                                                                                        {remainingPending > 0 ? (
-                                                                                            // There are other pending orders, show deducted in red and remaining in yellow
-                                                                                            <>
-                                                                                                <span className="text-red-600 font-medium">+{pendingQtyRemoved}</span>
-                                                                                                <span className="text-yellow-600 font-medium">+{remainingPending}</span>
-                                                                                            </>
-                                                                                        ) : (
-                                                                                            // No more pending for this order, show +0 in red
-                                                                                            <span className="text-red-600 font-medium">+0</span>
-                                                                                        )}
+                                                                                        {/* Show remaining pending in red (amount left after deduction) */}
+                                                                                        <span className="text-red-600 font-medium">+{remainingPending}</span>
                                                                                     </>
                                                                                 ) : (
                                                                                     // Processing not from pending: :before→after
