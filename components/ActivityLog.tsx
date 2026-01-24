@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import { formatDateTimeWithSecondsGMT8 } from '@/lib/utils/date';
-import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface ActivityLogEntry {
     id: number;
@@ -35,6 +35,9 @@ interface WcWebhookLogEntry {
     success: boolean;
     error_message?: string;
     created_at: string;
+    _isGrouped?: boolean;
+    _orderId?: number;
+    _history?: WcWebhookLogEntry[];
 }
 
 type TabType = 'manual' | 'woocommerce';
@@ -55,6 +58,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [comboSkus, setComboSkus] = useState<Array<{ sku: string; name: string }>>([]);
     const [wcCurrentPage, setWcCurrentPage] = useState(1);
     const [wcTotalCount, setWcTotalCount] = useState(0);
+    const [expandedOrderIds, setExpandedOrderIds] = useState<Set<number>>(new Set());
     const topScrollRef = useRef<HTMLDivElement>(null);
     const bottomScrollRef = useRef<HTMLDivElement>(null);
 
@@ -210,7 +214,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const handleExport = () => {
         const headers = activeTab === 'manual' 
             ? ['Timestamp', 'User', 'Action', 'SKU', 'Success', 'Details', 'Error']
-            : ['Timestamp', 'Type', 'Event', 'Entity', 'SKU', 'Status', 'Combo Updates', 'Success', 'Error'];
+            : ['Timestamp', 'Type', 'Entity', 'SKU', 'Status', 'Combo Updates', 'Success', 'Error'];
         
         const data = activeTab === 'manual' ? logs : wcLogs;
         
@@ -239,7 +243,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                     return [
                         `"${formatDateTimeWithSecondsGMT8(log.created_at)}"`,
                         `"${log.webhook_type}"`,
-                        `"${log.webhook_event}"`,
                         `"${log.entity_name || `#${log.entity_id}`}"`,
                         `"${log.entity_sku || ''}"`,
                         `"${log.status || ''}"`,
@@ -533,10 +536,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                     <>
                                         <th className="px-6 py-4">Time</th>
                                         <th className="px-6 py-4">Type</th>
-                                        <th className="px-6 py-4">Event</th>
                                         <th className="px-6 py-4">Entity</th>
                                         <th className="px-6 py-4">SKU</th>
-                                        <th className="px-6 py-4">Component Deductions</th>
+                                        <th className="px-6 py-4 min-w-[200px]">Component Deductions</th>
                                         <th className="px-6 py-4">Combo Updates</th>
                                         <th className="px-6 py-4">Status</th>
                                     </>
@@ -661,149 +663,302 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                         </tr>
                                     ))
                                 ) : (
-                                    wcLogs.map((log) => (
-                                        <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
-                                            <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                                                {formatDateTimeWithSecondsGMT8(log.created_at)}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getWebhookTypeColor(log.webhook_type, log.status)}`}>
-                                                    {log.webhook_type === 'order' ? <ShoppingCart size={12} className="mr-1" /> : <Package size={12} className="mr-1" />}
-                                                    {log.webhook_type}
-                                                </span>
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <span className="text-gray-700 font-medium text-xs">
-                                                    {getWebhookEventLabel(log.webhook_event)}
-                                                </span>
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <div className="text-gray-900 font-medium">
-                                                    {log.entity_name || `#${log.entity_id}`}
-                                                </div>
-                                                {log.status && (
-                                                    <div className="text-xs text-gray-500">{log.status}</div>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                {/* For orders: Show all SKUs from affected_skus (what customer ordered) */}
-                                                {log.webhook_type === 'order' && log.affected_skus && Array.isArray(log.affected_skus) && log.affected_skus.length > 0 ? (
-                                                    <div className="font-mono text-xs text-gray-700">
-                                                        {log.affected_skus.map((sku: string, idx: number) => (
-                                                            <span key={idx}>
-                                                                {sku}
-                                                                {idx < log.affected_skus!.length - 1 && (
-                                                                    <>
-                                                                        ,<br />
-                                                                    </>
-                                                                )}
+                                    (() => {
+                                        // Group orders by order ID if not already grouped
+                                        const orderGroups = new Map<number, WcWebhookLogEntry[]>();
+                                        const alreadyGroupedLogs: WcWebhookLogEntry[] = [];
+                                        const ungroupedLogs: WcWebhookLogEntry[] = [];
+                                        
+                                        for (const log of wcLogs) {
+                                            // If already grouped from backend, use as-is
+                                            if (log._isGrouped && log._history) {
+                                                alreadyGroupedLogs.push(log);
+                                            } 
+                                            // If it's an order webhook, group it
+                                            else if (log.webhook_type === 'order') {
+                                                const orderId = log.entity_id;
+                                                if (!orderGroups.has(orderId)) {
+                                                    orderGroups.set(orderId, []);
+                                                }
+                                                orderGroups.get(orderId)!.push(log);
+                                            } 
+                                            // Product webhooks or others - don't group
+                                            else {
+                                                ungroupedLogs.push(log);
+                                            }
+                                        }
+                                        
+                                        // Create grouped entries for orders that weren't already grouped
+                                        const groupedOrderEntries: WcWebhookLogEntry[] = [];
+                                        for (const [orderId, history] of orderGroups.entries()) {
+                                            // Sort history by created_at DESC (newest first)
+                                            const sortedHistory = [...history].sort((a, b) => {
+                                                const aTime = new Date(a.created_at).getTime();
+                                                const bTime = new Date(b.created_at).getTime();
+                                                return bTime - aTime;
+                                            });
+                                            
+                                            const latest = sortedHistory[0];
+                                            groupedOrderEntries.push({
+                                                ...latest,
+                                                _isGrouped: true,
+                                                _orderId: orderId,
+                                                _history: sortedHistory
+                                            });
+                                        }
+                                        
+                                        // Sort grouped orders by latest created_at DESC
+                                        groupedOrderEntries.sort((a, b) => {
+                                            const aTime = new Date(a.created_at).getTime();
+                                            const bTime = new Date(b.created_at).getTime();
+                                            return bTime - aTime;
+                                        });
+                                        
+                                        // Combine: already grouped (from backend), newly grouped, and ungrouped logs
+                                        const allLogs = [...alreadyGroupedLogs, ...groupedOrderEntries, ...ungroupedLogs];
+                                        
+                                        return allLogs.flatMap((log) => {
+                                            const isGrouped = log._isGrouped && log._history && log._history.length > 1;
+                                            const orderId = log._orderId || log.entity_id;
+                                            const isExpanded = expandedOrderIds.has(orderId);
+                                            const history = log._history || [log];
+                                            
+                                            // For grouped orders, only show latest by default, or all if expanded
+                                            const logsToShow = isGrouped && !isExpanded ? [log] : history;
+                                        
+                                        return logsToShow.map((logEntry, idx) => {
+                                            const isHistoryRow = isGrouped && idx > 0;
+                                            const isLatestRow = isGrouped && idx === 0;
+                                            
+                                            return (
+                                                <tr 
+                                                    key={`${logEntry.id}-${idx}`} 
+                                                    className={`hover:bg-gray-50/50 transition-colors ${isHistoryRow ? 'bg-gray-50/30 border-l-2 border-gray-300' : ''}`}
+                                                >
+                                                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                                        {formatDateTimeWithSecondsGMT8(logEntry.created_at)}
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getWebhookTypeColor(logEntry.webhook_type, logEntry.status)}`}>
+                                                                {logEntry.webhook_type === 'order' ? <ShoppingCart size={12} className="mr-1" /> : <Package size={12} className="mr-1" />}
+                                                                {logEntry.webhook_type}
                                                             </span>
-                                                        ))}
-                                                    </div>
-                                                ) : log.webhook_type === 'product' && log.entity_sku ? (
-                                                    /* For products: Show entitySku (the SKU that was manually edited) */
-                                                    <span className="text-gray-700 font-mono text-xs">{log.entity_sku}</span>
-                                                ) : log.affected_skus && Array.isArray(log.affected_skus) && log.affected_skus.length > 0 ? (
-                                                    /* Fallback for orders: Show affected_skus if available */
-                                                    <div className="font-mono text-xs text-gray-700">
-                                                        {log.affected_skus.map((sku: string, idx: number) => (
-                                                            <span key={idx}>
-                                                                {sku}
-                                                                {idx < log.affected_skus!.length - 1 && (
-                                                                    <>
-                                                                        ,<br />
-                                                                    </>
-                                                                )}
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                ) : log.entity_sku ? (
-                                                    /* Fallback for products: Show entity_sku */
-                                                    <span className="text-gray-700 font-mono text-xs">{log.entity_sku}</span>
-                                                ) : (
-                                                    <span className="text-gray-400 text-xs">—</span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                {/* Show component restorations for cancelled orders */}
-                                                {log.details?.componentRestorations && Array.isArray(log.details.componentRestorations) && log.details.componentRestorations.length > 0 ? (
-                                                    <div className="max-w-xs">
-                                                        {log.details.componentRestorations.map((restoration: any, idx: number) => (
-                                                            <div key={idx} className="text-xs text-gray-600 mb-1">
-                                                                <div className="flex items-center gap-1">
-                                                                    <span className="font-mono">{restoration.sku}</span>: 
-                                                                    <span className="text-gray-400 ml-1">{restoration.previousStock}</span>
-                                                                    <span className="mx-1">→</span>
-                                                                    <span className="text-green-600 font-medium">{restoration.newStock}</span>
-                                                                    {!restoration.hisWrote && (
-                                                                        <span className="text-xs text-blue-600 ml-1" title="Restored by WooCommerce (HIS only tracked)">
-                                                                            (WC)
-                                                                        </span>
+                                                            {isLatestRow && isGrouped && (
+                                                                <button
+                                                                    onClick={() => {
+                                                                        const newExpanded = new Set(expandedOrderIds);
+                                                                        if (isExpanded) {
+                                                                            newExpanded.delete(orderId);
+                                                                        } else {
+                                                                            newExpanded.add(orderId);
+                                                                        }
+                                                                        setExpandedOrderIds(newExpanded);
+                                                                    }}
+                                                                    className="p-1 hover:bg-gray-100 rounded transition-colors"
+                                                                    title={isExpanded ? 'Hide history' : 'Show history'}
+                                                                >
+                                                                    {isExpanded ? (
+                                                                        <ChevronUp size={14} className="text-gray-500" />
+                                                                    ) : (
+                                                                        <ChevronDown size={14} className="text-gray-500" />
                                                                     )}
-                                                                </div>
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <div className="text-gray-900 font-medium">
+                                                            {logEntry.entity_name || `#${logEntry.entity_id}`}
+                                                        </div>
+                                                        {logEntry.status && (
+                                                            <div className="text-xs text-gray-500">{logEntry.status}</div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        {/* For orders: Show all SKUs from affected_skus (what customer ordered) */}
+                                                        {logEntry.webhook_type === 'order' && logEntry.affected_skus && Array.isArray(logEntry.affected_skus) && logEntry.affected_skus.length > 0 ? (
+                                                            <div className="font-mono text-xs text-gray-700">
+                                                                {logEntry.affected_skus.map((sku: string, skuIdx: number) => (
+                                                                    <span key={skuIdx}>
+                                                                        {sku}
+                                                                        {skuIdx < logEntry.affected_skus!.length - 1 && (
+                                                                            <>
+                                                                                ,<br />
+                                                                            </>
+                                                                        )}
+                                                                    </span>
+                                                                ))}
                                                             </div>
-                                                        ))}
-                                                    </div>
-                                                ) : log.details?.componentDeductions && Array.isArray(log.details.componentDeductions) && log.details.componentDeductions.length > 0 ? (
-                                                    /* Show component deductions for processing orders */
-                                                    <div className="max-w-xs">
-                                                        {log.details.componentDeductions.map((deduction: any, idx: number) => (
-                                                            <div key={idx} className="text-xs text-gray-600 mb-1">
-                                                                <div className="flex items-center gap-1">
-                                                                    <span className="font-mono">{deduction.sku}</span>: 
-                                                                    <span className="text-gray-400 ml-1">{deduction.previousStock}</span>
-                                                                    <span className="mx-1">→</span>
-                                                                    <span className="text-red-600 font-medium">{deduction.newStock}</span>
-                                                                    {!deduction.hisWrote && (
-                                                                        <span className="text-xs text-blue-600 ml-1" title="Deducted by WooCommerce (HIS only tracked)">
-                                                                            (WC)
-                                                                        </span>
-                                                                    )}
-                                                                </div>
+                                                        ) : logEntry.webhook_type === 'product' && logEntry.entity_sku ? (
+                                                            /* For products: Show entitySku (the SKU that was manually edited) */
+                                                            <span className="text-gray-700 font-mono text-xs">{logEntry.entity_sku}</span>
+                                                        ) : logEntry.affected_skus && Array.isArray(logEntry.affected_skus) && logEntry.affected_skus.length > 0 ? (
+                                                            /* Fallback for orders: Show affected_skus if available */
+                                                            <div className="font-mono text-xs text-gray-700">
+                                                                {logEntry.affected_skus.map((sku: string, skuIdx: number) => (
+                                                                    <span key={skuIdx}>
+                                                                        {sku}
+                                                                        {skuIdx < logEntry.affected_skus!.length - 1 && (
+                                                                            <>
+                                                                                ,<br />
+                                                                            </>
+                                                                        )}
+                                                                    </span>
+                                                                ))}
                                                             </div>
-                                                        ))}
-                                                    </div>
-                                                ) : (
-                                                    <span className="text-gray-400 text-xs">—</span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                {log.combo_updates && Array.isArray(log.combo_updates) && log.combo_updates.length > 0 ? (
-                                                    <div className="max-w-xs">
-                                                        {log.combo_updates.map((update: any, idx: number) => (
-                                                            <div key={idx} className="text-xs text-gray-600 mb-1">
-                                                                <span className="font-mono">{update.sku}</span>: 
-                                                                {update.error ? (
-                                                                    <span className="text-red-600 ml-1">Error</span>
-                                                                ) : (
-                                                                    <span className="text-green-600 ml-1">→ {update.newStock}</span>
-                                                                )}
+                                                        ) : logEntry.entity_sku ? (
+                                                            /* Fallback for products: Show entity_sku */
+                                                            <span className="text-gray-700 font-mono text-xs">{logEntry.entity_sku}</span>
+                                                        ) : (
+                                                            <span className="text-gray-400 text-xs">—</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-6 py-4 min-w-[200px]">
+                                                        {/* Show component restorations for cancelled orders */}
+                                                        {logEntry.details?.componentRestorations && Array.isArray(logEntry.details.componentRestorations) && logEntry.details.componentRestorations.length > 0 ? (
+                                                            <div className="min-w-[200px]">
+                                                                {logEntry.details.componentRestorations.map((restoration: any, restorationIdx: number) => (
+                                                                    <div key={restorationIdx} className="text-xs text-gray-600 mb-2">
+                                                                        <div className="font-mono">{restoration.sku}</div>
+                                                                        <div className="whitespace-nowrap">
+                                                                            <span className="text-gray-500">:{restoration.previousStock}</span>
+                                                                            <span className="text-gray-500">→</span>
+                                                                            <span className="text-green-600 font-medium">{restoration.newStock}</span>
+                                                                            {!restoration.hisWrote && (
+                                                                                <span className="text-xs text-blue-600 ml-1" title="Restored by WooCommerce (HIS only tracked)">
+                                                                                    (WC)
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
                                                             </div>
-                                                        ))}
-                                                    </div>
-                                                ) : (
-                                                    <span className="text-gray-400 text-xs">—</span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                {log.success ? (
-                                                    <div className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
-                                                        <CheckCircle2 size={16} />
-                                                        Success
-                                                    </div>
-                                                ) : (
-                                                    <div className="flex items-center gap-1.5 text-red-600 text-xs font-medium" title={log.error_message}>
-                                                        <AlertCircle size={16} />
-                                                        Failed
-                                                    </div>
-                                                )}
-                                            </td>
-                                        </tr>
-                                    ))
+                                                        ) : logEntry.details?.componentDeductions && Array.isArray(logEntry.details.componentDeductions) && logEntry.details.componentDeductions.length > 0 ? (
+                                                            /* Show component deductions for processing orders with color-coded flow */
+                                                            <div className="min-w-[200px]">
+                                                                {logEntry.details.componentDeductions.map((deduction: any, deductionIdx: number) => {
+                                                                    // Check if this was from pending (previousStock > newStock means it was already deducted in pending)
+                                                                    const wasFromPending = deduction.previousStock > deduction.newStock;
+                                                                    const pendingQtyRemoved = wasFromPending ? (deduction.previousStock - deduction.newStock) : 0;
+                                                                    
+                                                                    // Find the pending entry for this order in history to get the pending quantity
+                                                                    const orderHistory = logEntry._history || [];
+                                                                    const pendingLogForThisOrder = orderHistory.find((h: any) => 
+                                                                        h.id !== logEntry.id &&
+                                                                        (h.status === 'pending-consult' || h.status === 'pending-review') && 
+                                                                        h.details?.pendingStockUpdates?.some((p: any) => p.sku === deduction.sku)
+                                                                    );
+                                                                    const pendingFromThisOrder = pendingLogForThisOrder?.details?.pendingStockUpdates?.find((p: any) => p.sku === deduction.sku)?.quantity || 0;
+                                                                    
+                                                                    // Check for other pending entries (from other orders) - this is approximate since we only see this order's history
+                                                                    // In a real scenario, we'd need to query all pending stock for this SKU, but that requires an API call
+                                                                    // For now, we'll show 0 if this order's pending was the only one
+                                                                    const remainingPending = Math.max(0, pendingFromThisOrder - pendingQtyRemoved);
+                                                                    
+                                                                    return (
+                                                                        <div key={deductionIdx} className="text-xs text-gray-600 mb-2">
+                                                                            <div className="font-mono">{deduction.sku}</div>
+                                                                            <div className="whitespace-nowrap">
+                                                                                {wasFromPending ? (
+                                                                                    // Processing from pending: :stock→stock+0 (red) to show pending was processed
+                                                                                    // If there are other pending orders, show remaining in yellow
+                                                                                    <>
+                                                                                        <span className="text-gray-500">:{deduction.newStock}</span>
+                                                                                        <span className="text-gray-500">→</span>
+                                                                                        <span className="text-gray-500">{deduction.newStock}</span>
+                                                                                        {remainingPending > 0 ? (
+                                                                                            // There are other pending orders, show deducted in red and remaining in yellow
+                                                                                            <>
+                                                                                                <span className="text-red-600 font-medium">+{pendingQtyRemoved}</span>
+                                                                                                <span className="text-yellow-600 font-medium">+{remainingPending}</span>
+                                                                                            </>
+                                                                                        ) : (
+                                                                                            // No more pending for this order, show +0 in red
+                                                                                            <span className="text-red-600 font-medium">+0</span>
+                                                                                        )}
+                                                                                    </>
+                                                                                ) : (
+                                                                                    // Processing not from pending: :before→after
+                                                                                    <>
+                                                                                        <span className="text-gray-500">:{deduction.previousStock}</span>
+                                                                                        <span className="text-gray-500">→</span>
+                                                                                        <span className="text-red-600 font-medium">{deduction.newStock}</span>
+                                                                                    </>
+                                                                                )}
+                                                                                {!deduction.hisWrote && (
+                                                                                    <span className="text-xs text-blue-600 ml-1" title="Deducted by WooCommerce (HIS only tracked)">
+                                                                                        (WC)
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        ) : logEntry.details?.pendingStockUpdates && Array.isArray(logEntry.details.pendingStockUpdates) && logEntry.details.pendingStockUpdates.length > 0 ? (
+                                                            /* Show pending stock updates for pending-consult/pending-review orders with color-coded flow */
+                                                            <div className="min-w-[200px]">
+                                                                {logEntry.details.pendingStockUpdates.map((pending: any, pendingIdx: number) => {
+                                                                    // For pending orders: before (grey) → after (red) + pending (yellow)
+                                                                    const previousStock = pending.wcStock + pending.quantity;
+                                                                    return (
+                                                                        <div key={pendingIdx} className="text-xs text-gray-600 mb-2">
+                                                                            <div className="font-mono">{pending.sku}</div>
+                                                                            <div className="whitespace-nowrap">
+                                                                                <span className="text-gray-500">:{previousStock}</span>
+                                                                                <span className="text-gray-500">→</span>
+                                                                                <span className="text-red-600 font-medium">{pending.wcStock}</span>
+                                                                                <span className="text-yellow-600 font-medium">+{pending.quantity}</span>
+                                                                            </div>
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-gray-400 text-xs">—</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        {logEntry.combo_updates && Array.isArray(logEntry.combo_updates) && logEntry.combo_updates.length > 0 ? (
+                                                            <div className="max-w-xs">
+                                                                {logEntry.combo_updates.map((update: any, updateIdx: number) => (
+                                                                    <div key={updateIdx} className="text-xs text-gray-600 mb-1">
+                                                                        <span className="font-mono">{update.sku}</span>: 
+                                                                        {update.error ? (
+                                                                            <span className="text-red-600 ml-1">Error</span>
+                                                                        ) : (
+                                                                            <span className="text-green-600 ml-1">→ {update.newStock}</span>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-gray-400 text-xs">—</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        {logEntry.success ? (
+                                                            <div className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
+                                                                <CheckCircle2 size={16} />
+                                                                Success
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center gap-1.5 text-red-600 text-xs font-medium" title={logEntry.error_message}>
+                                                                <AlertCircle size={16} />
+                                                                Failed
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        });
+                                    });
+                                    })()
                                 )
                             ) : (
                                 <tr>
-                                    <td colSpan={activeTab === 'manual' ? 6 : 8} className="px-6 py-12 text-center text-gray-500">
+                                    <td colSpan={activeTab === 'manual' ? 6 : 7} className="px-6 py-12 text-center text-gray-500">
                                         No {activeTab === 'manual' ? 'activity' : 'webhook'} logs found matching your filters.
                                     </td>
                                 </tr>

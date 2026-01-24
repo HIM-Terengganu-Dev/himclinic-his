@@ -463,12 +463,14 @@ export async function getWcWebhookLogs(filters: {
         // Filter by SKU in multiple places:
         // 1. entity_sku column
         // 2. affected_skus array
-        // 3. componentDeductions array in details JSONB
-        // 4. componentRestorations array in details JSONB
+        // 3. componentDeductions array in details JSONB (for processing orders)
+        // 4. componentRestorations array in details JSONB (for cancelled orders)
+        // 5. pendingStockUpdates array in details JSONB (for pending-consult/pending-review orders)
         const skuParam = pIdx++;
         const affectedSkusParam = pIdx++;
         const componentDeductionsParam = pIdx++;
         const componentRestorationsParam = pIdx++;
+        const pendingStockUpdatesParam = pIdx++;
         
         whereClause += ` AND (
             entity_sku = $${skuParam} OR
@@ -482,12 +484,18 @@ export async function getWcWebhookLogs(filters: {
                 SELECT 1 
                 FROM jsonb_array_elements(details->'componentRestorations') AS restoration
                 WHERE restoration->>'sku' = $${componentRestorationsParam}
+            )) OR
+            (details IS NOT NULL AND details ? 'pendingStockUpdates' AND EXISTS (
+                SELECT 1 
+                FROM jsonb_array_elements(details->'pendingStockUpdates') AS pending
+                WHERE pending->>'sku' = $${pendingStockUpdatesParam}
             ))
         )`;
         params.push(filters.entitySku);
         params.push(JSON.stringify([filters.entitySku])); // For affected_skus array check
         params.push(filters.entitySku); // For componentDeductions check
         params.push(filters.entitySku); // For componentRestorations check
+        params.push(filters.entitySku); // For pendingStockUpdates check
     }
 
     if (filters.dateFrom) {
@@ -505,6 +513,100 @@ export async function getWcWebhookLogs(filters: {
         params.push(filters.orderStatus);
     }
 
+    // For order webhooks, group by order ID and show latest status with history
+    // For product webhooks, return as-is (no grouping needed)
+    // Always group orders unless explicitly filtering for products only
+    if (filters.webhookType !== 'product') {
+        // Get all order webhook logs (no pagination yet, we'll group first)
+        // Add filter for order type if not already filtered
+        let orderWhereClause = whereClause;
+        if (!filters.webhookType) {
+            // If no webhook type filter, only get orders
+            orderWhereClause += ` AND webhook_type = 'order'`;
+        }
+        
+        // Get all order logs matching filters
+        let allOrdersSql = `
+            SELECT 
+                *,
+                to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
+            FROM inventory_management.wc_webhook_logs
+            ${orderWhereClause}
+            ORDER BY entity_id, created_at DESC
+        `;
+        
+        const allOrdersResult = await query(allOrdersSql, params);
+        
+        // Parse JSONB fields and group by order ID
+        const parsedRows = allOrdersResult.rows.map(row => {
+            if (row.created_at_gmt8) {
+                row.created_at = row.created_at_gmt8;
+            }
+            // Parse JSONB fields
+            if (row.affected_skus && typeof row.affected_skus === 'string') {
+                try {
+                    row.affected_skus = JSON.parse(row.affected_skus);
+                } catch (e) {
+                    row.affected_skus = [];
+                }
+            }
+            if (row.combo_updates && typeof row.combo_updates === 'string') {
+                try {
+                    row.combo_updates = JSON.parse(row.combo_updates);
+                } catch (e) {
+                    row.combo_updates = [];
+                }
+            }
+            if (row.details && typeof row.details === 'string') {
+                try {
+                    row.details = JSON.parse(row.details);
+                } catch (e) {
+                    row.details = {};
+                }
+            }
+            return row;
+        });
+        
+        // Group by order ID
+        const orderGroups = new Map<number, typeof parsedRows>();
+        for (const row of parsedRows) {
+            const orderId = row.entity_id;
+            if (!orderGroups.has(orderId)) {
+                orderGroups.set(orderId, []);
+            }
+            orderGroups.get(orderId)!.push(row);
+        }
+        
+        // Get latest status for each order (for display)
+        const latestOrders: any[] = [];
+        for (const [orderId, history] of orderGroups.entries()) {
+            // Latest is first in array (sorted DESC by created_at)
+            const latest = history[0];
+            latestOrders.push({
+                ...latest,
+                _isGrouped: true,
+                _orderId: orderId,
+                _history: history // Full history for dropdown
+            });
+        }
+        
+        // Sort by latest order's created_at DESC
+        latestOrders.sort((a, b) => {
+            const aTime = new Date(a.created_at).getTime();
+            const bTime = new Date(b.created_at).getTime();
+            return bTime - aTime;
+        });
+        
+        // Apply pagination to grouped results
+        const total = latestOrders.length;
+        const paginatedOrders = filters.limit 
+            ? latestOrders.slice(filters.offset || 0, (filters.offset || 0) + filters.limit)
+            : latestOrders;
+        
+        return { rows: paginatedOrders, total };
+    }
+    
+    // For product webhooks or when webhookType is 'product', return as-is
     // Get total count
     const countSql = `SELECT COUNT(*) as total FROM inventory_management.wc_webhook_logs ${whereClause}`;
     const countResult = await query(countSql, params);
