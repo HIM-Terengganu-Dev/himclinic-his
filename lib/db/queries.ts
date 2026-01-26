@@ -1128,6 +1128,20 @@ export async function getPendingConsultationStockByOrderAndSku(orderId: number, 
     return result.rows.length > 0 ? parseInt(result.rows[0].quantity || '0', 10) : 0;
 }
 
+export async function getPendingConsultationStockByOrder(orderId: number) {
+    const result = await query(
+        `SELECT sku, quantity, status
+         FROM inventory_management.pending_consultation_stock
+         WHERE order_id = $1`,
+        [orderId]
+    );
+    return result.rows.map((row: any) => ({
+        sku: row.sku,
+        quantity: parseInt(row.quantity || '0', 10),
+        status: row.status
+    }));
+}
+
 export async function getAllPendingConsultationStock(): Promise<Record<string, number>> {
     const result = await query(
         `SELECT sku, SUM(quantity) as total_quantity

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, addPendingConsultationStock, removePendingConsultationStock, getPendingConsultationStockByOrderAndSku } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, addPendingConsultationStock, removePendingConsultationStock, getPendingConsultationStockByOrderAndSku, getPendingConsultationStockByOrder } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
 export async function POST(request: Request) {
@@ -563,7 +563,9 @@ export async function POST(request: Request) {
 
 /**
  * Handle pending cancellation: Order was in pending-consult or pending-review (payment made) but now cancelled
- * Remove pending stock tracking but DON'T restore stock (refund handled manually via procurement tab)
+ * For combo SKU orders: Restore component stocks (HIS deducted them, so HIS must restore)
+ * For single SKU orders: DON'T restore stock (WC will restore, but refund handled manually via procurement tab)
+ * Remove pending stock tracking after restoration
  */
 async function handlePendingCancellation(orderId: number, payload: any, request?: Request, previousStatus: 'pending-consult' | 'pending-review' = 'pending-consult') {
     try {
@@ -578,10 +580,89 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
 
         // Get SKU mappings from database
         const allSingleSkus = await getAllSingleSkus();
+        const allCombos = await getAllComboSkus();
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
+        const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
 
-        // Read current stock from WC for reporting (don't write/restore)
+        // Get pending stock for this order BEFORE removing it (to know what to restore)
+        const pendingStockRecords = await getPendingConsultationStockByOrder(orderId);
+        const pendingStockMap = new Map(pendingStockRecords.map((r: any) => [r.sku, r.quantity]));
+
+        // Identify combo SKUs in the order
+        const comboSkusInOrder: Array<{ sku: string; quantity: number }> = [];
+        const directSingleSkus = new Set<string>();
+        
+        for (const item of lineItems) {
+            if (!item.sku) continue;
+            const sku = item.sku;
+            if (comboSkuMap.has(sku)) {
+                comboSkusInOrder.push({ sku, quantity: item.quantity || 0 });
+            } else if (singleSkuMap.has(sku)) {
+                directSingleSkus.add(sku);
+            }
+        }
+
+        // Step 1: Restore component stocks for combo SKU orders (HIS deducted these, so HIS must restore)
+        // For single SKU orders, WC will restore automatically, so we don't need to restore
+        const restoredComponentStocks: Array<{ sku: string; previousStock: number; newStock: number; restoredQty: number }> = [];
+        
+        if (comboSkusInOrder.length > 0) {
+            console.log(`Restoring component stocks for ${comboSkusInOrder.length} combo SKU(s) in cancelled ${previousStatus} order`);
+            
+            // Get all component SKUs that were deducted for combo orders
+            const componentRestorations = new Map<string, number>();
+            
+            for (const comboOrder of comboSkusInOrder) {
+                const combo = comboSkuMap.get(comboOrder.sku);
+                if (!combo) continue;
+                
+                const components = Array.isArray(combo.components) 
+                    ? combo.components 
+                    : JSON.parse(combo.components || '[]');
+                
+                for (const comp of components) {
+                    if (!comp.sku || !comp.quantity) continue;
+                    const restoredQty = comp.quantity * comboOrder.quantity;
+                    componentRestorations.set(
+                        comp.sku,
+                        (componentRestorations.get(comp.sku) || 0) + restoredQty
+                    );
+                }
+            }
+            
+            // Restore each component stock
+            for (const [sku, restoreQty] of componentRestorations.entries()) {
+                const singleSku = singleSkuMap.get(sku);
+                if (!singleSku || !singleSku.woocommerce_product_id) continue;
+                
+                try {
+                    const currentProduct = await getProduct(singleSku.woocommerce_product_id);
+                    const currentStock = currentProduct.stock_quantity || 0;
+                    const newStock = currentStock + restoreQty;
+                    
+                    // IMPORTANT: Write actual stock quantity (without pending-consult) to WC
+                    await updateProductStock(singleSku.woocommerce_product_id, newStock);
+                    
+                    restoredComponentStocks.push({
+                        sku,
+                        previousStock: currentStock,
+                        newStock,
+                        restoredQty
+                    });
+                    
+                    console.log(`✅ Restored ${restoreQty} to combo component ${sku} (${currentStock} → ${newStock})`);
+                } catch (e: any) {
+                    console.error(`❌ Failed to restore component ${sku}:`, e.message);
+                }
+            }
+        }
+
+        // Step 2: Remove pending stock tracking (after restoring combo components)
+        await removePendingConsultationStock(orderId);
+
+        // Step 3: Read current stock from WC for reporting
         const stockReadings: Array<{ sku: string; wcStock: number }> = [];
+        const affectedSingleSkus = new Set<string>();
 
         for (const item of lineItems) {
             if (!item.sku) continue;
@@ -594,9 +675,101 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                         const currentProduct = await getProduct(singleSku.woocommerce_product_id);
                         const currentStock = currentProduct.stock_quantity || 0;
                         stockReadings.push({ sku, wcStock: currentStock });
+                        affectedSingleSkus.add(sku);
                     } catch (e: any) {
                         console.error(`❌ Failed to read stock for ${sku}:`, e.message);
                     }
+                }
+            }
+        }
+
+        // Also add component SKUs from combo orders
+        for (const comboOrder of comboSkusInOrder) {
+            const combo = comboSkuMap.get(comboOrder.sku);
+            if (combo) {
+                const components = Array.isArray(combo.components) 
+                    ? combo.components 
+                    : JSON.parse(combo.components || '[]');
+                components.forEach((comp: any) => {
+                    if (comp.sku) affectedSingleSkus.add(comp.sku);
+                });
+            }
+        }
+
+        // Recalculate and update combo SKU availability (stock not restored, but combo should reflect current state)
+        const affectedCombos = allCombos.filter((c: any) => {
+            const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
+            return components.some((comp: any) => affectedSingleSkus.has(comp.sku));
+        });
+
+        const comboUpdates: Array<{ sku: string; newStock: number }> = [];
+
+        if (affectedCombos.length > 0) {
+            console.log(`Recalculating ${affectedCombos.length} affected combo SKU(s) after ${previousStatus} cancellation`);
+
+            // Build stock map: fetch current stock from WooCommerce
+            const stockMap: Record<string, number> = {};
+
+            // Use restored stock values if available
+            for (const restored of restoredComponentStocks) {
+                stockMap[restored.sku] = restored.newStock;
+            }
+
+            // Use stock readings if available
+            for (const reading of stockReadings) {
+                if (!stockMap.hasOwnProperty(reading.sku)) {
+                    stockMap[reading.sku] = reading.wcStock;
+                }
+            }
+
+            // Collect all unique component SKUs needed for affected combos
+            const neededSkus = new Set<string>();
+            affectedCombos.forEach((c: any) => {
+                const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
+                components.forEach((comp: any) => neededSkus.add(comp.sku));
+            });
+
+            // Fetch stock for missing components
+            const missingSkus = Array.from(neededSkus).filter(s => !stockMap.hasOwnProperty(s));
+            await Promise.all(missingSkus.map(async (s) => {
+                const sData = singleSkuMap.get(s);
+                if (sData && sData.woocommerce_product_id) {
+                    try {
+                        const p = await getProduct(sData.woocommerce_product_id);
+                        stockMap[s] = p.stock_quantity || 0;
+                    } catch (e) {
+                        console.warn(`Failed to fetch stock for component ${s}`, e);
+                        stockMap[s] = 0;
+                    }
+                }
+            }));
+
+            // Calculate and update combo stock in WooCommerce
+            for (const combo of affectedCombos) {
+                if (!combo.woocommerce_product_id) {
+                    console.warn(`⚠️ Combo ${combo.sku} missing WooCommerce product ID`);
+                    continue;
+                }
+
+                const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
+                let comboLimit = Infinity;
+
+                for (const comp of components) {
+                    const stock = stockMap[comp.sku] || 0;
+                    const canMake = Math.floor(stock / comp.quantity);
+                    if (canMake < comboLimit) comboLimit = canMake;
+                }
+
+                if (comboLimit === Infinity) comboLimit = 0;
+
+                try {
+                    // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
+                    // WC is not aware of pending-consult, so we write the actual calculated quantity
+                    await updateProductStock(combo.woocommerce_product_id, comboLimit);
+                    comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
+                    console.log(`✅ Updated combo ${combo.sku} after ${previousStatus} cancellation: ${comboLimit} units`);
+                } catch (e: any) {
+                    console.error(`❌ Failed to update combo ${combo.sku}:`, e.message);
                 }
             }
         }
@@ -621,6 +794,10 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                 entitySku: firstSku,
                 status: payload.status,
                 affectedSkus: orderSkus,
+                comboUpdates: comboUpdates.map(u => ({ 
+                    sku: u.sku, 
+                    newStock: u.newStock 
+                })),
                 details: {
                     orderId,
                     status: payload.status,
@@ -631,7 +808,17 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                         quantity: item.quantity
                     })),
                     stockReadings: stockReadings,
-                    note: `Order cancelled from ${previousStatus} status (${statusLabel}). Payment was made, so stock NOT auto-restored. Refund must be handled manually via procurement tab. Pending stock tracking removed.`
+                    componentRestorations: restoredComponentStocks.map(r => ({
+                        sku: r.sku,
+                        previousStock: r.previousStock,
+                        newStock: r.newStock,
+                        restoredQty: r.restoredQty,
+                        changeMadeBy: 'HIS' // HIS restored combo component stocks
+                    })),
+                    comboSkusCancelled: comboSkusInOrder,
+                    note: comboSkusInOrder.length > 0
+                        ? `Order cancelled from ${previousStatus} status (${statusLabel}). Payment was made, so single SKU stock NOT auto-restored (refund handled manually). Combo component stocks restored by HIS system. Pending stock tracking removed. Combo availability updated.`
+                        : `Order cancelled from ${previousStatus} status (${statusLabel}). Payment was made, so stock NOT auto-restored. Refund must be handled manually via procurement tab. Pending stock tracking removed. Combo availability updated to reflect current stock state.`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,
@@ -643,8 +830,12 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
 
         return NextResponse.json({
             success: true,
-            message: `${statusLabel} cancellation processed. Stock NOT restored (refund handled manually).`,
-            stockReadings: stockReadings.length
+            message: comboSkusInOrder.length > 0
+                ? `${statusLabel} cancellation processed. Combo component stocks restored. Single SKU stock NOT restored (refund handled manually).`
+                : `${statusLabel} cancellation processed. Stock NOT restored (refund handled manually).`,
+            stockReadings: stockReadings.length,
+            restoredComponents: restoredComponentStocks.length,
+            comboUpdates: comboUpdates.length
         });
 
     } catch (error: any) {
@@ -799,6 +990,79 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
             return NextResponse.json({ success: true, message: 'No single SKUs found in order to track' });
         }
 
+        // Step 2: Recalculate and update combo SKU availability in WooCommerce
+        // Find all combos that use the affected single SKUs (including those we just deducted/tracked)
+        const affectedSingleSkus = new Set(pendingStockUpdates.map(u => u.sku));
+        const affectedCombos = allCombos.filter((c: any) => {
+            const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
+            return components.some((comp: any) => affectedSingleSkus.has(comp.sku));
+        });
+
+        const comboUpdates: Array<{ sku: string; newStock: number }> = [];
+
+        if (affectedCombos.length > 0) {
+            console.log(`Recalculating ${affectedCombos.length} affected combo SKU(s) for ${status} status`);
+            
+            // Build stock map: fetch current stock from WooCommerce (after deductions)
+            const stockMap: Record<string, number> = {};
+
+            // Use updated stock from pendingStockUpdates if available, otherwise fetch from WC
+            for (const update of pendingStockUpdates) {
+                stockMap[update.sku] = update.wcStock; // Use the stock after WC deduction
+            }
+
+            // Collect all unique component SKUs needed for affected combos
+            const neededSkus = new Set<string>();
+            affectedCombos.forEach((c: any) => {
+                const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
+                components.forEach((comp: any) => neededSkus.add(comp.sku));
+            });
+
+            // Fetch stock for other components needed for combo calculations
+            const missingSkus = Array.from(neededSkus).filter(s => !stockMap.hasOwnProperty(s));
+            await Promise.all(missingSkus.map(async (s) => {
+                const sData = singleSkuMap.get(s);
+                if (sData && sData.woocommerce_product_id) {
+                    try {
+                        const p = await getProduct(sData.woocommerce_product_id);
+                        stockMap[s] = p.stock_quantity || 0;
+                    } catch (e) {
+                        console.warn(`Failed to fetch stock for component ${s}`, e);
+                        stockMap[s] = 0;
+                    }
+                }
+            }));
+
+            // Calculate and update combo stock in WooCommerce
+            for (const combo of affectedCombos) {
+                if (!combo.woocommerce_product_id) {
+                    console.warn(`⚠️ Combo ${combo.sku} missing WooCommerce product ID`);
+                    continue;
+                }
+
+                const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
+                let comboLimit = Infinity;
+
+                for (const comp of components) {
+                    const stock = stockMap[comp.sku] || 0;
+                    const canMake = Math.floor(stock / comp.quantity);
+                    if (canMake < comboLimit) comboLimit = canMake;
+                }
+
+                if (comboLimit === Infinity) comboLimit = 0;
+
+                try {
+                    // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
+                    // WC is not aware of pending-consult, so we write the actual calculated quantity
+                    await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
+                    comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
+                    console.log(`✅ Updated combo ${combo.sku} in WooCommerce for ${status}: ${comboLimit} units`);
+                } catch (e: any) {
+                    console.error(`❌ Failed to update combo ${combo.sku} in WooCommerce:`, e.message);
+                }
+            }
+        }
+
         // Get IP address and user agent from request
         const ipAddress = request?.headers.get('x-forwarded-for') || 
                          request?.headers.get('x-real-ip') || 
@@ -819,6 +1083,10 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                 entitySku: firstSku,
                 status: payload.status,
                 affectedSkus: orderSkus,
+                comboUpdates: comboUpdates.map(u => ({ 
+                    sku: u.sku, 
+                    newStock: u.newStock 
+                })),
                 details: {
                     orderId,
                     status: payload.status,
@@ -833,7 +1101,7 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                         wcStock: u.wcStock,
                         isCombo: u.isCombo
                     })),
-                    note: `Order moved to ${statusLabel} (${status}). WC deducted stock (combo SKU stock for combos, single SKU stock for singles). System tracking pending stock for dashboard display. For combo SKUs, components will be deducted when order moves to processing.`
+                    note: `Order moved to ${statusLabel} (${status}). WC deducted stock (combo SKU stock for combos, single SKU stock for singles). System tracking pending stock for dashboard display and updated combo availability.`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,
@@ -845,8 +1113,9 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
 
         return NextResponse.json({
             success: true,
-            message: 'Pending consultation stock tracked',
-            pendingStockUpdates: pendingStockUpdates.length
+            message: 'Pending consultation stock tracked and combo availability updated',
+            pendingStockUpdates: pendingStockUpdates.length,
+            comboUpdates: comboUpdates.length
         });
 
     } catch (error: any) {
