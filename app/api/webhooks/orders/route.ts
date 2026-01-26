@@ -647,7 +647,7 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                         sku,
                         previousStock: currentStock,
                         newStock,
-                        restoredQty
+                        restoredQty: restoreQty
                     });
                     
                     console.log(`✅ Restored ${restoreQty} to combo component ${sku} (${currentStock} → ${newStock})`);
