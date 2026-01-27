@@ -8,17 +8,14 @@ import {
   getAllSingleSkus,
   getPendingConsultationStockBySku
 } from '@/lib/db/queries';
-import { requireAuth } from '@/lib/auth/middleware';
+import { requireAdmin, forbiddenResponse } from '@/lib/auth/middleware';
 
 export async function POST(request: Request) {
   try {
-    // 1. Authentication Check
-    const session = await requireAuth();
+    // 1. Admin Role Check - Only admins can update stock
+    const session = await requireAdmin();
     if (!session) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
+      return forbiddenResponse();
     }
     const userId = session.user.id;
 

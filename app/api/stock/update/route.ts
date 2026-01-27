@@ -1,8 +1,15 @@
 import { NextResponse } from 'next/server';
 import { updateProductStock } from '@/lib/services/woocommerce';
+import { requireAdmin, forbiddenResponse } from '@/lib/auth/middleware';
 
 export async function POST(request: Request) {
   try {
+    // Admin Role Check - Only admins can update stock
+    const session = await requireAdmin();
+    if (!session) {
+      return forbiddenResponse();
+    }
+
     const body = await request.json();
     const { productId, stockQuantity } = body;
 
