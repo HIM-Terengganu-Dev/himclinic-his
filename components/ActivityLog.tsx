@@ -893,9 +893,19 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     let deductedQty = deduction.deductedQty;
                                                                     
                                                                     // For WC-side deductions, deductedQty should always be available
-                                                                    // If it's not, try to calculate from logged values (but this won't work if both are wrong)
-                                                                    if (!deductedQty && deduction.previousStock > deduction.newStock) {
-                                                                        deductedQty = deduction.previousStock - deduction.newStock;
+                                                                    // If it's not in componentDeductions, try to get it from lineItems as fallback
+                                                                    if (!deductedQty) {
+                                                                        // Try to calculate from logged values first
+                                                                        if (deduction.previousStock > deduction.newStock) {
+                                                                            deductedQty = deduction.previousStock - deduction.newStock;
+                                                                        } else {
+                                                                            // Try to get from lineItems in log details (for old orders)
+                                                                            const lineItems = logEntry.details?.lineItems || [];
+                                                                            const lineItem = lineItems.find((item: any) => item.sku === deduction.sku);
+                                                                            if (lineItem && lineItem.quantity) {
+                                                                                deductedQty = lineItem.quantity;
+                                                                            }
+                                                                        }
                                                                     }
                                                                     
                                                                     // Always reconstruct if we have deductedQty (even if previousStock seems correct)
@@ -904,8 +914,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         const reconstructedPreviousStock = deduction.newStock + deductedQty;
                                                                         // Use reconstructed value if it's greater than newStock (which it should be for deductions)
                                                                         // OR if previousStock equals newStock (which is wrong - there should have been a deduction)
+                                                                        // OR if previousStock is less than or equal to newStock (which is also wrong for a deduction)
                                                                         if (reconstructedPreviousStock > deduction.newStock || 
-                                                                            (deduction.previousStock === deduction.newStock && deductedQty > 0)) {
+                                                                            (deduction.previousStock === deduction.newStock && deductedQty > 0) ||
+                                                                            (deduction.previousStock <= deduction.newStock && deductedQty > 0)) {
                                                                             actualPreviousStock = reconstructedPreviousStock;
                                                                         }
                                                                     }
@@ -1000,6 +1012,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                                 ) : (
                                                                                     // Processing not from pending: show WC stock + pending stock from other orders
                                                                                     // Format: previousStock+pending → newStock+pending (with newStock in red)
+                                                                                    // Pending stock from other orders remains unchanged (doesn't get removed)
+                                                                                    // For orders that go directly to processing, pendingFromThisOrder = 0, so totalPendingBefore = pendingFromOtherOrders
                                                                                     <>
                                                                                         <span className="text-gray-500">:{actualPreviousStock}</span>
                                                                                         {totalPendingBefore > 0 && (
@@ -1007,8 +1021,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                                         )}
                                                                                         <span className="text-gray-500">→</span>
                                                                                         <span className="text-red-600 font-medium">{deduction.newStock}</span>
-                                                                                        {totalPendingBefore > 0 && (
-                                                                                            <span className="text-yellow-600 font-medium">+{totalPendingBefore}</span>
+                                                                                        {/* Always show pending stock on right side - it doesn't change for orders that go directly to processing */}
+                                                                                        {/* Use pendingFromOtherOrders directly to ensure it shows even if totalPendingBefore calculation has issues */}
+                                                                                        {pendingFromOtherOrders > 0 && (
+                                                                                            <span className="text-yellow-600 font-medium">+{pendingFromOtherOrders}</span>
                                                                                         )}
                                                                                     </>
                                                                                 )}
