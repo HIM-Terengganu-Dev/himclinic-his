@@ -348,9 +348,10 @@ export async function POST(request: Request) {
                         });
                         
                         // Log stock movement
+                        const singleSku = singleSkuMap.get(sku);
                         await logStockMovement({
                             sku,
-                            singleSkuId: singleSku.id,
+                            singleSkuId: singleSku?.id,
                             previousStock: currentStock,
                             newStock,
                             sourceType: 'order_processing',
