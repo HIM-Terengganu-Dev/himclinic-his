@@ -6,7 +6,8 @@ import {
   getSingleSkuByCode,
   getAllComboSkus,
   getAllSingleSkus,
-  getPendingConsultationStockBySku
+  getPendingConsultationStockBySku,
+  logStockMovement
 } from '@/lib/db/queries';
 import { requireAdmin, forbiddenResponse } from '@/lib/auth/middleware';
 
@@ -134,6 +135,22 @@ export async function POST(request: Request) {
           createdBy: userId
         });
         console.log(`✅ Successfully logged procurement update: ID=${procurementRecord.id}, Operation=${procurementRecord.operation}`);
+        
+        // Log stock movement
+        await logStockMovement({
+          sku,
+          singleSkuId: singleSku.id,
+          previousStock: currentWooStock,
+          newStock: newQuantity,
+          sourceType: 'manual',
+          sourceId: procurementRecord.id,
+          createdBy: userId,
+          details: {
+            operation,
+            quantity,
+            notes
+          }
+        });
       } catch (dbError: any) {
         console.error('❌ Failed to log procurement update to DB:', dbError);
         console.error('Error details:', {

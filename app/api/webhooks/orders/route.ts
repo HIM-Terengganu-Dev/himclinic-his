@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, addPendingConsultationStock, removePendingConsultationStock, getPendingConsultationStockByOrderAndSku, getPendingConsultationStockByOrder } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, addPendingConsultationStock, removePendingConsultationStock, getPendingConsultationStockByOrderAndSku, getPendingConsultationStockByOrder, logStockMovement } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
 export async function POST(request: Request) {
@@ -243,6 +243,22 @@ export async function POST(request: Request) {
                         isWcSide: true
                     });
                     
+                    // Log stock movement
+                    await logStockMovement({
+                        sku,
+                        singleSkuId: singleSku.id,
+                        previousStock,
+                        newStock: currentStock,
+                        sourceType: 'order_processing',
+                        sourceId: orderId,
+                        sourceEvent: 'order.processing',
+                        details: {
+                            deductedQty,
+                            isWcSide: true,
+                            orderId
+                        }
+                    });
+                    
                     console.log(`📝 Tracked WC-side deduction for ${sku}: ${previousStock} → ${currentStock} (deducted ${deductedQty})`);
                 } catch (e: any) {
                     console.error(`❌ Failed to fetch stock for WC-side deduction tracking ${sku}:`, e.message);
@@ -329,6 +345,24 @@ export async function POST(request: Request) {
                             previousStock: currentStock,
                             newStock,
                             isWcSide: false
+                        });
+                        
+                        // Log stock movement
+                        await logStockMovement({
+                            sku,
+                            singleSkuId: singleSku.id,
+                            previousStock: currentStock,
+                            newStock,
+                            sourceType: 'order_processing',
+                            sourceId: orderId,
+                            sourceEvent: 'order.processing',
+                            details: {
+                                deductedQty: totalQty,
+                                isWcSide: false,
+                                hisWrote: true,
+                                orderId,
+                                isComboComponent: true
+                            }
                         });
                         
                         console.log(`✅ Deducted ${totalQty} from ${sku} (${currentStock} → ${newStock})`);
@@ -1266,6 +1300,24 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         changeMadeBy: 'HIS' // HIS system always restores combo component stocks
                     });
 
+                    // Log stock movement
+                    const singleSku = singleSkuMap.get(sku);
+                    await logStockMovement({
+                        sku,
+                        singleSkuId: singleSku?.id,
+                        previousStock: currentStock,
+                        newStock,
+                        sourceType: 'order_cancellation',
+                        sourceId: orderId,
+                        sourceEvent: 'order.cancelled',
+                        details: {
+                            restoredQty: totalQty,
+                            changeMadeBy: 'HIS',
+                            orderId,
+                            isComboComponent: true
+                        }
+                    });
+
                     console.log(`✅ Restored ${totalQty} to ${sku} (${currentStock} → ${newStock})`);
                 } catch (e: any) {
                     console.error(`❌ Failed to restore stock for component ${sku}:`, e.message);
@@ -1333,6 +1385,23 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                             changeMadeBy: changeMadeBy, // WC made the restoration
                             originalDeductionBy: originalChangeMadeBy // Who made the original deduction
                         } as any);
+                        
+                        // Log stock movement
+                        await logStockMovement({
+                            sku,
+                            singleSkuId: singleSku.id,
+                            previousStock: actualPreviousStock,
+                            newStock: actualNewStock,
+                            sourceType: 'order_cancellation',
+                            sourceId: orderId,
+                            sourceEvent: 'order.cancelled',
+                            details: {
+                                restoredQty: actualRestoredQty,
+                                changeMadeBy: 'WC',
+                                originalDeductionBy: originalChangeMadeBy,
+                                orderId
+                            }
+                        });
                     } else {
                         console.log(`⏭️ Skipping log for ${sku}: No restoration occurred (${stockBeforeRestore} → ${currentStock}, restoredQty: ${actualRestoredQty})`);
                     }

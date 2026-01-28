@@ -1154,3 +1154,59 @@ export async function getAllPendingConsultationStock(): Promise<Record<string, n
     });
     return stockMap;
 }
+
+/**
+ * Log stock movement to stock_movements table
+ * This is for reference/debugging only - NOT source of truth
+ */
+export async function logStockMovement(data: {
+    sku: string;
+    singleSkuId?: number;
+    previousStock: number;
+    newStock: number;
+    sourceType: 'manual' | 'order_processing' | 'order_cancellation' | 'order_pending' | 'product_update' | 'stock_take' | 'refund_return' | 'combo_update';
+    sourceId?: number;
+    sourceEvent?: string;
+    createdBy?: number;
+    details?: any;
+}) {
+    const changeAmount = data.newStock - data.previousStock;
+    
+    const sql = `
+        INSERT INTO inventory_management.stock_movements (
+            sku,
+            single_sku_id,
+            previous_stock,
+            new_stock,
+            change_amount,
+            source_type,
+            source_id,
+            source_event,
+            created_by,
+            details
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id
+    `;
+    
+    const detailsJson = data.details ? JSON.stringify(data.details) : null;
+    
+    try {
+        const result = await query(sql, [
+            data.sku,
+            data.singleSkuId || null,
+            data.previousStock,
+            data.newStock,
+            changeAmount,
+            data.sourceType,
+            data.sourceId || null,
+            data.sourceEvent || null,
+            data.createdBy || null,
+            detailsJson
+        ]);
+        return result.rows[0]?.id;
+    } catch (error: any) {
+        // Log error but don't throw - stock movement logging should not break the main flow
+        console.error('Failed to log stock movement:', error.message, data);
+        return null;
+    }
+}

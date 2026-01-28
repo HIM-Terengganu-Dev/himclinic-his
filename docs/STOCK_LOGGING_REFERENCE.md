@@ -125,6 +125,49 @@ If you need to know what the dashboard showed before the order, you would need t
 2. Query `pending_consultation_stock` table for pending stock at that time
 3. Add them together: `previousStock + pendingStock = dashboard display`
 
+**Note on Order Processing Flow:**
+- **Not all orders** go through `pending-consult` or `pending-review` before reaching `processing` status
+- Some orders go directly to `processing` (e.g., when payment is processed immediately)
+- For orders that skip pending statuses, WC deducts stock immediately, and the system calculates `previousStock` by reading current WC stock and adding back the deducted quantity
+
+**Historical Data Note:**
+For older orders processed before certain fixes, the logged `previousStock` might be incorrect. The Activity Log display now attempts to reconstruct the correct `previousStock` value:
+
+- **Reconstruction applies to BOTH:**
+  - Orders that go directly to `processing` (no pending-consult/review)
+  - Orders that go through `pending-consult` or `pending-review` before processing
+
+- **Reconstruction methods:**
+  - **WC-side deductions** (single SKU orders): Uses logged `deductedQty`: `previousStock = newStock + deductedQty`
+  - **HIS-side deductions** (combo components): Calculates `deductedQty` from logged values: `deductedQty = previousStock - newStock`, then reconstructs: `previousStock = newStock + deductedQty`
+  
+- **Limitations:**
+  - If `previousStock` was logged incorrectly AND `deductedQty` cannot be determined, reconstruction won't help
+  - For combo components from pending orders, `deductedQty` is not explicitly logged, so we calculate it from `previousStock - newStock` (which may also be incorrect if `previousStock` was wrong)
+
+**Pending Stock Display Note:**
+When displaying stock movements, the system calculates pending stock from other orders at the time of the order. For example:
+
+**Scenario: Order goes through pending-consult before processing**
+- **Initial state:** WC stock 62, pending +2 (from other orders) → Dashboard shows `62+2`
+- **Order qty 1 goes to pending-consult:** 
+  - WC deducts: 62→61
+  - Pending increases: +2→+3 (adds +1 from this order)
+  - Dashboard shows: `61+3`
+- **Order processes:**
+  - WC stock: 61 (unchanged, already deducted)
+  - Pending decreases: +3→+2 (removes +1 from this order, keeps +2 from others)
+  - Dashboard shows: `61+2`
+  - **Activity Log displays:** `61+3→61+2` (with +2 in red, showing remaining pending after removing this order's pending)
+
+**Scenario: Order goes directly to processing (no pending-consult)**
+- **Initial state:** WC stock 64, pending +1 (from other orders) → Dashboard shows `64+1`
+- **Order qty 3 goes directly to processing:**
+  - WC deducts: 64→61
+  - Pending: +1 (unchanged, from other orders)
+  - Dashboard shows: `61+1`
+  - **Activity Log displays:** `64+1→61+1` (with 61 in red, pending unchanged)
+
 ---
 
 ### 3. WooCommerce Product Updates

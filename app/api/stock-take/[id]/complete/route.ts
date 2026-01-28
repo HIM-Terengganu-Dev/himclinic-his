@@ -146,7 +146,7 @@ export async function POST(
           );
 
           // Create procurement update record
-          await createProcurementUpdate({
+          const procurementRecord = await createProcurementUpdate({
             singleSkuId: singleSku.id,
             operation: 'set',
             quantity: item.physical_quantity,
@@ -154,6 +154,25 @@ export async function POST(
             newQuantity: item.physical_quantity,
             notes: procurementNotes,
             createdBy: userId,
+          });
+          
+          // Log stock movement
+          const { logStockMovement } = await import('@/lib/db/queries');
+          await logStockMovement({
+            sku: item.sku,
+            singleSkuId: singleSku.id,
+            previousStock: item.system_quantity,
+            newStock: item.physical_quantity,
+            sourceType: 'stock_take',
+            sourceId: stockTakeId,
+            createdBy: userId,
+            details: {
+              variance,
+              physicalQuantity: item.physical_quantity,
+              systemQuantity: item.system_quantity,
+              remarks: itemRemark,
+              procurementUpdateId: procurementRecord.id
+            }
           });
 
           // Mark item as adjusted (remarks already saved above)
