@@ -386,7 +386,47 @@ export async function POST(request: Request) {
         // This prevents double deduction: we check pending stock before deducting, then remove tracking
         if (previousPendingLog) {
             console.log(`📋 Order #${orderId} - removing pending stock tracking after processing components`);
+            
+            // Get pending stock for all SKUs in this order before removing
+            const pendingStockBeforeRemoval = await getPendingConsultationStockByOrder(orderId);
+            
+            // Remove pending stock tracking
             await removePendingConsultationStock(orderId);
+            
+            // Log pending stock removal for each SKU (WC stock doesn't change, but pending stock decreases)
+            for (const pending of pendingStockBeforeRemoval) {
+                try {
+                    const singleSku = singleSkuMap.get(pending.sku);
+                    if (!singleSku || !singleSku.woocommerce_product_id) continue;
+                    
+                    // Get current WC stock (unchanged, already deducted in pending-consult)
+                    const currentProduct = await getProduct(singleSku.woocommerce_product_id);
+                    const currentStock = currentProduct.stock_quantity || 0;
+                    
+                    // Calculate pending stock after removal
+                    const pendingStockAfterRemoval = await getPendingStockAtTime(pending.sku, new Date());
+                    
+                    // Log movement: WC stock unchanged, but pending stock decreased
+                    await logStockMovement({
+                        sku: pending.sku,
+                        singleSkuId: singleSku.id,
+                        previousStock: currentStock, // Same as newStock (no WC change)
+                        newStock: currentStock, // WC stock unchanged
+                        pendingStock: pendingStockAfterRemoval, // Pending stock after removal
+                        sourceType: 'order_processing',
+                        sourceId: orderId,
+                        sourceEvent: 'order.processing',
+                        details: {
+                            pendingRemoved: pending.quantity,
+                            wasFromPending: true,
+                            previousPendingStatus: previousPendingStatus,
+                            orderId
+                        }
+                    });
+                } catch (e: any) {
+                    console.error(`❌ Failed to log pending stock removal for ${pending.sku}:`, e.message);
+                }
+            }
         }
 
         console.log(`Processing webhook for Order #${orderId}: Affected ${Object.keys(totalDeductions).length} single SKUs`);
@@ -945,9 +985,31 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                         // Read current stock from WooCommerce (WC already deducted it)
                         const currentProduct = await getProduct(singleSku.woocommerce_product_id);
                         const currentStock = currentProduct.stock_quantity || 0;
+                        const previousStock = currentStock + quantity; // WC stock before deduction
                         
                         // Store pending consultation stock with status
                         await addPendingConsultationStock(orderId, sku, quantity, status);
+                        
+                        // Calculate pending stock at the time of this movement (including this order's pending)
+                        const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
+                        
+                        // Log stock movement for pending-consult/pending-review
+                        await logStockMovement({
+                            sku,
+                            singleSkuId: singleSku.id,
+                            previousStock,
+                            newStock: currentStock,
+                            pendingStock: pendingStockAtTime,
+                            sourceType: 'order_pending',
+                            sourceId: orderId,
+                            sourceEvent: `order.${status}`,
+                            details: {
+                                quantity,
+                                status,
+                                isCombo: false,
+                                orderId
+                            }
+                        });
                         
                         pendingStockUpdates.push({
                             sku,
@@ -956,7 +1018,7 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                             isCombo: false
                         });
                         
-                        console.log(`✅ Tracked pending consultation stock for single SKU ${sku}: ${quantity} units (WC stock: ${currentStock})`);
+                        console.log(`✅ Tracked pending consultation stock for single SKU ${sku}: ${quantity} units (WC stock: ${currentStock}, logged movement: ${previousStock}→${currentStock})`);
                     } catch (e: any) {
                         console.error(`❌ Failed to track pending stock for ${sku}:`, e.message);
                     }
@@ -1008,6 +1070,28 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                                 // Track pending consultation stock for component (not combo SKU)
                                 await addPendingConsultationStock(orderId, comp.sku, deductedQty, status);
                                 
+                                // Calculate pending stock at the time of this movement (including this order's pending)
+                                const pendingStockAtTime = await getPendingStockAtTime(comp.sku, new Date());
+                                
+                                // Log stock movement for pending-consult/pending-review (combo component)
+                                await logStockMovement({
+                                    sku: comp.sku,
+                                    singleSkuId: componentSku.id,
+                                    previousStock: currentStock,
+                                    newStock,
+                                    pendingStock: pendingStockAtTime,
+                                    sourceType: 'order_pending',
+                                    sourceId: orderId,
+                                    sourceEvent: `order.${status}`,
+                                    details: {
+                                        deductedQty,
+                                        status,
+                                        isCombo: true,
+                                        comboSku: sku,
+                                        orderId
+                                    }
+                                });
+                                
                                 pendingStockUpdates.push({
                                     sku: comp.sku,
                                     quantity: deductedQty,
@@ -1015,7 +1099,7 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                                     isCombo: false // Track as component, not combo
                                 });
                                 
-                                console.log(`✅ Deducted and tracked pending consultation stock for combo component ${comp.sku}: ${deductedQty} units (${currentStock} → ${newStock})`);
+                                console.log(`✅ Deducted and tracked pending consultation stock for combo component ${comp.sku}: ${deductedQty} units (${currentStock} → ${newStock}, logged movement)`);
                             } catch (e: any) {
                                 console.error(`❌ Failed to deduct/track component ${comp.sku} for combo ${sku}:`, e.message);
                             }
