@@ -1050,16 +1050,73 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             /* Show pending stock updates for pending-consult/pending-review orders with color-coded flow */
                                                             <div className="min-w-[200px]">
                                                                 {logEntry.details.pendingStockUpdates.map((pending: any, pendingIdx: number) => {
-                                                                    // For pending orders: before (grey) → after (red) + pending (yellow)
-                                                                    const previousStock = pending.wcStock + pending.quantity;
+                                                                    // Calculate pending stock from OTHER orders at the time of this pending order
+                                                                    const currentOrderTime = new Date(logEntry.created_at).getTime();
+                                                                    let pendingFromOtherOrders = 0;
+                                                                    
+                                                                    // Track pending stock by order ID to handle removals correctly
+                                                                    const pendingByOrder = new Map<number, number>();
+                                                                    
+                                                                    // Use allWcLogs (without SKU filter) for pending stock calculation
+                                                                    const logsForPendingCalc = allWcLogs.length > 0 ? allWcLogs : wcLogs;
+                                                                    const sortedLogs = [...logsForPendingCalc].sort((a, b) => 
+                                                                        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                                                                    );
+                                                                    
+                                                                    // Look through all webhook logs to calculate pending stock from other orders
+                                                                    sortedLogs.forEach((log: WcWebhookLogEntry) => {
+                                                                        const logTime = new Date(log.created_at).getTime();
+                                                                        if (logTime >= currentOrderTime) return; // Only look at logs before this order
+                                                                        
+                                                                        // Skip this order's own logs
+                                                                        if (log.entity_id === logEntry.entity_id) return;
+                                                                        
+                                                                        // Add pending stock from pending-consult/pending-review entries
+                                                                        if ((log.status === 'pending-consult' || log.status === 'pending-review') && 
+                                                                            log.details?.pendingStockUpdates) {
+                                                                            const pendingUpdate = log.details.pendingStockUpdates.find((p: any) => p.sku === pending.sku);
+                                                                            if (pendingUpdate) {
+                                                                                pendingByOrder.set(log.entity_id, pendingUpdate.quantity);
+                                                                            }
+                                                                        }
+                                                                        
+                                                                        // Remove pending stock when order is processed (pending tracking is removed)
+                                                                        if (log.webhook_event === 'order.processing' && pendingByOrder.has(log.entity_id)) {
+                                                                            pendingByOrder.delete(log.entity_id);
+                                                                        }
+                                                                        
+                                                                        // Remove pending stock when order is cancelled from pending status
+                                                                        if (log.webhook_event === 'order.cancelled' && 
+                                                                            (log.details?.previousStatus === 'pending-consult' || log.details?.previousStatus === 'pending-review') &&
+                                                                            pendingByOrder.has(log.entity_id)) {
+                                                                            pendingByOrder.delete(log.entity_id);
+                                                                        }
+                                                                    });
+                                                                    
+                                                                    // Sum up all remaining pending stock from other orders
+                                                                    pendingFromOtherOrders = Array.from(pendingByOrder.values()).reduce((sum, qty) => sum + qty, 0);
+                                                                    
+                                                                    // Total pending stock after this order (others + this order)
+                                                                    const totalPendingAfter = pendingFromOtherOrders + pending.quantity;
+                                                                    
+                                                                    // Display: WC stock before + pending from others → WC stock after + total pending (others + this order)
+                                                                    // Example: 83+4→82+5 (where +4 is pending from others, +5 is total pending after adding this order's +1)
+                                                                    const wcStockBefore = pending.wcStock + pending.quantity; // WC stock before deduction
+                                                                    const wcStockAfter = pending.wcStock; // WC stock after deduction
+                                                                    
                                                                     return (
                                                                         <div key={pendingIdx} className="text-xs text-gray-600 mb-2">
                                                                             <div className="font-mono">{pending.sku}</div>
                                                                             <div className="whitespace-nowrap">
-                                                                                <span className="text-gray-500">:{previousStock}</span>
+                                                                                <span className="text-gray-500">:{wcStockBefore}</span>
+                                                                                {pendingFromOtherOrders > 0 && (
+                                                                                    <span className="text-yellow-600 font-medium">+{pendingFromOtherOrders}</span>
+                                                                                )}
                                                                                 <span className="text-gray-500">→</span>
-                                                                                <span className="text-red-600 font-medium">{pending.wcStock}</span>
-                                                                                <span className="text-yellow-600 font-medium">+{pending.quantity}</span>
+                                                                                <span className="text-red-600 font-medium">{wcStockAfter}</span>
+                                                                                {totalPendingAfter > 0 && (
+                                                                                    <span className="text-yellow-600 font-medium">+{totalPendingAfter}</span>
+                                                                                )}
                                                                             </div>
                                                                         </div>
                                                                     );
