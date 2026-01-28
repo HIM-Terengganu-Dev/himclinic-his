@@ -138,8 +138,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             setWcLogs(data.logs || []);
             setWcTotalCount(data.total || 0);
             
-            // Also fetch ALL logs (without SKU filter) for pending stock calculations
-            // This ensures we have all pending-consult logs from other orders
+            // Also fetch ALL logs (without SKU filter AND without date filters) for pending stock calculations
+            // This ensures we have all pending-consult logs from other orders, even if they're outside the current date filter
+            // Date filters would exclude relevant pending-consult logs that affect pending stock calculations
             const allLogsParams = new URLSearchParams();
             if (filterType) {
                 if (filterType === 'order') {
@@ -148,10 +149,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                     allLogsParams.append('type', 'product');
                 }
             }
-            // Don't include SKU filter for all logs - we need all logs to calculate pending stock correctly
-            if (filterDateFrom) allLogsParams.append('dateFrom', filterDateFrom);
-            if (filterDateTo) allLogsParams.append('dateTo', filterDateTo);
-            if (filterOrderStatus) allLogsParams.append('orderStatus', filterOrderStatus);
+            // IMPORTANT: Don't include SKU filter OR date filters for all logs
+            // We need ALL pending-consult logs to calculate pending stock correctly, regardless of date filters
+            // Only apply orderStatus filter if needed (but this might also exclude relevant logs)
+            // if (filterOrderStatus) allLogsParams.append('orderStatus', filterOrderStatus);
             // Fetch with a high limit to get all logs (or implement pagination if needed)
             allLogsParams.append('limit', '10000'); // High limit to get all logs
             
@@ -922,10 +923,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         }
                                                                     }
                                                                     
-                                                                    // Check if this was from pending (previousStock > newStock means it was already deducted in pending)
-                                                                    const wasFromPending = actualPreviousStock > deduction.newStock;
-                                                                    const pendingQtyRemoved = wasFromPending ? (actualPreviousStock - deduction.newStock) : 0;
-                                                                    
                                                                     // Find the pending entry for this order in history to get the pending quantity
                                                                     const orderHistory = logEntry._history || [];
                                                                     const pendingLogForThisOrder = orderHistory.find((h: any) => 
@@ -934,6 +931,13 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         h.details?.pendingStockUpdates?.some((p: any) => p.sku === deduction.sku)
                                                                     );
                                                                     const pendingFromThisOrder = pendingLogForThisOrder?.details?.pendingStockUpdates?.find((p: any) => p.sku === deduction.sku)?.quantity || 0;
+                                                                    
+                                                                    // Check if this was from pending: if there's a pending-consult/review log for this order, it was from pending
+                                                                    // This is more accurate than checking if previousStock > newStock (which is true for all deductions)
+                                                                    const wasFromPending = !!pendingLogForThisOrder;
+                                                                    // For orders from pending, the stock was already deducted in pending-consult, so newStock is already the deducted value
+                                                                    // The pendingQtyRemoved is the quantity that was in pending and is now being removed
+                                                                    const pendingQtyRemoved = wasFromPending ? pendingFromThisOrder : 0;
                                                                     
                                                                     // Calculate pending stock from OTHER orders at the time of this order
                                                                     // Look at all webhook logs before this order's timestamp
@@ -946,7 +950,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     // Use allWcLogs (without SKU filter) for pending stock calculation
                                                                     // This ensures we include pending-consult logs from other orders even if they don't contain this SKU
                                                                     // wcLogs is filtered and might miss pending logs from other orders
-                                                                    const logsForPendingCalc = allWcLogs.length > 0 ? allWcLogs : wcLogs;
+                                                                    // IMPORTANT: allWcLogs might also be filtered by date, so we need to ensure we have all relevant logs
+                                                                    // For accurate pending stock calculation, we should fetch logs going back further if needed
+                                                                    let logsForPendingCalc = allWcLogs.length > 0 ? allWcLogs : wcLogs;
                                                                     const sortedLogs = [...logsForPendingCalc].sort((a, b) => 
                                                                         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
                                                                     );
@@ -988,6 +994,39 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     const totalPendingBefore = pendingFromThisOrder + pendingFromOtherOrders;
                                                                     const remainingPending = Math.max(0, totalPendingBefore - pendingQtyRemoved);
                                                                     
+                                                                    // Debug logging for order 12009
+                                                                    if (logEntry.entity_id === 12009) {
+                                                                        // Find pending-consult logs for order 11941 in the logs we're checking
+                                                                        const order11941PendingLogs = sortedLogs.filter((log: WcWebhookLogEntry) => 
+                                                                            log.entity_id === 11941 && 
+                                                                            (log.status === 'pending-consult' || log.status === 'pending-review') &&
+                                                                            log.created_at < logEntry.created_at
+                                                                        );
+                                                                        const order11941PendingForSku = order11941PendingLogs.flatMap((log: WcWebhookLogEntry) => 
+                                                                            log.details?.pendingStockUpdates?.filter((p: any) => p.sku === deduction.sku) || []
+                                                                        );
+                                                                        
+                                                                        console.log(`[DEBUG Order 12009] SKU: ${deduction.sku}`, {
+                                                                            previousStock: deduction.previousStock,
+                                                                            newStock: deduction.newStock,
+                                                                            deductedQty,
+                                                                            actualPreviousStock,
+                                                                            wasFromPending,
+                                                                            pendingFromThisOrder,
+                                                                            pendingFromOtherOrders,
+                                                                            totalPendingBefore,
+                                                                            remainingPending,
+                                                                            pendingQtyRemoved,
+                                                                            currentOrderTime: new Date(logEntry.created_at).toISOString(),
+                                                                            allWcLogsCount: allWcLogs.length,
+                                                                            wcLogsCount: wcLogs.length,
+                                                                            logsForPendingCalcCount: logsForPendingCalc.length,
+                                                                            order11941PendingLogsCount: order11941PendingLogs.length,
+                                                                            order11941PendingForSku,
+                                                                            pendingByOrderEntries: Array.from(pendingByOrder.entries())
+                                                                        });
+                                                                    }
+                                                                    
                                                                     return (
                                                                         <div key={deductionIdx} className="text-xs text-gray-600 mb-2">
                                                                             <div className="font-mono">{deduction.sku}</div>
@@ -1022,9 +1061,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                                         <span className="text-gray-500">→</span>
                                                                                         <span className="text-red-600 font-medium">{deduction.newStock}</span>
                                                                                         {/* Always show pending stock on right side - it doesn't change for orders that go directly to processing */}
-                                                                                        {/* Use pendingFromOtherOrders directly to ensure it shows even if totalPendingBefore calculation has issues */}
-                                                                                        {pendingFromOtherOrders > 0 && (
-                                                                                            <span className="text-yellow-600 font-medium">+{pendingFromOtherOrders}</span>
+                                                                                        {/* Use totalPendingBefore (which equals pendingFromOtherOrders for non-pending orders) for consistency */}
+                                                                                        {totalPendingBefore > 0 && (
+                                                                                            <span className="text-yellow-600 font-medium">+{totalPendingBefore}</span>
                                                                                         )}
                                                                                     </>
                                                                                 )}
