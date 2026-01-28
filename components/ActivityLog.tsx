@@ -47,6 +47,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [activeTab, setActiveTab] = useState<TabType>('manual');
     const [logs, setLogs] = useState<ActivityLogEntry[]>([]);
     const [wcLogs, setWcLogs] = useState<WcWebhookLogEntry[]>([]);
+    const [allWcLogs, setAllWcLogs] = useState<WcWebhookLogEntry[]>([]); // All logs for pending stock calculation (without SKU filter)
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [filterType, setFilterType] = useState('');
@@ -136,6 +137,29 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             const data = await res.json();
             setWcLogs(data.logs || []);
             setWcTotalCount(data.total || 0);
+            
+            // Also fetch ALL logs (without SKU filter) for pending stock calculations
+            // This ensures we have all pending-consult logs from other orders
+            const allLogsParams = new URLSearchParams();
+            if (filterType) {
+                if (filterType === 'order') {
+                    allLogsParams.append('type', 'order');
+                } else if (filterType === 'product') {
+                    allLogsParams.append('type', 'product');
+                }
+            }
+            // Don't include SKU filter for all logs - we need all logs to calculate pending stock correctly
+            if (filterDateFrom) allLogsParams.append('dateFrom', filterDateFrom);
+            if (filterDateTo) allLogsParams.append('dateTo', filterDateTo);
+            if (filterOrderStatus) allLogsParams.append('orderStatus', filterOrderStatus);
+            // Fetch with a high limit to get all logs (or implement pagination if needed)
+            allLogsParams.append('limit', '10000'); // High limit to get all logs
+            
+            const allLogsRes = await fetch(`/api/webhook-logs?${allLogsParams.toString()}`);
+            if (allLogsRes.ok) {
+                const allLogsData = await allLogsRes.json();
+                setAllWcLogs(allLogsData.logs || []);
+            }
         } catch (error) {
             console.error('Error fetching webhook logs:', error);
         }
@@ -904,8 +928,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     // Track pending stock by order ID to handle removals correctly
                                                                     const pendingByOrder = new Map<number, number>();
                                                                     
-                                                                    // Sort logs chronologically to process in correct order
-                                                                    const sortedLogs = [...wcLogs].sort((a, b) => 
+                                                                    // Use allWcLogs (without SKU filter) for pending stock calculation
+                                                                    // This ensures we include pending-consult logs from other orders even if they don't contain this SKU
+                                                                    // wcLogs is filtered and might miss pending logs from other orders
+                                                                    const logsForPendingCalc = allWcLogs.length > 0 ? allWcLogs : wcLogs;
+                                                                    const sortedLogs = [...logsForPendingCalc].sort((a, b) => 
                                                                         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
                                                                     );
                                                                     
