@@ -325,14 +325,27 @@ export async function POST(request: Request) {
                         const currentProduct = await getProduct(wcProductId);
                         const currentStock = currentProduct.stock_quantity || 0;
                         
+                        // Get the actual previousStock from the pending-consult/review log
+                        // This is more accurate than calculating currentStock + pendingQty because
+                        // other orders might have deducted stock between pending and processing
+                        let actualPreviousStock = currentStock + pendingQty; // Fallback calculation
+                        if (previousPendingLog && previousPendingLog.details?.pendingStockUpdates) {
+                            const pendingUpdate = previousPendingLog.details.pendingStockUpdates.find((p: any) => p.sku === sku);
+                            if (pendingUpdate && pendingUpdate.wcStock !== undefined) {
+                                // Use the wcStock from pending log + the quantity deducted
+                                // This gives us the stock BEFORE the pending deduction
+                                actualPreviousStock = pendingUpdate.wcStock + pendingUpdate.quantity;
+                            }
+                        }
+                        
                         singleSkuUpdates.push({
                             sku,
-                            previousStock: currentStock + pendingQty, // Previous stock before pending deduction
-                            newStock: currentStock, // Current stock (already deducted)
+                            previousStock: actualPreviousStock, // Stock before pending deduction (from pending log if available)
+                            newStock: currentStock, // Current stock (already deducted, may have been further deducted by other orders)
                             isWcSide: false
                         });
                         
-                        console.log(`⏭️ Skipped deduction for ${sku} (already deducted ${pendingQty} in ${previousPendingStatus}, current stock: ${currentStock})`);
+                        console.log(`⏭️ Skipped deduction for ${sku} (already deducted ${pendingQty} in ${previousPendingStatus}, current stock: ${currentStock}, previousStock: ${actualPreviousStock})`);
                     } else {
                         // Component was NOT deducted yet - deduct now
                         const currentProduct = await getProduct(wcProductId);

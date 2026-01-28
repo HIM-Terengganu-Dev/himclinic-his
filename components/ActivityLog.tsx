@@ -755,6 +755,31 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                             const isHistoryRow = isGrouped && idx > 0;
                                             const isLatestRow = isGrouped && idx === 0;
                                             
+                                            // Ensure logEntry has access to history for pending stock calculations
+                                            // When expanded, logEntry is from history array and doesn't have _history
+                                            // When collapsed, logEntry is the grouped log which has _history
+                                            // Also, when collapsed, we want to use the actual processing log entry's componentDeductions, not the grouped log's
+                                            // So we need to find the processing log entry from history if this is a grouped order
+                                            let actualLogEntry = logEntry;
+                                            if (isGrouped && !isExpanded && logEntry._history) {
+                                                // When collapsed, find the actual processing log entry from history
+                                                // This ensures we use the correct componentDeductions data
+                                                const processingLog = logEntry._history.find((h: any) => 
+                                                    h.webhook_event === 'order.processing' || h.status === 'processing'
+                                                );
+                                                if (processingLog) {
+                                                    // Use processing log's data but keep _history for pending stock calculations
+                                                    actualLogEntry = { ...processingLog, _history: logEntry._history };
+                                                } else {
+                                                    // Fallback: use logEntry but ensure it has _history
+                                                    actualLogEntry = logEntry._history ? logEntry : { ...logEntry, _history: history };
+                                                }
+                                            } else {
+                                                // When expanded or not grouped, ensure logEntry has _history
+                                                actualLogEntry = logEntry._history ? logEntry : { ...logEntry, _history: history };
+                                            }
+                                            const logEntryWithHistory = actualLogEntry;
+                                            
                                             return (
                                                 <tr 
                                                     key={`${logEntry.id}-${idx}`} 
@@ -876,10 +901,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     </div>
                                                                 ))}
                                                             </div>
-                                                        ) : logEntry.details?.componentDeductions && Array.isArray(logEntry.details.componentDeductions) && logEntry.details.componentDeductions.length > 0 ? (
+                                                        ) : actualLogEntry.details?.componentDeductions && Array.isArray(actualLogEntry.details.componentDeductions) && actualLogEntry.details.componentDeductions.length > 0 ? (
                                                             /* Show component deductions for processing orders with color-coded flow */
                                                             <div className="min-w-[200px]">
-                                                                {logEntry.details.componentDeductions.map((deduction: any, deductionIdx: number) => {
+                                                                {actualLogEntry.details.componentDeductions.map((deduction: any, deductionIdx: number) => {
                                                                     // Reconstruct previousStock if logged value seems incorrect
                                                                     // For old orders, previousStock might have been logged incorrectly
                                                                     // This applies to BOTH:
@@ -902,7 +927,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                             deductedQty = deduction.previousStock - deduction.newStock;
                                                                         } else {
                                                                             // Try to get from lineItems in log details (for old orders)
-                                                                            const lineItems = logEntry.details?.lineItems || [];
+                                                                            const lineItems = actualLogEntry.details?.lineItems || [];
                                                                             const lineItem = lineItems.find((item: any) => item.sku === deduction.sku);
                                                                             if (lineItem && lineItem.quantity) {
                                                                                 deductedQty = lineItem.quantity;
@@ -925,13 +950,28 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     }
                                                                     
                                                                     // Find the pending entry for this order in history to get the pending quantity
-                                                                    const orderHistory = logEntry._history || [];
+                                                                    // Use logEntryWithHistory to ensure we have access to history in both collapsed and expanded views
+                                                                    const orderHistory = logEntryWithHistory._history || [];
                                                                     const pendingLogForThisOrder = orderHistory.find((h: any) => 
-                                                                        h.id !== logEntry.id &&
-                                                                        (h.status === 'pending-consult' || h.status === 'pending-review') && 
+                                                                        h.id !== actualLogEntry.id &&
+                                                                        (h.status === 'pending-consult' || h.status === 'pending-review' || 
+                                                                         h.webhook_event === 'order.pending-consult' || h.webhook_event === 'order.pending-review') && 
                                                                         h.details?.pendingStockUpdates?.some((p: any) => p.sku === deduction.sku)
                                                                     );
                                                                     const pendingFromThisOrder = pendingLogForThisOrder?.details?.pendingStockUpdates?.find((p: any) => p.sku === deduction.sku)?.quantity || 0;
+                                                                    
+                                                                    // If we have a pending log and no deductedQty, try to reconstruct previousStock from the pending log
+                                                                    // This is more accurate than using the logged previousStock, which might be wrong for old orders
+                                                                    if (pendingLogForThisOrder && (!deductedQty || deductedQty === 0 || isNaN(deductedQty))) {
+                                                                        const pendingUpdate = pendingLogForThisOrder.details.pendingStockUpdates.find((p: any) => p.sku === deduction.sku);
+                                                                        if (pendingUpdate && pendingUpdate.wcStock !== undefined) {
+                                                                            // Use wcStock from pending log + quantity to get the stock before pending deduction
+                                                                            const reconstructedFromPending = pendingUpdate.wcStock + pendingUpdate.quantity;
+                                                                            if (reconstructedFromPending > deduction.newStock) {
+                                                                                actualPreviousStock = reconstructedFromPending;
+                                                                            }
+                                                                        }
+                                                                    }
                                                                     
                                                                     // Check if this was from pending: if there's a pending-consult/review log for this order, it was from pending
                                                                     // This is more accurate than checking if previousStock > newStock (which is true for all deductions)
@@ -942,7 +982,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     
                                                                     // Calculate pending stock from OTHER orders at the time of this order
                                                                     // Look at all webhook logs before this order's timestamp
-                                                                    const currentOrderTime = new Date(logEntry.created_at).getTime();
+                                                                    // Use actualLogEntry (the processing log) for timestamp and entity_id to ensure consistency
+                                                                    const currentOrderTime = new Date(actualLogEntry.created_at).getTime();
                                                                     let pendingFromOtherOrders = 0;
                                                                     
                                                                     // Track pending stock by order ID to handle removals correctly
@@ -964,11 +1005,15 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         if (logTime >= currentOrderTime) return; // Only look at logs before this order
                                                                         
                                                                         // Skip this order's own logs (we handle pendingFromThisOrder separately)
-                                                                        if (log.entity_id === logEntry.entity_id) return;
+                                                                        // Use actualLogEntry.entity_id to ensure we use the processing log's entity_id
+                                                                        if (log.entity_id === actualLogEntry.entity_id) return;
                                                                         
                                                                         // Add pending stock from pending-consult/pending-review entries
-                                                                        if ((log.status === 'pending-consult' || log.status === 'pending-review') && 
-                                                                            log.details?.pendingStockUpdates) {
+                                                                        // Check both status and webhook_event to ensure we catch all pending logs
+                                                                        const isPendingLog = (log.status === 'pending-consult' || log.status === 'pending-review') ||
+                                                                                            (log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review');
+                                                                        
+                                                                        if (isPendingLog && log.details?.pendingStockUpdates) {
                                                                             const pendingUpdate = log.details.pendingStockUpdates.find((p: any) => p.sku === deduction.sku);
                                                                             if (pendingUpdate) {
                                                                                 pendingByOrder.set(log.entity_id, pendingUpdate.quantity);
@@ -1072,8 +1117,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         if (log.entity_id === logEntry.entity_id) return;
                                                                         
                                                                         // Add pending stock from pending-consult/pending-review entries
-                                                                        if ((log.status === 'pending-consult' || log.status === 'pending-review') && 
-                                                                            log.details?.pendingStockUpdates) {
+                                                                        // Check both status and webhook_event to ensure we catch all pending logs
+                                                                        const isPendingLog = (log.status === 'pending-consult' || log.status === 'pending-review') ||
+                                                                                            (log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review');
+                                                                        
+                                                                        if (isPendingLog && log.details?.pendingStockUpdates) {
                                                                             const pendingUpdate = log.details.pendingStockUpdates.find((p: any) => p.sku === pending.sku);
                                                                             if (pendingUpdate) {
                                                                                 pendingByOrder.set(log.entity_id, pendingUpdate.quantity);
