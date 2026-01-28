@@ -995,63 +995,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     const totalPendingBefore = pendingFromThisOrder + pendingFromOtherOrders;
                                                                     const remainingPending = Math.max(0, totalPendingBefore - pendingQtyRemoved);
                                                                     
-                                                                    // Debug logging for order 12009
-                                                                    if (logEntry.entity_id === 12009) {
-                                                                        // Find pending-consult logs for order 11941 in the logs we're checking
-                                                                        const order11941PendingLogs = sortedLogs.filter((log: WcWebhookLogEntry) => 
-                                                                            log.entity_id === 11941 && 
-                                                                            (log.status === 'pending-consult' || log.status === 'pending-review') &&
-                                                                            new Date(log.created_at).getTime() < currentOrderTime
-                                                                        );
-                                                                        const order11941PendingForSku = order11941PendingLogs.flatMap((log: WcWebhookLogEntry) => 
-                                                                            log.details?.pendingStockUpdates?.filter((p: any) => p.sku === deduction.sku) || []
-                                                                        );
-                                                                        
-                                                                        // Check all pending-consult logs for this SKU
-                                                                        const allPendingLogsForSku = sortedLogs.filter((log: WcWebhookLogEntry) => 
-                                                                            (log.status === 'pending-consult' || log.status === 'pending-review') &&
-                                                                            new Date(log.created_at).getTime() < currentOrderTime &&
-                                                                            log.entity_id !== logEntry.entity_id &&
-                                                                            log.details?.pendingStockUpdates?.some((p: any) => p.sku === deduction.sku)
-                                                                        );
-                                                                        
-                                                                        console.log(`[DEBUG Order 12009] SKU: ${deduction.sku}`, {
-                                                                            deduction: {
-                                                                                previousStock: deduction.previousStock,
-                                                                                newStock: deduction.newStock,
-                                                                                deductedQty: deduction.deductedQty,
-                                                                                isWcSide: deduction.isWcSide
-                                                                            },
-                                                                            reconstruction: {
-                                                                                deductedQty,
-                                                                                actualPreviousStock,
-                                                                                reconstructed: deduction.newStock + deductedQty
-                                                                            },
-                                                                            pending: {
-                                                                                wasFromPending,
-                                                                                pendingFromThisOrder,
-                                                                                pendingFromOtherOrders,
-                                                                                totalPendingBefore,
-                                                                                remainingPending,
-                                                                                pendingQtyRemoved
-                                                                            },
-                                                                            logs: {
-                                                                                currentOrderTime: new Date(logEntry.created_at).toISOString(),
-                                                                                allWcLogsCount: allWcLogs.length,
-                                                                                wcLogsCount: wcLogs.length,
-                                                                                logsForPendingCalcCount: logsForPendingCalc.length,
-                                                                                order11941PendingLogsCount: order11941PendingLogs.length,
-                                                                                allPendingLogsForSkuCount: allPendingLogsForSku.length,
-                                                                                order11941PendingForSku,
-                                                                                pendingByOrderEntries: Array.from(pendingByOrder.entries())
-                                                                            },
-                                                                            display: {
-                                                                                willShowLeft: `${actualPreviousStock}${totalPendingBefore > 0 ? '+' + totalPendingBefore : ''}`,
-                                                                                willShowRight: `${deduction.newStock}${totalPendingBefore > 0 ? '+' + totalPendingBefore : ''}`
-                                                                            }
-                                                                        });
-                                                                    }
-                                                                    
                                                                     return (
                                                                         <div key={deductionIdx} className="text-xs text-gray-600 mb-2">
                                                                             <div className="font-mono">{deduction.sku}</div>
