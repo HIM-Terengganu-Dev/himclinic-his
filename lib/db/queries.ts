@@ -1118,6 +1118,86 @@ export async function getPendingConsultationStockBySku(sku: string) {
     return parseInt(result.rows[0]?.total_quantity || '0', 10);
 }
 
+/**
+ * Calculate pending stock for a SKU at a specific point in time
+ * This looks at all pending-consult/pending-review logs before the timestamp
+ * and subtracts any that were processed before that time
+ */
+export async function getPendingStockAtTime(sku: string, timestamp: Date): Promise<number> {
+    const timeStr = timestamp.toISOString();
+    
+    // Get all pending-consult/pending-review logs for this SKU before the timestamp
+    const pendingLogs = await query(
+        `SELECT 
+            w.entity_id as order_id,
+            w.created_at,
+            (pending->>'quantity')::int as quantity
+        FROM inventory_management.wc_webhook_logs w,
+             jsonb_array_elements(w.details->'pendingStockUpdates') AS pending
+        WHERE w.webhook_type = 'order'
+        AND (w.webhook_event = 'order.pending-consult' OR w.webhook_event = 'order.pending-review')
+        AND w.created_at < $1
+        AND pending->>'sku' = $2
+        ORDER BY w.created_at`,
+        [timeStr, sku]
+    );
+    
+    // Get all processing logs for orders that had pending stock, before the timestamp
+    // These remove pending stock
+    const processingLogs = await query(
+        `SELECT DISTINCT entity_id as order_id
+        FROM inventory_management.wc_webhook_logs
+        WHERE webhook_type = 'order'
+        AND webhook_event = 'order.processing'
+        AND created_at < $1
+        AND entity_id IN (
+            SELECT DISTINCT w.entity_id
+            FROM inventory_management.wc_webhook_logs w,
+                 jsonb_array_elements(w.details->'pendingStockUpdates') AS pending
+            WHERE w.webhook_type = 'order'
+            AND (w.webhook_event = 'order.pending-consult' OR w.webhook_event = 'order.pending-review')
+            AND w.created_at < $1
+            AND pending->>'sku' = $2
+        )`,
+        [timeStr, sku]
+    );
+    
+    // Get all cancellation logs for orders that had pending stock, before the timestamp
+    const cancellationLogs = await query(
+        `SELECT DISTINCT entity_id as order_id
+        FROM inventory_management.wc_webhook_logs
+        WHERE webhook_type = 'order'
+        AND webhook_event = 'order.cancelled'
+        AND created_at < $1
+        AND (details->>'previousStatus' = 'pending-consult' OR details->>'previousStatus' = 'pending-review')
+        AND entity_id IN (
+            SELECT DISTINCT w.entity_id
+            FROM inventory_management.wc_webhook_logs w,
+                 jsonb_array_elements(w.details->'pendingStockUpdates') AS pending
+            WHERE w.webhook_type = 'order'
+            AND (w.webhook_event = 'order.pending-consult' OR w.webhook_event = 'order.pending-review')
+            AND w.created_at < $1
+            AND pending->>'sku' = $2
+        )`,
+        [timeStr, sku]
+    );
+    
+    // Calculate total pending stock
+    const processedOrderIds = new Set([
+        ...processingLogs.rows.map((r: any) => r.order_id),
+        ...cancellationLogs.rows.map((r: any) => r.order_id)
+    ]);
+    
+    let totalPending = 0;
+    for (const log of pendingLogs.rows) {
+        if (!processedOrderIds.has(log.order_id)) {
+            totalPending += parseInt(log.quantity || '0', 10);
+        }
+    }
+    
+    return totalPending;
+}
+
 export async function getPendingConsultationStockByOrderAndSku(orderId: number, sku: string) {
     const result = await query(
         `SELECT quantity
@@ -1164,6 +1244,7 @@ export async function logStockMovement(data: {
     singleSkuId?: number;
     previousStock: number;
     newStock: number;
+    pendingStock?: number; // Pending stock count at the time of this movement
     sourceType: 'manual' | 'order_processing' | 'order_cancellation' | 'order_pending' | 'product_update' | 'stock_take' | 'refund_return' | 'combo_update';
     sourceId?: number;
     sourceEvent?: string;
@@ -1172,6 +1253,19 @@ export async function logStockMovement(data: {
 }) {
     const changeAmount = data.newStock - data.previousStock;
     
+    // If pendingStock is not provided, try to get current pending stock
+    // Note: For historical accuracy, this should ideally calculate pending stock at the exact time,
+    // but for now we'll use current pending stock as a fallback
+    let pendingStock = data.pendingStock;
+    if (pendingStock === undefined || pendingStock === null) {
+        try {
+            pendingStock = await getPendingConsultationStockBySku(data.sku);
+        } catch (error) {
+            // If we can't get pending stock, default to 0
+            pendingStock = 0;
+        }
+    }
+    
     const sql = `
         INSERT INTO inventory_management.stock_movements (
             sku,
@@ -1179,12 +1273,13 @@ export async function logStockMovement(data: {
             previous_stock,
             new_stock,
             change_amount,
+            pending_stock,
             source_type,
             source_id,
             source_event,
             created_by,
             details
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id
     `;
     
@@ -1197,6 +1292,7 @@ export async function logStockMovement(data: {
             data.previousStock,
             data.newStock,
             changeAmount,
+            pendingStock || 0,
             data.sourceType,
             data.sourceId || null,
             data.sourceEvent || null,

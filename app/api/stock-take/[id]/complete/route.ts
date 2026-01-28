@@ -156,13 +156,17 @@ export async function POST(
             createdBy: userId,
           });
           
+          // Get current pending stock for this SKU
+          const { logStockMovement, getPendingConsultationStockBySku } = await import('@/lib/db/queries');
+          const currentPendingStock = await getPendingConsultationStockBySku(item.sku);
+          
           // Log stock movement
-          const { logStockMovement } = await import('@/lib/db/queries');
           await logStockMovement({
             sku: item.sku,
             singleSkuId: singleSku.id,
             previousStock: item.system_quantity,
             newStock: item.physical_quantity,
+            pendingStock: currentPendingStock,
             sourceType: 'stock_take',
             sourceId: stockTakeId,
             createdBy: userId,

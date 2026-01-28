@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, addPendingConsultationStock, removePendingConsultationStock, getPendingConsultationStockByOrderAndSku, getPendingConsultationStockByOrder, logStockMovement } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, addPendingConsultationStock, removePendingConsultationStock, getPendingConsultationStockByOrderAndSku, getPendingConsultationStockByOrder, logStockMovement, getPendingStockAtTime } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
 export async function POST(request: Request) {
@@ -243,12 +243,16 @@ export async function POST(request: Request) {
                         isWcSide: true
                     });
                     
+                    // Calculate pending stock at the time of this movement
+                    const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
+                    
                     // Log stock movement
                     await logStockMovement({
                         sku,
                         singleSkuId: singleSku.id,
                         previousStock,
                         newStock: currentStock,
+                        pendingStock: pendingStockAtTime,
                         sourceType: 'order_processing',
                         sourceId: orderId,
                         sourceEvent: 'order.processing',
@@ -347,6 +351,9 @@ export async function POST(request: Request) {
                             isWcSide: false
                         });
                         
+                        // Calculate pending stock at the time of this movement
+                        const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
+                        
                         // Log stock movement
                         const singleSku = singleSkuMap.get(sku);
                         await logStockMovement({
@@ -354,6 +361,7 @@ export async function POST(request: Request) {
                             singleSkuId: singleSku?.id,
                             previousStock: currentStock,
                             newStock,
+                            pendingStock: pendingStockAtTime,
                             sourceType: 'order_processing',
                             sourceId: orderId,
                             sourceEvent: 'order.processing',
@@ -1301,6 +1309,9 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         changeMadeBy: 'HIS' // HIS system always restores combo component stocks
                     });
 
+                    // Calculate pending stock at the time of this movement
+                    const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
+                    
                     // Log stock movement
                     const singleSku = singleSkuMap.get(sku);
                     await logStockMovement({
@@ -1308,6 +1319,7 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         singleSkuId: singleSku?.id,
                         previousStock: currentStock,
                         newStock,
+                        pendingStock: pendingStockAtTime,
                         sourceType: 'order_cancellation',
                         sourceId: orderId,
                         sourceEvent: 'order.cancelled',
@@ -1387,12 +1399,16 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                             originalDeductionBy: originalChangeMadeBy // Who made the original deduction
                         } as any);
                         
+                        // Calculate pending stock at the time of this movement
+                        const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
+                        
                         // Log stock movement
                         await logStockMovement({
                             sku,
                             singleSkuId: singleSku.id,
                             previousStock: actualPreviousStock,
                             newStock: actualNewStock,
+                            pendingStock: pendingStockAtTime,
                             sourceType: 'order_cancellation',
                             sourceId: orderId,
                             sourceEvent: 'order.cancelled',

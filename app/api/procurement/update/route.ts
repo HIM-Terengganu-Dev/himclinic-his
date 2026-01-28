@@ -136,12 +136,16 @@ export async function POST(request: Request) {
         });
         console.log(`✅ Successfully logged procurement update: ID=${procurementRecord.id}, Operation=${procurementRecord.operation}`);
         
+        // Get current pending stock for this SKU
+        const currentPendingStock = await getPendingConsultationStockBySku(sku);
+        
         // Log stock movement
         await logStockMovement({
           sku,
           singleSkuId: singleSku.id,
           previousStock: currentWooStock,
           newStock: newQuantity,
+          pendingStock: currentPendingStock,
           sourceType: 'manual',
           sourceId: procurementRecord.id,
           createdBy: userId,
