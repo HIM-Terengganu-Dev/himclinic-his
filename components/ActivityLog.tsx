@@ -868,10 +868,55 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     );
                                                                     const pendingFromThisOrder = pendingLogForThisOrder?.details?.pendingStockUpdates?.find((p: any) => p.sku === deduction.sku)?.quantity || 0;
                                                                     
-                                                                    // Check for other pending entries (from other orders) - this is approximate since we only see this order's history
-                                                                    // In a real scenario, we'd need to query all pending stock for this SKU, but that requires an API call
-                                                                    // For now, we'll show 0 if this order's pending was the only one
-                                                                    const remainingPending = Math.max(0, pendingFromThisOrder - pendingQtyRemoved);
+                                                                    // Calculate pending stock from OTHER orders at the time of this order
+                                                                    // Look at all webhook logs before this order's timestamp
+                                                                    const currentOrderTime = new Date(logEntry.created_at).getTime();
+                                                                    let pendingFromOtherOrders = 0;
+                                                                    
+                                                                    // Track pending stock by order ID to handle removals correctly
+                                                                    const pendingByOrder = new Map<number, number>();
+                                                                    
+                                                                    // Sort logs chronologically to process in correct order
+                                                                    const sortedLogs = [...wcLogs].sort((a, b) => 
+                                                                        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                                                                    );
+                                                                    
+                                                                    // Look through all webhook logs to calculate pending stock
+                                                                    sortedLogs.forEach((log: WcWebhookLogEntry) => {
+                                                                        const logTime = new Date(log.created_at).getTime();
+                                                                        if (logTime >= currentOrderTime) return; // Only look at logs before this order
+                                                                        
+                                                                        // Skip this order's own logs (we handle pendingFromThisOrder separately)
+                                                                        if (log.entity_id === logEntry.entity_id) return;
+                                                                        
+                                                                        // Add pending stock from pending-consult/pending-review entries
+                                                                        if ((log.status === 'pending-consult' || log.status === 'pending-review') && 
+                                                                            log.details?.pendingStockUpdates) {
+                                                                            const pendingUpdate = log.details.pendingStockUpdates.find((p: any) => p.sku === deduction.sku);
+                                                                            if (pendingUpdate) {
+                                                                                pendingByOrder.set(log.entity_id, pendingUpdate.quantity);
+                                                                            }
+                                                                        }
+                                                                        
+                                                                        // Remove pending stock when order is processed (pending tracking is removed)
+                                                                        if (log.webhook_event === 'order.processing' && pendingByOrder.has(log.entity_id)) {
+                                                                            pendingByOrder.delete(log.entity_id);
+                                                                        }
+                                                                        
+                                                                        // Remove pending stock when order is cancelled from pending status
+                                                                        if (log.webhook_event === 'order.cancelled' && 
+                                                                            (log.details?.previousStatus === 'pending-consult' || log.details?.previousStatus === 'pending-review') &&
+                                                                            pendingByOrder.has(log.entity_id)) {
+                                                                            pendingByOrder.delete(log.entity_id);
+                                                                        }
+                                                                    });
+                                                                    
+                                                                    // Sum up all remaining pending stock from other orders
+                                                                    pendingFromOtherOrders = Array.from(pendingByOrder.values()).reduce((sum, qty) => sum + qty, 0);
+                                                                    
+                                                                    // Total pending stock at the time of this order
+                                                                    const totalPendingBefore = pendingFromThisOrder + pendingFromOtherOrders;
+                                                                    const remainingPending = Math.max(0, totalPendingBefore - pendingQtyRemoved);
                                                                     
                                                                     return (
                                                                         <div key={deductionIdx} className="text-xs text-gray-600 mb-2">
@@ -882,20 +927,29 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                                     // Example: :14+1→14+0 or :14+2→14+1 (red shows remaining pending after deduction)
                                                                                     <>
                                                                                         <span className="text-gray-500">:{deduction.newStock}</span>
-                                                                                        {pendingFromThisOrder > 0 && (
-                                                                                            <span className="text-yellow-600 font-medium">+{pendingFromThisOrder}</span>
+                                                                                        {totalPendingBefore > 0 && (
+                                                                                            <span className="text-yellow-600 font-medium">+{totalPendingBefore}</span>
                                                                                         )}
                                                                                         <span className="text-gray-500">→</span>
                                                                                         <span className="text-gray-500">{deduction.newStock}</span>
                                                                                         {/* Show remaining pending in red (amount left after deduction) */}
-                                                                                        <span className="text-red-600 font-medium">+{remainingPending}</span>
+                                                                                        {remainingPending > 0 && (
+                                                                                            <span className="text-red-600 font-medium">+{remainingPending}</span>
+                                                                                        )}
                                                                                     </>
                                                                                 ) : (
-                                                                                    // Processing not from pending: :before→after
+                                                                                    // Processing not from pending: show WC stock + pending stock from other orders
+                                                                                    // Format: previousStock+pending → newStock+pending (with newStock in red)
                                                                                     <>
                                                                                         <span className="text-gray-500">:{deduction.previousStock}</span>
+                                                                                        {totalPendingBefore > 0 && (
+                                                                                            <span className="text-yellow-600 font-medium">+{totalPendingBefore}</span>
+                                                                                        )}
                                                                                         <span className="text-gray-500">→</span>
                                                                                         <span className="text-red-600 font-medium">{deduction.newStock}</span>
+                                                                                        {totalPendingBefore > 0 && (
+                                                                                            <span className="text-yellow-600 font-medium">+{totalPendingBefore}</span>
+                                                                                        )}
                                                                                     </>
                                                                                 )}
                                                                                 {!deduction.hisWrote && (

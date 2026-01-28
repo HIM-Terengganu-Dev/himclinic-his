@@ -93,6 +93,38 @@ AND entity_id = 12345;
 }
 ```
 
+**⚠️ Important: Pending Stock and Logged Values**
+
+When an order is processed directly (goes to `processing` status without going through `pending-consult` or `pending-review`), the logged `previousStock` reflects **WooCommerce stock only**, not the dashboard display value.
+
+**Example Scenario:**
+- **WooCommerce stock:** 64
+- **Pending stock:** +1 (from a previous pending-consult order)
+- **Dashboard shows:** 64+1 = 65
+- **New order:** Quantity 3, goes directly to `processing`
+
+**What Happens:**
+1. WooCommerce deducts stock: 64 → 61 (WC is blind to pending stock)
+2. Webhook reads current stock from WC: 61
+3. System calculates `previousStock`: 61 + 3 = 64
+4. System logs: `previousStock: 64, newStock: 61`
+
+**The Discrepancy:**
+- Dashboard showed 65 before the order (64+1)
+- But logged `previousStock` is 64 (WC stock only)
+- This is **expected behavior** - logs reflect WC stock, not dashboard display
+
+**Why This Happens:**
+- WooCommerce doesn't know about pending stock (it's only tracked in HIS database)
+- When calculating `previousStock`, the system reads current WC stock and adds back the deducted quantity
+- Pending stock is a display-only concept for the dashboard
+
+**To Get Dashboard Display Value:**
+If you need to know what the dashboard showed before the order, you would need to:
+1. Get logged `previousStock` (WC stock)
+2. Query `pending_consultation_stock` table for pending stock at that time
+3. Add them together: `previousStock + pendingStock = dashboard display`
+
 ---
 
 ### 3. WooCommerce Product Updates
@@ -277,5 +309,7 @@ ORDER BY created_at DESC;
 
 3. **Product Events:** Use the `stock_quantity` and `previous_stock_quantity` columns directly.
 
-4. **Timeline Reconstruction:** You can reconstruct the complete stock history by querying all sources and ordering by `created_at`.
+4. **Pending Stock Discrepancy:** When orders are processed directly (skip pending-consult/pending-review), logged `previousStock` reflects WooCommerce stock only, not the dashboard display value (which includes pending stock). See the detailed explanation in Section 2 above.
+
+5. **Timeline Reconstruction:** You can reconstruct the complete stock history by querying all sources and ordering by `created_at`. Note that logged values represent WC stock, not dashboard display values (which include pending stock).
 
