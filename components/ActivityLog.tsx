@@ -892,17 +892,20 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     let actualPreviousStock = deduction.previousStock;
                                                                     let deductedQty = deduction.deductedQty;
                                                                     
-                                                                    // If deductedQty is not available, try to calculate it from logged values
+                                                                    // For WC-side deductions, deductedQty should always be available
+                                                                    // If it's not, try to calculate from logged values (but this won't work if both are wrong)
                                                                     if (!deductedQty && deduction.previousStock > deduction.newStock) {
                                                                         deductedQty = deduction.previousStock - deduction.newStock;
                                                                     }
                                                                     
-                                                                    // Reconstruct if we have deductedQty
+                                                                    // Always reconstruct if we have deductedQty (even if previousStock seems correct)
+                                                                    // This ensures we use the correct value, especially for old orders where previousStock might be wrong
                                                                     if (deductedQty && deductedQty > 0) {
                                                                         const reconstructedPreviousStock = deduction.newStock + deductedQty;
-                                                                        // Use reconstructed value if it's different (and makes sense)
-                                                                        // Only use if reconstructed is greater than newStock (which it should be)
-                                                                        if (reconstructedPreviousStock > deduction.newStock) {
+                                                                        // Use reconstructed value if it's greater than newStock (which it should be for deductions)
+                                                                        // OR if previousStock equals newStock (which is wrong - there should have been a deduction)
+                                                                        if (reconstructedPreviousStock > deduction.newStock || 
+                                                                            (deduction.previousStock === deduction.newStock && deductedQty > 0)) {
                                                                             actualPreviousStock = reconstructedPreviousStock;
                                                                         }
                                                                     }
