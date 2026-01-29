@@ -11,11 +11,23 @@ export async function POST(request: Request) {
     console.log("!!! WEBHOOK HIT !!! Method:", request.method);
     try {
         const bodyText = await request.text();
+        const contentType = request.headers.get('content-type') || '';
 
         // Debug: Log all headers to find the signature
         const headersList = Object.fromEntries(request.headers.entries());
         console.log('Webhook Headers:', JSON.stringify(headersList, null, 2));
-        console.log('All header keys:', Object.keys(headersList));
+        console.log('Content-Type:', contentType);
+        console.log('Body preview (first 200 chars):', bodyText.substring(0, 200));
+
+        // Handle WooCommerce test pings (form-encoded: webhook_id=14)
+        if (bodyText.startsWith('webhook_id=') || contentType.includes('application/x-www-form-urlencoded')) {
+            console.log('📝 Received WooCommerce test ping/webhook verification - returning success');
+            return NextResponse.json({ 
+                success: true, 
+                message: 'Webhook endpoint is active and receiving requests',
+                received: bodyText 
+            });
+        }
 
         // Try multiple header name variations (WooCommerce can send different formats)
         const signature = request.headers.get('x-wc-webhook-signature') || 
@@ -71,7 +83,21 @@ export async function POST(request: Request) {
             console.log('✅ Webhook signature verified successfully');
         }
 
-        const payload = JSON.parse(bodyText);
+        // Parse JSON payload
+        let payload;
+        try {
+            payload = JSON.parse(bodyText);
+        } catch (parseError: any) {
+            console.error('Webhook Error: Failed to parse JSON body', {
+                error: parseError.message,
+                bodyPreview: bodyText.substring(0, 200),
+                contentType
+            });
+            return NextResponse.json({ 
+                error: 'Invalid JSON payload', 
+                details: parseError.message 
+            }, { status: 400 });
+        }
         const orderId = payload.id;
         const status = payload.status;
 
