@@ -18,16 +18,10 @@ if (process.env.DATABASE_URL) {
     pool.on('connect', async (client) => {
         try {
             await client.query("SET timezone = 'Asia/Kuala_Lumpur'");
-            // Set search_path to the schema (try both cases)
-            await client.query('SET search_path = "his_db", "$user", public');
+            // Set search_path to the schema
+            await client.query('SET search_path = inventory_management, "$user", public');
         } catch (error) {
             console.error('Failed to set timezone/search_path:', error);
-            // If lowercase fails, try uppercase
-            try {
-                await client.query('SET search_path = "HIS_db", "$user", public');
-            } catch (error2) {
-                console.error('Failed to set search_path with uppercase schema:', error2);
-            }
         }
     });
 } else {

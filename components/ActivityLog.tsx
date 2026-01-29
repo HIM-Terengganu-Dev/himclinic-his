@@ -379,7 +379,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                             <p className="text-sm text-gray-500 mt-1">
                                 {activeTab === 'manual' 
                                     ? 'Audit trail of all manual system changes'
-                                    : 'Stock changes and triggers from WooCommerce (orders, reconciliations)'
+                                    : 'Stock changes and triggers from Orders (order updates, reconciliations)'
                                 }
                             </p>
                         </div>
@@ -518,7 +518,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         >
                             <div className="flex items-center gap-2">
                                 <Package size={16} />
-                                WooCommerce
+                                Orders
                             </div>
                         </button>
                     </div>
