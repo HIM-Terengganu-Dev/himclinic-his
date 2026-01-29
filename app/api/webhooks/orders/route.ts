@@ -83,6 +83,16 @@ export async function POST(request: Request) {
             console.log('✅ Webhook signature verified successfully');
         }
 
+        // Handle WooCommerce test pings (form-encoded: webhook_id=14)
+        if (bodyText.includes('webhook_id=') || bodyText.startsWith('webhook_id=')) {
+            console.log('📝 Received WooCommerce test ping/webhook verification - returning success');
+            return NextResponse.json({ 
+                success: true, 
+                message: 'Webhook endpoint is active and receiving requests',
+                received: bodyText 
+            });
+        }
+
         // Parse JSON payload
         let payload;
         try {
@@ -91,12 +101,18 @@ export async function POST(request: Request) {
             console.error('Webhook Error: Failed to parse JSON body', {
                 error: parseError.message,
                 bodyPreview: bodyText.substring(0, 200),
-                contentType
+                contentType: request.headers.get('content-type')
             });
             return NextResponse.json({ 
                 error: 'Invalid JSON payload', 
                 details: parseError.message 
             }, { status: 400 });
+        }
+
+        // Validate payload structure
+        if (!payload || typeof payload !== 'object') {
+            console.error('Webhook Error: Invalid payload structure', { payload });
+            return NextResponse.json({ error: 'Invalid payload structure' }, { status: 400 });
         }
         const orderId = payload.id;
         const status = payload.status;
