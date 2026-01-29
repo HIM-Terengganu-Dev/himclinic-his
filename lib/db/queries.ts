@@ -1397,11 +1397,15 @@ export async function getAllCurrentStock(): Promise<Record<string, { stock: numb
             SELECT DISTINCT ON (st.sku, st.source_id)
                 st.sku,
                 st.source_id as order_id,
-                ABS(st.quantity_change) as quantity
+                COALESCE(
+                    (st.details->>'deductedQty')::int,
+                    ABS(st.quantity_change),
+                    (st.details->>'quantity')::int,
+                    0
+                ) as quantity
             FROM "his_db".stock_transactions st
             WHERE st.source_type = 'order'
             AND st.transaction_type = 'order_processing'
-            AND st.stock_after < st.stock_before
             AND NOT EXISTS (
                 SELECT 1 FROM "his_db".stock_transactions po
                 WHERE po.source_type = 'order'
