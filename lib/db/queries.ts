@@ -1372,14 +1372,13 @@ export async function getAllCurrentStock(): Promise<Record<string, { stock: numb
         ORDER BY sku, created_at DESC, id DESC
     `, []);
     
-    // Calculate back orders: In Warehouse - (Pending OR Processing, only one per order_id)
-    // For each SKU, get orders that are either pending-consult/review OR processing
-    // If an order has both, only count it once (prefer pending-consult/review)
+    // Calculate back orders: Quantity ordered but not available for immediate fulfillment
+    // Back Order = (Pending OR Processing quantities, one per order_id) - Available for Purchase
     const backOrderResult = await query(`
         WITH latest_stock AS (
             SELECT DISTINCT ON (sku)
                 sku,
-                (stock_after + pending_after) as in_warehouse
+                stock_after as available_for_purchase
             FROM "his_db".stock_transactions
             ORDER BY sku, created_at DESC, id DESC
         ),
@@ -1420,15 +1419,15 @@ export async function getAllCurrentStock(): Promise<Record<string, { stock: numb
         back_order_calc AS (
             SELECT 
                 ls.sku,
-                ls.in_warehouse,
-                COALESCE(SUM(aoq.quantity), 0) as pending_or_processing_qty
+                ls.available_for_purchase,
+                COALESCE(SUM(aoq.quantity), 0) as total_ordered_qty
             FROM latest_stock ls
             LEFT JOIN all_order_quantities aoq ON ls.sku = aoq.sku
-            GROUP BY ls.sku, ls.in_warehouse
+            GROUP BY ls.sku, ls.available_for_purchase
         )
         SELECT 
             sku,
-            GREATEST(0, pending_or_processing_qty - in_warehouse) as back_order
+            GREATEST(0, total_ordered_qty - available_for_purchase) as back_order
         FROM back_order_calc
     `, []);
     
