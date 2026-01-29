@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingConsultationStock, getPendingConsultationStockByOrder, getPendingStockAtTime, logStockMovement } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
-import { getProduct, updateProductStock } from '@/lib/services/woocommerce';
 
 export async function POST(request: Request) {
     console.log("!!! WEBHOOK HIT !!! Method:", request.method);
@@ -594,27 +593,47 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                 }
             }
             
-            // Restore each component stock
+            // Restore each component stock (using database transactions only)
             for (const [sku, restoreQty] of componentRestorations.entries()) {
                 const singleSku = singleSkuMap.get(sku);
-                if (!singleSku || !singleSku.woocommerce_product_id) continue;
+                if (!singleSku) continue;
                 
                 try {
-                    const currentProduct = await getProduct(singleSku.woocommerce_product_id);
-                    const currentStock = currentProduct.stock_quantity || 0;
-                    const newStock = currentStock + restoreQty;
+                    // Get current stock state from database (source of truth)
+                    const currentState = await getCurrentStockState(sku);
+                    const stockBefore = currentState.stock;
+                    const stockAfter = stockBefore + restoreQty;
                     
-                    // IMPORTANT: Write actual stock quantity (without pending-consult) to WC
-                    await updateProductStock(singleSku.woocommerce_product_id, newStock);
+                    // Create transaction to restore stock
+                    await createStockTransaction({
+                        sku,
+                        singleSkuId: singleSku.id,
+                        transactionType: 'order_cancelled',
+                        quantityChange: restoreQty,
+                        stockBefore,
+                        stockAfter,
+                        pendingBefore: currentState.pending,
+                        pendingAfter: currentState.pending, // No pending change for cancellation
+                        sourceType: 'order',
+                        sourceId: orderId,
+                        sourceEvent: `order.${payload.status}`,
+                        details: {
+                            restoredQty: restoreQty,
+                            changeMadeBy: 'HIS',
+                            orderId,
+                            isComboComponent: true,
+                            previousStatus: previousStatus
+                        }
+                    });
                     
                     restoredComponentStocks.push({
                         sku,
-                        previousStock: currentStock,
-                        newStock,
+                        previousStock: stockBefore,
+                        newStock: stockAfter,
                         restoredQty: restoreQty
                     });
                     
-                    console.log(`✅ Restored ${restoreQty} to combo component ${sku} (${currentStock} → ${newStock})`);
+                    console.log(`✅ Restored ${restoreQty} to combo component ${sku} (${stockBefore} → ${stockAfter}) via database transaction`);
                 } catch (e: any) {
                     console.error(`❌ Failed to restore component ${sku}:`, e.message);
                 }
@@ -624,7 +643,7 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
         // Step 2: Remove pending stock tracking (after restoring combo components)
         await removePendingConsultationStock(orderId);
 
-        // Step 3: Read current stock from WC for reporting
+        // Step 3: Read current stock from database for reporting
         const stockReadings: Array<{ sku: string; wcStock: number }> = [];
         const affectedSingleSkus = new Set<string>();
 
@@ -634,10 +653,11 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
             const sku = item.sku;
             if (singleSkuMap.has(sku)) {
                 const singleSku = singleSkuMap.get(sku);
-                if (singleSku && singleSku.woocommerce_product_id) {
+                if (singleSku) {
                     try {
-                        const currentProduct = await getProduct(singleSku.woocommerce_product_id);
-                        const currentStock = currentProduct.stock_quantity || 0;
+                        // Get current stock from database (source of truth)
+                        const currentState = await getCurrentStockState(sku);
+                        const currentStock = currentState.stock;
                         stockReadings.push({ sku, wcStock: currentStock });
                         affectedSingleSkus.add(sku);
                     } catch (e: any) {
@@ -693,28 +713,23 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                 components.forEach((comp: any) => neededSkus.add(comp.sku));
             });
 
-            // Fetch stock for missing components
+            // Fetch stock for missing components from database
             const missingSkus = Array.from(neededSkus).filter(s => !stockMap.hasOwnProperty(s));
             await Promise.all(missingSkus.map(async (s) => {
                 const sData = singleSkuMap.get(s);
-                if (sData && sData.woocommerce_product_id) {
+                if (sData) {
                     try {
-                        const p = await getProduct(sData.woocommerce_product_id);
-                        stockMap[s] = p.stock_quantity || 0;
+                        const currentState = await getCurrentStockState(s);
+                        stockMap[s] = currentState.stock;
                     } catch (e) {
-                        console.warn(`Failed to fetch stock for component ${s}`, e);
+                        console.warn(`Failed to fetch stock for component ${s} from database`, e);
                         stockMap[s] = 0;
                     }
                 }
             }));
 
-            // Calculate and update combo stock in WooCommerce
+            // Calculate combo availability (for logging only - no WooCommerce update)
             for (const combo of affectedCombos) {
-                if (!combo.woocommerce_product_id) {
-                    console.warn(`⚠️ Combo ${combo.sku} missing WooCommerce product ID`);
-                    continue;
-                }
-
                 const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
                 let comboLimit = Infinity;
 
@@ -726,15 +741,10 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
 
                 if (comboLimit === Infinity) comboLimit = 0;
 
-                try {
-                    // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
-                    // WC is not aware of pending-consult, so we write the actual calculated quantity
-                    await updateProductStock(combo.woocommerce_product_id, comboLimit);
-                    comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
-                    console.log(`✅ Updated combo ${combo.sku} after ${previousStatus} cancellation: ${comboLimit} units`);
-                } catch (e: any) {
-                    console.error(`❌ Failed to update combo ${combo.sku}:`, e.message);
-                }
+                // Note: Combo availability is calculated from database transactions
+                // No need to update WooCommerce - database is source of truth
+                comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
+                console.log(`✅ Calculated combo ${combo.sku} availability after ${previousStatus} cancellation: ${comboLimit} units (database only)`);
             }
         }
 
@@ -1014,12 +1024,12 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
         if (affectedCombos.length > 0) {
             console.log(`Recalculating ${affectedCombos.length} affected combo SKU(s) for ${status} status`);
             
-            // Build stock map: fetch current stock from WooCommerce (after deductions)
+            // Build stock map: fetch current stock from database (after deductions)
             const stockMap: Record<string, number> = {};
 
-            // Use updated stock from pendingStockUpdates if available, otherwise fetch from WC
+            // Use updated stock from pendingStockUpdates if available, otherwise fetch from database
             for (const update of pendingStockUpdates) {
-                stockMap[update.sku] = update.wcStock; // Use the stock after WC deduction
+                stockMap[update.sku] = update.wcStock; // Use the stock after deduction
             }
 
             // Collect all unique component SKUs needed for affected combos
@@ -1029,28 +1039,23 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                 components.forEach((comp: any) => neededSkus.add(comp.sku));
             });
 
-            // Fetch stock for other components needed for combo calculations
+            // Fetch stock for other components needed for combo calculations from database
             const missingSkus = Array.from(neededSkus).filter(s => !stockMap.hasOwnProperty(s));
             await Promise.all(missingSkus.map(async (s) => {
                 const sData = singleSkuMap.get(s);
-                if (sData && sData.woocommerce_product_id) {
+                if (sData) {
                     try {
-                        const p = await getProduct(sData.woocommerce_product_id);
-                        stockMap[s] = p.stock_quantity || 0;
+                        const currentState = await getCurrentStockState(s);
+                        stockMap[s] = currentState.stock;
                     } catch (e) {
-                        console.warn(`Failed to fetch stock for component ${s}`, e);
+                        console.warn(`Failed to fetch stock for component ${s} from database`, e);
                         stockMap[s] = 0;
                     }
                 }
             }));
 
-            // Calculate and update combo stock in WooCommerce
+            // Calculate combo availability (for logging only - no WooCommerce update)
             for (const combo of affectedCombos) {
-                if (!combo.woocommerce_product_id) {
-                    console.warn(`⚠️ Combo ${combo.sku} missing WooCommerce product ID`);
-                    continue;
-                }
-
                 const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
                 let comboLimit = Infinity;
 
@@ -1062,15 +1067,10 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
 
                 if (comboLimit === Infinity) comboLimit = 0;
 
-                try {
-                    // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
-                    // WC is not aware of pending-consult, so we write the actual calculated quantity
-                    await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
-                    comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
-                    console.log(`✅ Updated combo ${combo.sku} in WooCommerce for ${status}: ${comboLimit} units`);
-                } catch (e: any) {
-                    console.error(`❌ Failed to update combo ${combo.sku} in WooCommerce:`, e.message);
-                }
+                // Note: Combo availability is calculated from database transactions
+                // No need to update WooCommerce - database is source of truth
+                comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
+                console.log(`✅ Calculated combo ${combo.sku} availability for ${status}: ${comboLimit} units (database only)`);
             }
         }
 
@@ -1257,36 +1257,45 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             }
 
             for (const [sku, totalQty] of restorationMap.entries()) {
-                const wcProductId = wcIdMap.get(sku);
-                if (!wcProductId) continue;
+                const singleSku = singleSkuMap.get(sku);
+                if (!singleSku) continue;
 
                 try {
-                    const currentProduct = await getProduct(wcProductId);
-                    const currentStock = currentProduct.stock_quantity || 0;
-                    const newStock = currentStock + totalQty; // Restore stock
+                    // Get current stock state from database (source of truth)
+                    const currentState = await getCurrentStockState(sku);
+                    const stockBefore = currentState.stock;
+                    const stockAfter = stockBefore + totalQty; // Restore stock
 
-                    // IMPORTANT: Write actual stock quantity (without pending-consult) to WC
-                    // WC is not aware of pending-consult, so we write the actual quantity
-                    await updateProductStock(wcProductId, newStock); // Actual stock, not including pending-consult
-
-                    restoredUpdates.push({
+                    // Create transaction to restore stock
+                    await createStockTransaction({
                         sku,
-                        previousStock: currentStock,
-                        newStock,
-                        restoredQty: totalQty,
-                        changeMadeBy: 'HIS' // HIS system always restores combo component stocks
+                        singleSkuId: singleSku.id,
+                        transactionType: 'order_cancelled',
+                        quantityChange: totalQty,
+                        stockBefore,
+                        stockAfter,
+                        pendingBefore: currentState.pending,
+                        pendingAfter: currentState.pending, // No pending change for cancellation
+                        sourceType: 'order',
+                        sourceId: orderId,
+                        sourceEvent: 'order.cancelled',
+                        details: {
+                            restoredQty: totalQty,
+                            changeMadeBy: 'HIS',
+                            orderId,
+                            isComboComponent: true
+                        }
                     });
 
                     // Calculate pending stock at the time of this movement
                     const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
                     
                     // Log stock movement
-                    const singleSku = singleSkuMap.get(sku);
                     await logStockMovement({
                         sku,
-                        singleSkuId: singleSku?.id,
-                        previousStock: currentStock,
-                        newStock,
+                        singleSkuId: singleSku.id,
+                        previousStock: stockBefore,
+                        newStock: stockAfter,
                         pendingStock: pendingStockAtTime,
                         sourceType: 'order_cancellation',
                         sourceId: orderId,
@@ -1299,16 +1308,23 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         }
                     });
 
-                    console.log(`✅ Restored ${totalQty} to ${sku} (${currentStock} → ${newStock})`);
+                    restoredUpdates.push({
+                        sku,
+                        previousStock: stockBefore,
+                        newStock: stockAfter,
+                        restoredQty: totalQty,
+                        changeMadeBy: 'HIS' // HIS system always restores combo component stocks
+                    });
+
+                    console.log(`✅ Restored ${totalQty} to ${sku} (${stockBefore} → ${stockAfter}) via database transaction`);
                 } catch (e: any) {
                     console.error(`❌ Failed to restore stock for component ${sku}:`, e.message);
                 }
             }
         }
 
-        // Step 2: Track single SKU stock restorations (WC handles these automatically)
-        // For single SKU orders, WooCommerce automatically restores stock on cancellation
-        // HIS system only needs to read and track what WC did - no updateProductStock() call needed
+        // Step 2: Track single SKU stock restorations
+        // For single SKU orders, restore stock via database transactions
         const directSingleSkus = Object.keys(totalRestorations).filter(sku => {
             return !componentRestorations.some(r => r.sku === sku);
         });
@@ -1316,11 +1332,11 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
         for (const sku of directSingleSkus) {
             const restoreQty = totalRestorations[sku];
             const singleSku = singleSkuMap.get(sku);
-            if (singleSku && singleSku.woocommerce_product_id) {
+            if (singleSku) {
                 try {
-                    // Get current stock from WooCommerce (WC already restored it)
-                    const currentProduct = await getProduct(singleSku.woocommerce_product_id);
-                    const currentStock = currentProduct.stock_quantity || 0;
+                    // Get current stock from database (source of truth)
+                    const currentState = await getCurrentStockState(sku);
+                    const currentStock = currentState.stock;
                     
                     // Get previous stock from processing webhook log
                     let previousStockFromLog: number | null = null;
@@ -1347,49 +1363,62 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     // Calculate actual restoration quantity
                     const actualRestoredQty = currentStock - stockBeforeRestore;
                     
-                    // Only log if there was an actual change (restoredQty > 0)
-                    // If WC didn't restore (e.g., 80 → 80), there's no change to track
-                    if (actualRestoredQty > 0) {
-                        // WC already restored the stock - just track it
-                        // No updateProductStock() call needed for single SKU orders
-                        const changeMadeBy = 'WC'; // WC handles restoration for single SKU orders
-                        const actualPreviousStock = stockBeforeRestore;
-                        const actualNewStock = currentStock;
-                        
-                        console.log(`📝 WC restored ${actualRestoredQty} to ${sku} (${actualPreviousStock} → ${actualNewStock}) - WC made change (single SKU order)`);
-                        
-                        wcSideRestorations.push({
-                            sku,
-                            previousStock: actualPreviousStock,
-                            newStock: actualNewStock,
-                            restoredQty: actualRestoredQty,
-                            changeMadeBy: changeMadeBy, // WC made the restoration
-                            originalDeductionBy: originalChangeMadeBy // Who made the original deduction
-                        } as any);
-                        
-                        // Calculate pending stock at the time of this movement
-                        const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
-                        
-                        // Log stock movement
-                        await logStockMovement({
-                            sku,
-                            singleSkuId: singleSku.id,
-                            previousStock: actualPreviousStock,
-                            newStock: actualNewStock,
-                            pendingStock: pendingStockAtTime,
-                            sourceType: 'order_cancellation',
-                            sourceId: orderId,
-                            sourceEvent: 'order.cancelled',
-                            details: {
-                                restoredQty: actualRestoredQty,
-                                changeMadeBy: 'WC',
-                                originalDeductionBy: originalChangeMadeBy,
-                                orderId
-                            }
-                        });
-                    } else {
-                        console.log(`⏭️ Skipping log for ${sku}: No restoration occurred (${stockBeforeRestore} → ${currentStock}, restoredQty: ${actualRestoredQty})`);
-                    }
+                    // Restore stock via database transaction
+                    const stockBefore = stockBeforeRestore;
+                    const stockAfter = stockBefore + restoreQty;
+                    
+                    // Create transaction to restore stock
+                    await createStockTransaction({
+                        sku,
+                        singleSkuId: singleSku.id,
+                        transactionType: 'order_cancelled',
+                        quantityChange: restoreQty,
+                        stockBefore,
+                        stockAfter,
+                        pendingBefore: currentState.pending,
+                        pendingAfter: currentState.pending, // No pending change for cancellation
+                        sourceType: 'order',
+                        sourceId: orderId,
+                        sourceEvent: 'order.cancelled',
+                        details: {
+                            restoredQty: restoreQty,
+                            changeMadeBy: 'HIS',
+                            originalDeductionBy: originalChangeMadeBy,
+                            orderId
+                        }
+                    });
+                    
+                    // Calculate pending stock at the time of this movement
+                    const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
+                    
+                    // Log stock movement
+                    await logStockMovement({
+                        sku,
+                        singleSkuId: singleSku.id,
+                        previousStock: stockBefore,
+                        newStock: stockAfter,
+                        pendingStock: pendingStockAtTime,
+                        sourceType: 'order_cancellation',
+                        sourceId: orderId,
+                        sourceEvent: 'order.cancelled',
+                        details: {
+                            restoredQty: restoreQty,
+                            changeMadeBy: 'HIS',
+                            originalDeductionBy: originalChangeMadeBy,
+                            orderId
+                        }
+                    });
+                    
+                    wcSideRestorations.push({
+                        sku,
+                        previousStock: stockBefore,
+                        newStock: stockAfter,
+                        restoredQty: restoreQty,
+                        changeMadeBy: 'HIS', // HIS handles restoration via database
+                        originalDeductionBy: originalChangeMadeBy
+                    } as any);
+                    
+                    console.log(`✅ Restored ${restoreQty} to ${sku} (${stockBefore} → ${stockAfter}) via database transaction`);
 
                 } catch (e: any) {
                     console.error(`❌ Failed to read stock for ${sku}:`, e.message);
@@ -1415,22 +1444,22 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                 stockMap[update.sku] = update.newStock;
             }
 
-            // Fetch current stock for other components
+            // Fetch current stock for other components from database
             for (const [sku] of Object.entries(totalRestorations)) {
                 if (stockMap.hasOwnProperty(sku)) continue;
 
                 const singleSku = singleSkuMap.get(sku);
-                if (singleSku && singleSku.woocommerce_product_id) {
+                if (singleSku) {
                     try {
-                        const p = await getProduct(singleSku.woocommerce_product_id);
-                        stockMap[sku] = p.stock_quantity || 0;
+                        const currentState = await getCurrentStockState(sku);
+                        stockMap[sku] = currentState.stock;
                     } catch (e) {
                         stockMap[sku] = 0;
                     }
                 }
             }
 
-            // Fetch stock for other components needed for combo calculations
+            // Fetch stock for other components needed for combo calculations from database
             const neededSkus = new Set<string>();
             affectedCombos.forEach((c: any) => {
                 const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
@@ -1440,20 +1469,18 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             const missingSkus = Array.from(neededSkus).filter(s => !stockMap.hasOwnProperty(s));
             await Promise.all(missingSkus.map(async (s) => {
                 const sData = singleSkuMap.get(s);
-                if (sData && sData.woocommerce_product_id) {
+                if (sData) {
                     try {
-                        const p = await getProduct(sData.woocommerce_product_id);
-                        stockMap[s] = p.stock_quantity || 0;
+                        const currentState = await getCurrentStockState(s);
+                        stockMap[s] = currentState.stock;
                     } catch (e) {
                         stockMap[s] = 0;
                     }
                 }
             }));
 
-            // Calculate and update combo stock
+            // Calculate combo availability (for logging only - no WooCommerce update)
             for (const combo of affectedCombos) {
-                if (!combo.woocommerce_product_id) continue;
-
                 const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
                 let comboLimit = Infinity;
 
@@ -1465,15 +1492,10 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
 
                 if (comboLimit === Infinity) comboLimit = 0;
 
-                try {
-                    // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
-                    // WC is not aware of pending-consult, so we write the actual calculated quantity
-                    await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
-                    comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
-                    console.log(`✅ Updated combo ${combo.sku} after cancellation: ${comboLimit} units`);
-                } catch (e: any) {
-                    console.error(`❌ Failed to update combo ${combo.sku}:`, e.message);
-                }
+                // Note: Combo availability is calculated from database transactions
+                // No need to update WooCommerce - database is source of truth
+                comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
+                console.log(`✅ Calculated combo ${combo.sku} availability after cancellation: ${comboLimit} units (database only)`);
             }
         }
 
