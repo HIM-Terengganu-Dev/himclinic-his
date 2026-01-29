@@ -6,7 +6,7 @@ import { query, pool } from './connection';
 
 export async function getUserByEmail(email: string) {
     const result = await query(
-        'SELECT * FROM inventory_management.users WHERE email = $1',
+        'SELECT * FROM HIS_db.users WHERE email = $1',
         [email]
     );
     return result.rows[0];
@@ -18,7 +18,7 @@ export async function createUser(user: {
     role?: string;
 }) {
     const result = await query(
-        `INSERT INTO inventory_management.users (email, name, role)
+        `INSERT INTO HIS_db.users (email, name, role)
      VALUES ($1, $2, $3)
      RETURNING *`,
         [user.email, user.name, user.role || 'user']
@@ -28,7 +28,7 @@ export async function createUser(user: {
 
 export async function updateLastLogin(id: number) {
     await query(
-        'UPDATE inventory_management.users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
+        'UPDATE HIS_db.users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
         [id]
     );
 }
@@ -39,7 +39,7 @@ export async function updateLastLogin(id: number) {
 
 export async function getAllSingleSkus() {
     const result = await query(
-        `SELECT * FROM inventory_management.single_skus 
+        `SELECT * FROM HIS_db.single_skus 
          WHERE LOWER(COALESCE(description, '')) NOT IN ('not for sale', 'dummy sku')
          ORDER BY sku`
     );
@@ -48,7 +48,7 @@ export async function getAllSingleSkus() {
 
 export async function getSingleSkuByCode(sku: string) {
     const result = await query(
-        `SELECT * FROM inventory_management.single_skus WHERE sku = $1`,
+        `SELECT * FROM HIS_db.single_skus WHERE sku = $1`,
         [sku]
     );
     return result.rows[0];
@@ -62,7 +62,7 @@ export async function createSingleSku(data: {
     createdBy: number;
 }) {
     const result = await query(
-        `INSERT INTO inventory_management.single_skus 
+        `INSERT INTO HIS_db.single_skus 
      (sku, name, woocommerce_product_id, description, created_by)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
@@ -73,7 +73,7 @@ export async function createSingleSku(data: {
 
 export async function getAllComboSkus() {
     const result = await query(
-        `SELECT * FROM inventory_management.combo_skus 
+        `SELECT * FROM HIS_db.combo_skus 
          WHERE LOWER(COALESCE(description, '')) NOT IN ('not for sale', 'dummy sku')
          ORDER BY sku`
     );
@@ -83,14 +83,14 @@ export async function getAllComboSkus() {
 // Admin functions to get all SKUs including "not for sale" and "dummy sku" items
 export async function getAllSingleSkusAdmin() {
     const result = await query(
-        `SELECT * FROM inventory_management.single_skus ORDER BY sku`
+        `SELECT * FROM HIS_db.single_skus ORDER BY sku`
     );
     return result.rows;
 }
 
 export async function getAllComboSkusAdmin() {
     const result = await query(
-        `SELECT * FROM inventory_management.combo_skus ORDER BY sku`
+        `SELECT * FROM HIS_db.combo_skus ORDER BY sku`
     );
     return result.rows;
 }
@@ -104,7 +104,7 @@ export async function createComboSku(data: {
     createdBy: number;
 }) {
     const result = await query(
-        `INSERT INTO inventory_management.combo_skus 
+        `INSERT INTO HIS_db.combo_skus 
      (sku, name, woocommerce_product_id, components, description, created_by)
      VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
@@ -148,7 +148,7 @@ export async function createProcurementUpdate(data: {
         console.log(`📝 Inserting procurement update: operation=${data.operation}, quantity=${data.quantity}, notes=${notesValue}`);
         
         const result = await client.query(
-            `INSERT INTO inventory_management.procurement_updates
+            `INSERT INTO HIS_db.procurement_updates
        (single_sku_id, operation, quantity, previous_quantity, new_quantity, notes, return_condition, order_id, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
@@ -179,7 +179,7 @@ export async function createProcurementUpdate(data: {
         
         try {
             await client.query(
-                `INSERT INTO inventory_management.activity_logs
+                `INSERT INTO HIS_db.activity_logs
            (user_id, action, entity_type, entity_id, details, success)
            VALUES ($1, $2, 'procurement_update', $3, $4, true)`,
                 [data.createdBy, action, entry.id, JSON.stringify(details)]
@@ -230,7 +230,7 @@ export async function logActivity(data: {
 }) {
     try {
         await query(
-            `INSERT INTO inventory_management.activity_logs
+            `INSERT INTO HIS_db.activity_logs
          (user_id, action, entity_type, entity_id, details, success, error_message, ip_address, user_agent)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
@@ -279,10 +279,10 @@ export async function getActivityLogs(filters: {
         u.email as user_email,
         ss.sku as affected_sku,
         to_char(al.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
-    FROM inventory_management.activity_logs al
-    LEFT JOIN inventory_management.users u ON al.user_id = u.id
-    LEFT JOIN inventory_management.procurement_updates pu ON al.entity_type = 'procurement_update' AND al.entity_id = pu.id
-    LEFT JOIN inventory_management.single_skus ss ON pu.single_sku_id = ss.id
+    FROM HIS_db.activity_logs al
+    LEFT JOIN HIS_db.users u ON al.user_id = u.id
+    LEFT JOIN HIS_db.procurement_updates pu ON al.entity_type = 'procurement_update' AND al.entity_id = pu.id
+    LEFT JOIN HIS_db.single_skus ss ON pu.single_sku_id = ss.id
     WHERE 1=1
   `;
     const params: any[] = [];
@@ -358,7 +358,7 @@ export async function logWcWebhook(data: {
     errorMessage?: string;
 }) {
     await query(
-        `INSERT INTO inventory_management.wc_webhook_logs
+        `INSERT INTO HIS_db.wc_webhook_logs
          (webhook_type, webhook_event, entity_id, entity_sku, entity_name, status, stock_quantity, previous_stock_quantity, 
           affected_skus, combo_updates, details, ip_address, user_agent, success, error_message)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
@@ -387,7 +387,7 @@ export async function getWcWebhookLogByOrderId(orderId: number, webhookEvent?: s
         SELECT 
             *,
             to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
-        FROM inventory_management.wc_webhook_logs
+        FROM HIS_db.wc_webhook_logs
         WHERE webhook_type = 'order'
         AND entity_id = $1
     `;
@@ -530,7 +530,7 @@ export async function getWcWebhookLogs(filters: {
             SELECT 
                 *,
                 to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
-            FROM inventory_management.wc_webhook_logs
+            FROM HIS_db.wc_webhook_logs
             ${orderWhereClause}
             ORDER BY entity_id, created_at DESC
         `;
@@ -608,7 +608,7 @@ export async function getWcWebhookLogs(filters: {
     
     // For product webhooks or when webhookType is 'product', return as-is
     // Get total count
-    const countSql = `SELECT COUNT(*) as total FROM inventory_management.wc_webhook_logs ${whereClause}`;
+    const countSql = `SELECT COUNT(*) as total FROM HIS_db.wc_webhook_logs ${whereClause}`;
     const countResult = await query(countSql, params);
     const total = parseInt(countResult.rows[0].total);
 
@@ -617,7 +617,7 @@ export async function getWcWebhookLogs(filters: {
         SELECT 
             *,
             to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
-        FROM inventory_management.wc_webhook_logs
+        FROM HIS_db.wc_webhook_logs
         ${whereClause}
         ORDER BY created_at DESC
     `;
@@ -681,7 +681,7 @@ export async function findDuplicateProcessingOrders() {
             ARRAY_AGG(id ORDER BY created_at) as log_ids,
             ARRAY_AGG(created_at ORDER BY created_at) as processing_times,
             ARRAY_AGG(success ORDER BY created_at) as success_statuses
-        FROM inventory_management.wc_webhook_logs
+        FROM HIS_db.wc_webhook_logs
         WHERE webhook_type = 'order'
         AND webhook_event = 'order.processing'
         GROUP BY entity_id
@@ -701,7 +701,7 @@ export async function findDuplicateProcessingOrders() {
                     success,
                     details->'componentDeductions' as component_deductions,
                     details->'comboSkusOrdered' as combo_skus_ordered
-                FROM inventory_management.wc_webhook_logs
+                FROM HIS_db.wc_webhook_logs
                 WHERE entity_id = $1
                 AND webhook_event = 'order.processing'
                 ORDER BY created_at
@@ -764,7 +764,7 @@ export async function investigateStockChangesBetweenOrders(
         SELECT 
             MIN(created_at) - INTERVAL '1 day' as start_time,
             MAX(created_at) + INTERVAL '1 day' as end_time
-        FROM inventory_management.wc_webhook_logs
+        FROM HIS_db.wc_webhook_logs
         WHERE entity_id IN ($1, $2)
         AND webhook_event = 'order.processing'
     `;
@@ -786,8 +786,8 @@ export async function investigateStockChangesBetweenOrders(
             pu.notes,
             NULL::text as order_id,
             'HIS' as source
-        FROM inventory_management.procurement_updates pu
-        JOIN inventory_management.single_skus ss ON pu.single_sku_id = ss.id
+        FROM HIS_db.procurement_updates pu
+        JOIN HIS_db.single_skus ss ON pu.single_sku_id = ss.id
         WHERE ss.sku = $1
         AND pu.created_at BETWEEN $2 AND $3
         ORDER BY pu.created_at
@@ -809,7 +809,7 @@ export async function investigateStockChangesBetweenOrders(
                 WHEN (deduction->>'isWcSide')::boolean THEN 'WC'
                 ELSE 'HIS'
             END as source
-        FROM inventory_management.wc_webhook_logs w,
+        FROM HIS_db.wc_webhook_logs w,
              jsonb_array_elements(w.details->'componentDeductions') AS deduction
         WHERE w.webhook_type = 'order'
         AND w.webhook_event = 'order.processing'
@@ -834,7 +834,7 @@ export async function investigateStockChangesBetweenOrders(
                 WHEN (restoration->>'isWcSide')::boolean THEN 'WC'
                 ELSE 'HIS'
             END as source
-        FROM inventory_management.wc_webhook_logs w,
+        FROM HIS_db.wc_webhook_logs w,
              jsonb_array_elements(w.details->'componentRestorations') AS restoration
         WHERE w.webhook_type = 'order'
         AND w.webhook_event LIKE 'order.cancelled%'
@@ -856,7 +856,7 @@ export async function investigateStockChangesBetweenOrders(
             NULL as notes,
             NULL::text as order_id,
             'WC' as source
-        FROM inventory_management.wc_webhook_logs w
+        FROM HIS_db.wc_webhook_logs w
         WHERE w.webhook_type = 'product'
         AND w.entity_sku = $1
         AND w.created_at BETWEEN $2 AND $3
@@ -899,7 +899,7 @@ export async function createStockTake(data: {
     snapshotData: any;
 }) {
     const result = await query(
-        `INSERT INTO inventory_management.stock_takes
+        `INSERT INTO HIS_db.stock_takes
          (month, year, snapshot_data, created_by, status)
          VALUES ($1, $2, $3, $4, 'pending')
          RETURNING *`,
@@ -915,9 +915,9 @@ export async function getStockTakeByMonth(month: number, year: number) {
                 u2.name as completed_by_name, u2.email as completed_by_email,
                 to_char(st.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8,
                 to_char(st.completed_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as completed_at_gmt8
-         FROM inventory_management.stock_takes st
-         LEFT JOIN inventory_management.users u1 ON st.created_by = u1.id
-         LEFT JOIN inventory_management.users u2 ON st.completed_by = u2.id
+         FROM HIS_db.stock_takes st
+         LEFT JOIN HIS_db.users u1 ON st.created_by = u1.id
+         LEFT JOIN HIS_db.users u2 ON st.completed_by = u2.id
          WHERE st.month = $1 AND st.year = $2
          ORDER BY st.created_at DESC
          LIMIT 1`,
@@ -950,9 +950,9 @@ export async function getStockTakeById(id: number) {
                 u2.name as completed_by_name, u2.email as completed_by_email,
                 to_char(st.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8,
                 to_char(st.completed_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as completed_at_gmt8
-         FROM inventory_management.stock_takes st
-         LEFT JOIN inventory_management.users u1 ON st.created_by = u1.id
-         LEFT JOIN inventory_management.users u2 ON st.completed_by = u2.id
+         FROM HIS_db.stock_takes st
+         LEFT JOIN HIS_db.users u1 ON st.created_by = u1.id
+         LEFT JOIN HIS_db.users u2 ON st.completed_by = u2.id
          WHERE st.id = $1`,
         [id]
     );
@@ -986,7 +986,7 @@ export async function createStockTakeItems(stockTakeId: number, items: Array<{
     });
 
     const result = await query(
-        `INSERT INTO inventory_management.stock_take_items
+        `INSERT INTO HIS_db.stock_take_items
          (stock_take_id, single_sku_id, system_quantity)
          VALUES ${values}
          RETURNING *`,
@@ -998,8 +998,8 @@ export async function createStockTakeItems(stockTakeId: number, items: Array<{
 export async function getStockTakeItems(stockTakeId: number) {
     const result = await query(
         `SELECT sti.*, ss.sku, ss.name as sku_name
-         FROM inventory_management.stock_take_items sti
-         JOIN inventory_management.single_skus ss ON sti.single_sku_id = ss.id
+         FROM HIS_db.stock_take_items sti
+         JOIN HIS_db.single_skus ss ON sti.single_sku_id = ss.id
          WHERE sti.stock_take_id = $1
          ORDER BY ss.sku`,
         [stockTakeId]
@@ -1025,7 +1025,7 @@ export async function updateStockTakeItems(stockTakeId: number, physicalCounts: 
         const skuMap = new Map<string, number>();
         for (const count of physicalCounts) {
             const skuResult = await client.query(
-                'SELECT id FROM inventory_management.single_skus WHERE sku = $1',
+                'SELECT id FROM HIS_db.single_skus WHERE sku = $1',
                 [count.sku]
             );
             if (skuResult.rows.length > 0) {
@@ -1039,12 +1039,12 @@ export async function updateStockTakeItems(stockTakeId: number, physicalCounts: 
             if (!skuId) continue;
 
             const variance = count.physicalQuantity - (await client.query(
-                'SELECT system_quantity FROM inventory_management.stock_take_items WHERE stock_take_id = $1 AND single_sku_id = $2',
+                'SELECT system_quantity FROM HIS_db.stock_take_items WHERE stock_take_id = $1 AND single_sku_id = $2',
                 [stockTakeId, skuId]
             )).rows[0]?.system_quantity || 0;
 
             await client.query(
-                `UPDATE inventory_management.stock_take_items
+                `UPDATE HIS_db.stock_take_items
                  SET physical_quantity = $1, variance = $2
                  WHERE stock_take_id = $3 AND single_sku_id = $4`,
                 [count.physicalQuantity, variance, stockTakeId, skuId]
@@ -1063,7 +1063,7 @@ export async function updateStockTakeItems(stockTakeId: number, physicalCounts: 
 
 export async function completeStockTake(stockTakeId: number, completedBy: number) {
     const result = await query(
-        `UPDATE inventory_management.stock_takes
+        `UPDATE HIS_db.stock_takes
          SET status = 'completed', completed_at = CURRENT_TIMESTAMP, completed_by = $1
          WHERE id = $2
          RETURNING *`,
@@ -1074,7 +1074,7 @@ export async function completeStockTake(stockTakeId: number, completedBy: number
 
 export async function markStockTakeItemAdjusted(stockTakeId: number, singleSkuId: number, notes?: string) {
     const result = await query(
-        `UPDATE inventory_management.stock_take_items
+        `UPDATE HIS_db.stock_take_items
          SET adjustment_applied = true, adjustment_notes = $1
          WHERE stock_take_id = $2 AND single_sku_id = $3
          RETURNING *`,
@@ -1089,7 +1089,7 @@ export async function markStockTakeItemAdjusted(stockTakeId: number, singleSkuId
 
 export async function addPendingConsultationStock(orderId: number, sku: string, quantity: number, status: 'pending-consult' | 'pending-review' = 'pending-consult') {
     const result = await query(
-        `INSERT INTO inventory_management.pending_consultation_stock (order_id, sku, quantity, status)
+        `INSERT INTO HIS_db.pending_consultation_stock (order_id, sku, quantity, status)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (order_id, sku) DO UPDATE SET quantity = $3, status = $4
          RETURNING *`,
@@ -1100,7 +1100,7 @@ export async function addPendingConsultationStock(orderId: number, sku: string, 
 
 export async function removePendingConsultationStock(orderId: number) {
     const result = await query(
-        `DELETE FROM inventory_management.pending_consultation_stock
+        `DELETE FROM HIS_db.pending_consultation_stock
          WHERE order_id = $1
          RETURNING *`,
         [orderId]
@@ -1111,7 +1111,7 @@ export async function removePendingConsultationStock(orderId: number) {
 export async function getPendingConsultationStockBySku(sku: string) {
     const result = await query(
         `SELECT SUM(quantity) as total_quantity
-         FROM inventory_management.pending_consultation_stock
+         FROM HIS_db.pending_consultation_stock
          WHERE sku = $1`,
         [sku]
     );
@@ -1132,7 +1132,7 @@ export async function getPendingStockAtTime(sku: string, timestamp: Date): Promi
             w.entity_id as order_id,
             w.created_at,
             (pending->>'quantity')::int as quantity
-        FROM inventory_management.wc_webhook_logs w,
+        FROM HIS_db.wc_webhook_logs w,
              jsonb_array_elements(w.details->'pendingStockUpdates') AS pending
         WHERE w.webhook_type = 'order'
         AND (w.webhook_event = 'order.pending-consult' OR w.webhook_event = 'order.pending-review')
@@ -1146,13 +1146,13 @@ export async function getPendingStockAtTime(sku: string, timestamp: Date): Promi
     // These remove pending stock
     const processingLogs = await query(
         `SELECT DISTINCT entity_id as order_id
-        FROM inventory_management.wc_webhook_logs
+        FROM HIS_db.wc_webhook_logs
         WHERE webhook_type = 'order'
         AND webhook_event = 'order.processing'
         AND created_at < $1
         AND entity_id IN (
             SELECT DISTINCT w.entity_id
-            FROM inventory_management.wc_webhook_logs w,
+            FROM HIS_db.wc_webhook_logs w,
                  jsonb_array_elements(w.details->'pendingStockUpdates') AS pending
             WHERE w.webhook_type = 'order'
             AND (w.webhook_event = 'order.pending-consult' OR w.webhook_event = 'order.pending-review')
@@ -1165,14 +1165,14 @@ export async function getPendingStockAtTime(sku: string, timestamp: Date): Promi
     // Get all cancellation logs for orders that had pending stock, before the timestamp
     const cancellationLogs = await query(
         `SELECT DISTINCT entity_id as order_id
-        FROM inventory_management.wc_webhook_logs
+        FROM HIS_db.wc_webhook_logs
         WHERE webhook_type = 'order'
         AND webhook_event = 'order.cancelled'
         AND created_at < $1
         AND (details->>'previousStatus' = 'pending-consult' OR details->>'previousStatus' = 'pending-review')
         AND entity_id IN (
             SELECT DISTINCT w.entity_id
-            FROM inventory_management.wc_webhook_logs w,
+            FROM HIS_db.wc_webhook_logs w,
                  jsonb_array_elements(w.details->'pendingStockUpdates') AS pending
             WHERE w.webhook_type = 'order'
             AND (w.webhook_event = 'order.pending-consult' OR w.webhook_event = 'order.pending-review')
@@ -1201,7 +1201,7 @@ export async function getPendingStockAtTime(sku: string, timestamp: Date): Promi
 export async function getPendingConsultationStockByOrderAndSku(orderId: number, sku: string) {
     const result = await query(
         `SELECT quantity
-         FROM inventory_management.pending_consultation_stock
+         FROM HIS_db.pending_consultation_stock
          WHERE order_id = $1 AND sku = $2`,
         [orderId, sku]
     );
@@ -1211,7 +1211,7 @@ export async function getPendingConsultationStockByOrderAndSku(orderId: number, 
 export async function getPendingConsultationStockByOrder(orderId: number) {
     const result = await query(
         `SELECT sku, quantity, status
-         FROM inventory_management.pending_consultation_stock
+         FROM HIS_db.pending_consultation_stock
          WHERE order_id = $1`,
         [orderId]
     );
@@ -1225,7 +1225,7 @@ export async function getPendingConsultationStockByOrder(orderId: number) {
 export async function getAllPendingConsultationStock(): Promise<Record<string, number>> {
     const result = await query(
         `SELECT sku, SUM(quantity) as total_quantity
-         FROM inventory_management.pending_consultation_stock
+         FROM HIS_db.pending_consultation_stock
          GROUP BY sku`
     );
     const stockMap: Record<string, number> = {};
@@ -1267,7 +1267,7 @@ export async function logStockMovement(data: {
     }
     
     const sql = `
-        INSERT INTO inventory_management.stock_movements (
+        INSERT INTO HIS_db.stock_movements (
             sku,
             single_sku_id,
             previous_stock,
@@ -1305,4 +1305,206 @@ export async function logStockMovement(data: {
         console.error('Failed to log stock movement:', error.message, data);
         return null;
     }
+}
+
+/**
+ * ========================================
+ * NEW TRANSACTION-BASED STOCK SYSTEM
+ * ========================================
+ * These functions use stock_transactions table as the source of truth
+ */
+
+/**
+ * Get current stock state for a SKU from the latest transaction
+ */
+export async function getCurrentStockState(sku: string): Promise<{
+    stock: number;
+    pending: number;
+    display: number;
+}> {
+    const result = await query(`
+        SELECT 
+            stock_after as stock,
+            pending_after as pending,
+            (stock_after + pending_after) as display
+        FROM HIS_db.stock_transactions
+        WHERE sku = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+    `, [sku]);
+    
+    if (result.rows.length === 0) {
+        // No transactions yet - this should only happen before initial reconciliation
+        // After reconciliation, there should always be at least one transaction
+        throw new Error(`No stock transactions found for SKU: ${sku}. Please run reconciliation.`);
+    }
+    
+    return {
+        stock: result.rows[0].stock,
+        pending: result.rows[0].pending,
+        display: result.rows[0].display
+    };
+}
+
+/**
+ * Create a stock transaction (core function for all stock changes)
+ */
+export async function createStockTransaction(data: {
+    sku: string;
+    singleSkuId?: number;
+    transactionType: 'order_pending_consult' | 'order_pending_review' | 'order_processing' | 'order_cancelled' | 'manual_add' | 'manual_subtract' | 'manual_set' | 'reconciliation' | 'refund_return';
+    quantityChange: number;
+    stockBefore: number;
+    stockAfter: number;
+    pendingBefore: number;
+    pendingAfter: number;
+    sourceType?: string;
+    sourceId?: number;
+    sourceEvent?: string;
+    createdBy?: number;
+    details?: any;
+}): Promise<any> {
+    // Validate: stock_after should equal stock_before + quantity_change
+    if (data.stockAfter !== data.stockBefore + data.quantityChange) {
+        throw new Error(`Stock calculation mismatch: ${data.stockBefore} + ${data.quantityChange} ≠ ${data.stockAfter}`);
+    }
+    
+    const detailsJson = data.details ? JSON.stringify(data.details) : null;
+    
+    const result = await query(`
+        INSERT INTO HIS_db.stock_transactions (
+            sku, single_sku_id, transaction_type,
+            quantity_change, stock_before, stock_after,
+            pending_before, pending_after,
+            source_type, source_id, source_event,
+            created_by, details
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        RETURNING *
+    `, [
+        data.sku,
+        data.singleSkuId || null,
+        data.transactionType,
+        data.quantityChange,
+        data.stockBefore,
+        data.stockAfter,
+        data.pendingBefore,
+        data.pendingAfter,
+        data.sourceType || null,
+        data.sourceId || null,
+        data.sourceEvent || null,
+        data.createdBy || null,
+        detailsJson
+    ]);
+    
+    // Note: We read directly from transactions, so no materialized view refresh needed
+    
+    return result.rows[0];
+}
+
+/**
+ * Get stock transactions for a SKU (for history/display)
+ */
+export async function getStockTransactions(filters: {
+    sku?: string;
+    transactionType?: string;
+    sourceType?: string;
+    sourceId?: number;
+    limit?: number;
+    offset?: number;
+    dateFrom?: string;
+    dateTo?: string;
+}) {
+    let sql = `
+        SELECT 
+            t.*,
+            ss.name as sku_name
+        FROM HIS_db.stock_transactions t
+        LEFT JOIN HIS_db.single_skus ss ON t.single_sku_id = ss.id
+        WHERE 1=1
+    `;
+    const params: any[] = [];
+    let pIdx = 1;
+    
+    if (filters.sku) {
+        sql += ` AND t.sku = $${pIdx++}`;
+        params.push(filters.sku);
+    }
+    
+    if (filters.transactionType) {
+        sql += ` AND t.transaction_type = $${pIdx++}`;
+        params.push(filters.transactionType);
+    }
+    
+    if (filters.sourceType) {
+        sql += ` AND t.source_type = $${pIdx++}`;
+        params.push(filters.sourceType);
+    }
+    
+    if (filters.sourceId) {
+        sql += ` AND t.source_id = $${pIdx++}`;
+        params.push(filters.sourceId);
+    }
+    
+    if (filters.dateFrom) {
+        sql += ` AND t.created_at >= $${pIdx++}`;
+        params.push(filters.dateFrom);
+    }
+    
+    if (filters.dateTo) {
+        sql += ` AND t.created_at <= $${pIdx++}`;
+        params.push(filters.dateTo);
+    }
+    
+    sql += ` ORDER BY t.created_at DESC, t.id DESC`;
+    
+    if (filters.limit) {
+        sql += ` LIMIT $${pIdx++}`;
+        params.push(filters.limit);
+    }
+    
+    if (filters.offset) {
+        sql += ` OFFSET $${pIdx++}`;
+        params.push(filters.offset);
+    }
+    
+    const result = await query(sql, params);
+    
+    // Parse JSONB details field
+    return result.rows.map((row: any) => {
+        if (row.details && typeof row.details === 'string') {
+            try {
+                row.details = JSON.parse(row.details);
+            } catch (e) {
+                row.details = {};
+            }
+        }
+        return row;
+    });
+}
+
+/**
+ * Get current stock for all SKUs (read directly from transactions - more reliable than materialized view)
+ */
+export async function getAllCurrentStock(): Promise<Record<string, { stock: number; pending: number; display: number }>> {
+    // Read directly from transactions using DISTINCT ON for latest per SKU
+    const result = await query(`
+        SELECT DISTINCT ON (sku)
+            sku,
+            stock_after as stock,
+            pending_after as pending,
+            (stock_after + pending_after) as display
+        FROM HIS_db.stock_transactions
+        ORDER BY sku, created_at DESC, id DESC
+    `, []);
+    
+    const stockMap: Record<string, { stock: number; pending: number; display: number }> = {};
+    result.rows.forEach((row: any) => {
+        stockMap[row.sku] = {
+            stock: row.stock,
+            pending: row.pending,
+            display: row.display
+        };
+    });
+    
+    return stockMap;
 }

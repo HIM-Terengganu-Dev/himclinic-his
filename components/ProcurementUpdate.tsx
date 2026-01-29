@@ -107,7 +107,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
           <p className="text-sm text-blue-800">
             <strong>💡 Manual Stock Updates:</strong> Use this section to manually add or set stock quantities
-            for single SKUs. System will automatically update combo SKU availability in WooCommerce.
+            for single SKUs. Changes are recorded in the HIS database.
           </p>
         </div>
 
@@ -137,38 +137,11 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
                   <span className="text-lg font-bold text-green-600">{result.newLocalQuantity} units</span>
                 </div>
                 <div className="flex items-center gap-2 text-sm">
-                  {result.singleSkuUpdatedInWooCommerce ? (
-                    <>
-                      <CheckCircle className="w-4 h-4 text-green-600" />
-                      <span className="text-green-700">Synced to WooCommerce ✓</span>
-                    </>
-                  ) : (
-                    <>
-                      <XCircle className="w-4 h-4 text-yellow-600" />
-                      <span className="text-yellow-700">Local only (WooCommerce sync failed)</span>
-                    </>
-                  )}
+                  <CheckCircle className="w-4 h-4 text-green-600" />
+                  <span className="text-green-700">Stock updated successfully ✓</span>
                 </div>
               </div>
 
-              {result.affectedComboSKUs && result.affectedComboSKUs.length > 0 && (
-                <div className="bg-white border border-gray-200 rounded-lg p-4">
-                  <h4 className="font-semibold text-gray-900 mb-3">
-                    Affected Combo SKUs (Updated in WooCommerce)
-                  </h4>
-                  <div className="space-y-2">
-                    {result.affectedComboSKUs.map((combo: any) => (
-                      <div key={combo.sku} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                        <div>
-                          <p className="text-sm font-medium text-gray-900">{combo.sku}</p>
-                          <p className="text-xs text-gray-500">{combo.name}</p>
-                        </div>
-                        <span className="text-sm font-bold text-blue-600">{combo.newStock} available</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         )}

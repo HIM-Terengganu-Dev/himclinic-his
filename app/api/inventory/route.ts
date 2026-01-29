@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server';
 import {
-  initializeInventoryFromProducts,
   calculateAllComboAvailability,
 } from '@/lib/utils/inventory';
-import { getProducts } from '@/lib/services/woocommerce';
-import { getAllSingleSkus, getAllComboSkus, getAllPendingConsultationStock } from '@/lib/db/queries';
+import { getAllSingleSkus, getAllComboSkus, getAllCurrentStock } from '@/lib/db/queries';
 import { InventoryStock } from '@/types/inventory';
 
 // Force dynamic rendering to prevent Next.js caching
@@ -29,45 +27,29 @@ export async function GET() {
       });
     }
 
-    // Always fetch fresh inventory from WooCommerce to ensure accuracy
-    // This ensures stock take adjustments and manual updates are reflected immediately
-    let inventoryStore: InventoryStock = {};
-    try {
-      // Fetch ALL products (handle pagination)
-      let allProducts: any[] = [];
-      let page = 1;
-      let hasMore = true;
-      
-      while (hasMore) {
-        const products = await getProducts({ per_page: 100, page });
-        allProducts = allProducts.concat(products);
-        
-        // If we got less than 100 products, we've reached the end
-        hasMore = products.length === 100;
-        page++;
-      }
-      
-      console.log(`Fetched ${allProducts.length} products from WooCommerce at ${new Date().toISOString()}`);
-      inventoryStore = initializeInventoryFromProducts(allProducts, singleSkus);
-      
-      // Log sample of inventory for debugging
-      const sampleSkus = Object.keys(inventoryStore).slice(0, 5);
-      console.log('Sample inventory:', sampleSkus.map(sku => ({ sku, qty: inventoryStore[sku] })));
-    } catch (error) {
-      console.error('Failed to fetch from WooCommerce:', error);
-      // If WooCommerce fails, initialize with 0 stock for all SKUs
-      singleSkus.forEach((sku: any) => {
+    // Get current stock from transactions table (source of truth)
+    const currentStockMap = await getAllCurrentStock();
+    
+    // Build inventory store from transactions
+    const inventoryStore: InventoryStock = {};
+    const pendingStock: Record<string, number> = {};
+    
+    singleSkus.forEach((sku: any) => {
+      const stockData = currentStockMap[sku.sku];
+      if (stockData) {
+        inventoryStore[sku.sku] = stockData.stock;
+        pendingStock[sku.sku] = stockData.pending;
+      } else {
+        // No transactions yet - default to 0
         inventoryStore[sku.sku] = 0;
-      });
-    }
+        pendingStock[sku.sku] = 0;
+      }
+    });
+    
+    console.log(`Fetched stock from transactions for ${Object.keys(inventoryStore).length} SKUs at ${new Date().toISOString()}`);
     
     // Calculate combo availability using database combos
     const comboAvailability = calculateAllComboAvailability(inventoryStore, comboSkus);
-
-    // Get pending consultation stock (stock deducted by WC when order moves to "pending-consult" or "pending-review" status)
-    // For single SKU orders: tracks the single SKU directly
-    // For combo SKU orders: tracks component SKUs (components are deducted immediately when pending-consult/review)
-    const pendingStock = await getAllPendingConsultationStock();
 
     // Return SKU list for frontend display
     const singleSkuList = singleSkus.map((sku: any) => ({
@@ -81,8 +63,8 @@ export async function GET() {
       singleSkus: inventoryStore,
       comboAvailability,
       singleSkuList, // For frontend to know which SKUs to display
-      pendingStock: pendingStock, // Pending consultation stock: single SKUs and combo components (components deducted immediately)
-      initializedFromWooCommerce: true,
+      pendingStock: pendingStock, // Pending stock from transactions
+      initializedFromTransactions: true
     }, {
       headers: {
         'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',

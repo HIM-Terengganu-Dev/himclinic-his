@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSession, signOut } from 'next-auth/react';
-import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, ClipboardCheck, CheckCircle, ArrowLeftCircle } from 'lucide-react';
+import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, CheckCircle, ArrowLeftCircle } from 'lucide-react';
 import InventoryDashboard from '@/components/InventoryDashboard';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
 import ReturnRefund from '@/components/ReturnRefund';
@@ -20,12 +20,9 @@ export default function Home() {
   const [pendingStock, setPendingStock] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(true);
   // Removed: newOrdersCount - orders are read-only, no notifications needed
   const [showUserMenu, setShowUserMenu] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
-  const [stockTakeData, setStockTakeData] = useState<any>(null);
-  const [stockTakeLoading, setStockTakeLoading] = useState(false);
   const [showRefreshNotification, setShowRefreshNotification] = useState(false);
 
   const fetchInventory = async (showNotification = false, showLoading = true) => {
@@ -56,9 +53,7 @@ export default function Home() {
           }, 3000);
         }
 
-        // Note: We don't show notifications for orders anymore
-        // Orders are read-only from WooCommerce - we just track them locally
-        // System only WRITES: manual stock updates and new products
+        // Note: Inventory is read from HIS database transactions
       }
     } catch (error) {
       console.error('Error fetching inventory:', error);
@@ -72,53 +67,22 @@ export default function Home() {
   useEffect(() => {
     if (status === 'authenticated') {
       fetchInventory();
-      fetchCurrentStockTake();
+      
+      // Auto-refresh every 30 seconds
+      const interval = setInterval(() => {
+        fetchInventory(false, false); // Silent refresh, no loading indicator
+      }, 30000); // 30 seconds
+      
+      return () => clearInterval(interval);
     }
   }, [status]);
 
-  // Auto-refresh every 30 seconds (silent refresh, no loading indicator)
-  useEffect(() => {
-    if (!autoRefresh || status !== 'authenticated') return;
 
-    const interval = setInterval(() => {
-      fetchInventory(false, false); // No notification, no loading indicator
-    }, 30000); // 30 seconds (30 * 1000)
-
-    return () => clearInterval(interval);
-  }, [autoRefresh, status]);
-
-  const fetchCurrentStockTake = async () => {
-    try {
-      setStockTakeLoading(true);
-      const response = await fetch('/api/stock-take/current');
-      const data = await response.json();
-      if (data.success) {
-        setStockTakeData(data);
-      }
-    } catch (error) {
-      console.error('Error fetching current stock take:', error);
-    } finally {
-      setStockTakeLoading(false);
-    }
-  };
-
-  const handleStockTakeClick = () => {
-    // Navigate to stock take page
-    window.location.href = '/stock-take';
-  };
-
-  const handleStockTakeComplete = () => {
-    fetchCurrentStockTake();
-    fetchInventory();
-  };
 
   const handleRefresh = () => {
     fetchInventory(true, true); // Show notification and loading indicator
   };
 
-  const toggleAutoRefresh = () => {
-    setAutoRefresh(!autoRefresh);
-  };
 
   const handleLogout = async () => {
     await signOut({ callbackUrl: '/' });
@@ -205,17 +169,6 @@ export default function Home() {
 
               <div className="flex items-center gap-3">
                 <button
-                  onClick={toggleAutoRefresh}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${autoRefresh
-                    ? 'bg-green-50 text-green-700 border border-green-200'
-                    : 'bg-gray-50 text-gray-600 border border-gray-200'
-                    }`}
-                >
-                  <RefreshCw className={`w-4 h-4 ${autoRefresh ? 'animate-spin-slow' : ''}`} />
-                  {autoRefresh ? 'Auto Is On' : 'Auto Is Off'}
-                </button>
-
-                <button
                   onClick={handleRefresh}
                   className="p-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 hover:text-blue-600 transition-colors shadow-sm"
                   disabled={loading}
@@ -281,7 +234,6 @@ export default function Home() {
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
-        {/* Orders are read-only from WooCommerce - no notifications */}
 
         {/* Top Stats Cards */}
         {activeTab === 'dashboard' && (
@@ -458,17 +410,6 @@ export default function Home() {
                 {activeTab === 'activity' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
 
-              {/* Stock Take Button - Far Right, Separate from Tabs */}
-              <div className="ml-auto flex items-center px-4">
-                <button
-                  onClick={handleStockTakeClick}
-                  disabled={stockTakeLoading}
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors shadow-sm"
-                >
-                  <ClipboardCheck size={18} />
-                  Stock Take
-                </button>
-              </div>
             </nav>
           </div>
 

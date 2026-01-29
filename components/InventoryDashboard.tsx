@@ -72,16 +72,11 @@ export default function InventoryDashboard({
                             {quantity}
                           </span>
                           {hasPendingStock && (
-                            <span className="text-yellow-600 font-semibold ml-1">
+                            <span className="text-yellow-600 font-semibold ml-1" title="Payment made. Review/Consultation needed.">
                               (+{pendingQty})
                             </span>
                           )}
                           <span className="text-gray-500 ml-1 text-xs">units</span>
-                          {hasPendingStock && (
-                            <span className="text-yellow-600 text-xs ml-1" title="Pending Consultation - payment made but order not yet processed">
-                              ⚠️
-                            </span>
-                          )}
                         </td>
                       </tr>
                     );

@@ -161,7 +161,7 @@ export default function ReturnRefund({ onStockUpdated }: ReturnRefundProps) {
                   {result.stockRestored ? (
                     <>
                       <CheckCircle className="w-4 h-4 text-green-600" />
-                      <span className="text-green-700">Stock restored in WooCommerce ✓</span>
+                      <span className="text-green-700">Stock restored successfully ✓</span>
                     </>
                   ) : (
                     <>
@@ -180,7 +180,7 @@ export default function ReturnRefund({ onStockUpdated }: ReturnRefundProps) {
               {result.affectedComboSKUs && result.affectedComboSKUs.length > 0 && (
                 <div className="bg-white border border-gray-200 rounded-lg p-4">
                   <h4 className="font-semibold text-gray-900 mb-3">
-                    Affected Combo SKUs (Updated in WooCommerce)
+                    Affected Combo SKUs
                   </h4>
                   <div className="space-y-2">
                     {result.affectedComboSKUs.map((combo: any) => (
@@ -284,7 +284,7 @@ export default function ReturnRefund({ onStockUpdated }: ReturnRefundProps) {
               id="orderId"
               value={orderId}
               onChange={(e) => setOrderId(e.target.value)}
-              placeholder="Enter WooCommerce order ID"
+              placeholder="Enter order ID (optional)"
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               disabled={updating}
             />
