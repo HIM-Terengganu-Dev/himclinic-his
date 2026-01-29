@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingConsultationStock, getPendingConsultationStockByOrder, getPendingStockAtTime, logStockMovement } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
+import { getProduct, updateProductStock } from '@/lib/services/woocommerce';
 
 export async function POST(request: Request) {
     console.log("!!! WEBHOOK HIT !!! Method:", request.method);
