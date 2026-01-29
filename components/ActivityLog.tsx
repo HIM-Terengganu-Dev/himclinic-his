@@ -617,6 +617,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                         <div className="space-y-1">
                                                             <span>
                                                                 {log.details.operation === 'add' ? 'Added' : log.details.operation === 'subtract' ? 'Deducted' : 'Set to'} <strong>{log.details.quantity}</strong> units
+                                                                {(log.details.previousQuantity !== undefined && log.details.newQuantity !== undefined) && (
+                                                                    <span className="ml-2 text-gray-600">
+                                                                        (from <strong>{log.details.previousQuantity}</strong> to <strong>{log.details.newQuantity}</strong>)
+                                                                    </span>
+                                                                )}
                                                                 {log.details.returnCondition && (
                                                                     <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
                                                                         log.details.returnCondition === 'good' ? 'bg-green-100 text-green-800' :
