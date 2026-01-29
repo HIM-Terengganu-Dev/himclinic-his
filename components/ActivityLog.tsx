@@ -60,6 +60,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [wcCurrentPage, setWcCurrentPage] = useState(1);
     const [wcTotalCount, setWcTotalCount] = useState(0);
     const [expandedOrderIds, setExpandedOrderIds] = useState<Set<number>>(new Set());
+    const [componentDeductionsCache, setComponentDeductionsCache] = useState<Record<number, any[]>>({});
     const topScrollRef = useRef<HTMLDivElement>(null);
     const bottomScrollRef = useRef<HTMLDivElement>(null);
 
@@ -187,6 +188,53 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     useEffect(() => {
         fetchLogs();
     }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab, wcCurrentPage]);
+    
+    // Fetch component deductions from database for processing orders
+    useEffect(() => {
+        const fetchComponentDeductions = async () => {
+            const processingOrders = wcLogs.filter(log => 
+                (log.webhook_event === 'order.processing' || log.status === 'processing') && log.entity_id
+            );
+            
+            const orderIds = processingOrders
+                .map(log => log.entity_id)
+                .filter((id, index, self) => self.indexOf(id) === index) // unique
+                .filter(id => id && !componentDeductionsCache[id]); // not already cached
+            
+            if (orderIds.length === 0) return;
+            
+            const promises = orderIds.map(async (orderId) => {
+                try {
+                    const res = await fetch(`/api/orders/${orderId}/component-deductions`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.success && data.componentDeductions) {
+                            return { orderId, deductions: data.componentDeductions };
+                        }
+                    }
+                } catch (error) {
+                    console.error(`Failed to fetch component deductions for order ${orderId}:`, error);
+                }
+                return null;
+            });
+            
+            const results = await Promise.all(promises);
+            const newCache: Record<number, any[]> = {};
+            results.forEach(result => {
+                if (result) {
+                    newCache[result.orderId] = result.deductions;
+                }
+            });
+            
+            if (Object.keys(newCache).length > 0) {
+                setComponentDeductionsCache(prev => ({ ...prev, ...newCache }));
+            }
+        };
+        
+        if (wcLogs.length > 0 && activeTab === 'orders') {
+            fetchComponentDeductions();
+        }
+    }, [wcLogs, activeTab]);
 
     // Sync scroll between top and bottom scrollbars
     useEffect(() => {
@@ -925,191 +973,63 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     </div>
                                                                 ))}
                                                             </div>
-                                                        ) : actualLogEntry.details?.componentDeductions && Array.isArray(actualLogEntry.details.componentDeductions) && actualLogEntry.details.componentDeductions.length > 0 ? (
-                                                            /* Show component deductions for processing orders with color-coded flow */
-                                                            <div className="min-w-[200px]">
-                                                                {actualLogEntry.details.componentDeductions.map((deduction: any, deductionIdx: number) => {
-                                                                    // Reconstruct previousStock if logged value seems incorrect
-                                                                    // For old orders, previousStock might have been logged incorrectly
-                                                                    // This applies to BOTH:
-                                                                    // 1. Orders that go directly to processing (no pending-consult/review)
-                                                                    // 2. Orders that go through pending-consult/review before processing
-                                                                    // 
-                                                                    // Reconstruction methods:
-                                                                    // - If deductedQty is available (WC-side deductions): previousStock = newStock + deductedQty
-                                                                    // - If deductedQty is NOT available (HIS-side combo components): calculate from logged values
-                                                                    //   Note: If previousStock was logged incorrectly, reconstruction won't help
-                                                                    let actualPreviousStock = deduction.previousStock;
-                                                                    // Try multiple ways to get deductedQty - it might be in different fields
-                                                                    let deductedQty = deduction.deductedQty || deduction.deducted_qty || deduction.quantity;
-                                                                    
-                                                                    // For WC-side deductions, deductedQty should always be available
-                                                                    // If it's not in componentDeductions, try to get it from lineItems as fallback
-                                                                    if (!deductedQty || deductedQty === 0 || isNaN(deductedQty)) {
-                                                                        // Try to calculate from logged values first
-                                                                        if (deduction.previousStock > deduction.newStock) {
-                                                                            deductedQty = deduction.previousStock - deduction.newStock;
-                                                                        } else {
-                                                                            // Try to get from lineItems in log details (for old orders)
-                                                                            const lineItems = actualLogEntry.details?.lineItems || [];
-                                                                            const lineItem = lineItems.find((item: any) => item.sku === deduction.sku);
-                                                                            if (lineItem && lineItem.quantity) {
-                                                                                deductedQty = lineItem.quantity;
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                    
-                                                                    // Always reconstruct if we have deductedQty (even if previousStock seems correct)
-                                                                    // This ensures we use the correct value, especially for old orders where previousStock might be wrong
-                                                                    if (deductedQty && deductedQty > 0 && !isNaN(deductedQty)) {
-                                                                        const reconstructedPreviousStock = deduction.newStock + deductedQty;
-                                                                        // Always use reconstructed value if we have deductedQty - it's more reliable than logged previousStock
-                                                                        // The reconstructed value should always be greater than newStock for a deduction
-                                                                        if (reconstructedPreviousStock > deduction.newStock) {
-                                                                            actualPreviousStock = reconstructedPreviousStock;
-                                                                        } else {
-                                                                            // If reconstruction doesn't make sense, log a warning but still try to use it
-                                                                            console.warn(`[ActivityLog] Reconstruction issue for ${deduction.sku}: newStock=${deduction.newStock}, deductedQty=${deductedQty}, reconstructed=${reconstructedPreviousStock}`);
-                                                                        }
-                                                                    }
-                                                                    
-                                                                    // Find the pending entry for this order in history to get the pending quantity
-                                                                    // Use logEntryWithHistory to ensure we have access to history in both collapsed and expanded views
-                                                                    const orderHistory = logEntryWithHistory._history || [];
-                                                                    const pendingLogForThisOrder = orderHistory.find((h: any) => 
-                                                                        h.id !== actualLogEntry.id &&
-                                                                        (h.status === 'pending-consult' || h.status === 'pending-review' || 
-                                                                         h.webhook_event === 'order.pending-consult' || h.webhook_event === 'order.pending-review') && 
-                                                                        h.details?.pendingStockUpdates?.some((p: any) => p.sku === deduction.sku)
-                                                                    );
-                                                                    const pendingFromThisOrder = pendingLogForThisOrder?.details?.pendingStockUpdates?.find((p: any) => p.sku === deduction.sku)?.quantity || 0;
-                                                                    
-                                                                    // If we have a pending log and no deductedQty, try to reconstruct previousStock from the pending log
-                                                                    // This is more accurate than using the logged previousStock, which might be wrong for old orders
-                                                                    if (pendingLogForThisOrder && (!deductedQty || deductedQty === 0 || isNaN(deductedQty))) {
-                                                                        const pendingUpdate = pendingLogForThisOrder.details.pendingStockUpdates.find((p: any) => p.sku === deduction.sku);
-                                                                        if (pendingUpdate && pendingUpdate.wcStock !== undefined) {
-                                                                            // Use wcStock from pending log + quantity to get the stock before pending deduction
-                                                                            const reconstructedFromPending = pendingUpdate.wcStock + pendingUpdate.quantity;
-                                                                            if (reconstructedFromPending > deduction.newStock) {
-                                                                                actualPreviousStock = reconstructedFromPending;
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                    
-                                                                    // Check if this was from pending: if there's a pending-consult/review log for this order, it was from pending
-                                                                    // This is more accurate than checking if previousStock > newStock (which is true for all deductions)
-                                                                    const wasFromPending = !!pendingLogForThisOrder;
-                                                                    // For orders from pending, the stock was already deducted in pending-consult, so newStock is already the deducted value
-                                                                    // The pendingQtyRemoved is the quantity that was in pending and is now being removed
-                                                                    const pendingQtyRemoved = wasFromPending ? pendingFromThisOrder : 0;
-                                                                    
-                                                                    // Calculate pending stock from OTHER orders at the time of this order
-                                                                    // Look at all webhook logs before this order's timestamp
-                                                                    // Use actualLogEntry (the processing log) for timestamp and entity_id to ensure consistency
-                                                                    const currentOrderTime = new Date(actualLogEntry.created_at).getTime();
-                                                                    let pendingFromOtherOrders = 0;
-                                                                    
-                                                                    // Track pending stock by order ID to handle removals correctly
-                                                                    const pendingByOrder = new Map<number, number>();
-                                                                    
-                                                                    // Use allWcLogs (without SKU filter) for pending stock calculation
-                                                                    // This ensures we include pending-consult logs from other orders even if they don't contain this SKU
-                                                                    // wcLogs is filtered and might miss pending logs from other orders
-                                                                    // IMPORTANT: allWcLogs might also be filtered by date, so we need to ensure we have all relevant logs
-                                                                    // For accurate pending stock calculation, we should fetch logs going back further if needed
-                                                                    let logsForPendingCalc = allWcLogs.length > 0 ? allWcLogs : wcLogs;
-                                                                    const sortedLogs = [...logsForPendingCalc].sort((a, b) => 
-                                                                        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-                                                                    );
-                                                                    
-                                                                    // Look through all webhook logs to calculate pending stock
-                                                                    sortedLogs.forEach((log: WcWebhookLogEntry) => {
-                                                                        const logTime = new Date(log.created_at).getTime();
-                                                                        if (logTime >= currentOrderTime) return; // Only look at logs before this order
+                                                        ) : (() => {
+                                                            // Try to get component deductions from database (stock_transactions)
+                                                            const orderId = actualLogEntry.entity_id;
+                                                            const dbDeductions = componentDeductionsCache[orderId] || [];
+                                                            
+                                                            // Fallback to webhook log data if database data not available
+                                                            const webhookDeductions = actualLogEntry.details?.componentDeductions || [];
+                                                            const deductions = dbDeductions.length > 0 ? dbDeductions : webhookDeductions;
+                                                            
+                                                            if (deductions.length === 0) return null;
+                                                            
+                                                            return (
+                                                                <div className="min-w-[200px]">
+                                                                    {deductions.map((deduction: any, deductionIdx: number) => {
+                                                                        // Use database transaction data if available, otherwise use webhook log data
+                                                                        const stockBefore = deduction.stockBefore ?? deduction.previousStock ?? 0;
+                                                                        const stockAfter = deduction.stockAfter ?? deduction.newStock ?? 0;
+                                                                        const pendingBefore = deduction.pendingBefore ?? 0;
+                                                                        const pendingAfter = deduction.pendingAfter ?? 0;
+                                                                        const deductedQty = deduction.deductedQty || Math.abs(deduction.quantityChange) || Math.abs(stockBefore - stockAfter) || 0;
+                                                                        const wasFromPending = deduction.wasFromPending ?? false;
                                                                         
-                                                                        // Skip this order's own logs (we handle pendingFromThisOrder separately)
-                                                                        // Use actualLogEntry.entity_id to ensure we use the processing log's entity_id
-                                                                        if (log.entity_id === actualLogEntry.entity_id) return;
-                                                                        
-                                                                        // Add pending stock from pending-consult/pending-review entries
-                                                                        // Check both status and webhook_event to ensure we catch all pending logs
-                                                                        const isPendingLog = (log.status === 'pending-consult' || log.status === 'pending-review') ||
-                                                                                            (log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review');
-                                                                        
-                                                                        if (isPendingLog && log.details?.pendingStockUpdates) {
-                                                                            const pendingUpdate = log.details.pendingStockUpdates.find((p: any) => p.sku === deduction.sku);
-                                                                            if (pendingUpdate) {
-                                                                                pendingByOrder.set(log.entity_id, pendingUpdate.quantity);
-                                                                            }
-                                                                        }
-                                                                        
-                                                                        // Remove pending stock when order is processed (pending tracking is removed)
-                                                                        if (log.webhook_event === 'order.processing' && pendingByOrder.has(log.entity_id)) {
-                                                                            pendingByOrder.delete(log.entity_id);
-                                                                        }
-                                                                        
-                                                                        // Remove pending stock when order is cancelled from pending status
-                                                                        if (log.webhook_event === 'order.cancelled' && 
-                                                                            (log.details?.previousStatus === 'pending-consult' || log.details?.previousStatus === 'pending-review') &&
-                                                                            pendingByOrder.has(log.entity_id)) {
-                                                                            pendingByOrder.delete(log.entity_id);
-                                                                        }
-                                                                    });
-                                                                    
-                                                                    // Sum up all remaining pending stock from other orders
-                                                                    pendingFromOtherOrders = Array.from(pendingByOrder.values()).reduce((sum, qty) => sum + qty, 0);
-                                                                    
-                                                                    // Total pending stock at the time of this order
-                                                                    const totalPendingBefore = pendingFromThisOrder + pendingFromOtherOrders;
-                                                                    const remainingPending = Math.max(0, totalPendingBefore - pendingQtyRemoved);
-                                                                    
-                                                                    return (
-                                                                        <div key={deductionIdx} className="text-xs text-gray-600 mb-2">
-                                                                            <div className="font-mono">{deduction.sku}</div>
-                                                                            <div className="whitespace-nowrap">
-                                                                                {wasFromPending ? (
-                                                                                    // Processing from pending: :stock+pending (yellow) → stock+remaining (red)
-                                                                                    // Example: 61+3→61+2 (where +3 is total pending before, +2 is remaining after removing this order's pending)
-                                                                                    // WC stock is already deducted (61), pending includes this order's pending (+1) + others (+2) = +3
-                                                                                    // After processing: pending removes this order's +1, leaving +2 from other orders
-                                                                                    <>
-                                                                                        <span className="text-gray-500">:{deduction.newStock}</span>
-                                                                                        {totalPendingBefore > 0 && (
-                                                                                            <span className="text-yellow-600 font-medium">+{totalPendingBefore}</span>
+                                                                        return (
+                                                                            <div key={deductionIdx} className="text-xs text-gray-600 mb-2">
+                                                                                <div className="font-mono font-semibold">{deduction.sku}</div>
+                                                                                <div className="mt-1 space-y-0.5">
+                                                                                    <div className="whitespace-nowrap">
+                                                                                        <span className="text-gray-500">Stock: </span>
+                                                                                        <span className="font-medium">{stockBefore}</span>
+                                                                                        <span className="text-gray-400 mx-1">→</span>
+                                                                                        <span className={`font-medium ${stockAfter < stockBefore ? 'text-red-600' : 'text-green-600'}`}>
+                                                                                            {stockAfter}
+                                                                                        </span>
+                                                                                        {deductedQty > 0 && (
+                                                                                            <span className="text-gray-400 ml-1">(-{deductedQty})</span>
                                                                                         )}
-                                                                                        <span className="text-gray-500">→</span>
-                                                                                        <span className="text-gray-500">{deduction.newStock}</span>
-                                                                                        {/* Show remaining pending in red (amount left after removing this order's pending) */}
-                                                                                        {remainingPending > 0 && (
-                                                                                            <span className="text-red-600 font-medium">+{remainingPending}</span>
-                                                                                        )}
-                                                                                    </>
-                                                                                ) : (
-                                                                                    // Processing not from pending: show WC stock + pending stock from other orders
-                                                                                    // Format: previousStock+pending → newStock+pending (with newStock in red)
-                                                                                    // Pending stock from other orders remains unchanged (doesn't get removed)
-                                                                                    // For orders that go directly to processing, pendingFromThisOrder = 0, so totalPendingBefore = pendingFromOtherOrders
-                                                                                    <>
-                                                                                        <span className="text-gray-500">:{actualPreviousStock}</span>
-                                                                                        {totalPendingBefore > 0 && (
-                                                                                            <span className="text-yellow-600 font-medium">+{totalPendingBefore}</span>
-                                                                                        )}
-                                                                                        <span className="text-gray-500">→</span>
-                                                                                        <span className="text-red-600 font-medium">{deduction.newStock}</span>
-                                                                                        {/* Always show pending stock on right side - it doesn't change for orders that go directly to processing */}
-                                                                                        {/* Use totalPendingBefore (which equals pendingFromOtherOrders for non-pending orders) for consistency */}
-                                                                                        {/* Also check pendingFromOtherOrders as fallback in case totalPendingBefore calculation has issues */}
-                                                                                        {(totalPendingBefore > 0 || pendingFromOtherOrders > 0) && (
-                                                                                            <span className="text-yellow-600 font-medium">+{totalPendingBefore > 0 ? totalPendingBefore : pendingFromOtherOrders}</span>
-                                                                                        )}
-                                                                                    </>
-                                                                                )}
+                                                                                    </div>
+                                                                                    {(pendingBefore > 0 || pendingAfter > 0) && (
+                                                                                        <div className="whitespace-nowrap">
+                                                                                            <span className="text-yellow-600">Pending: </span>
+                                                                                            <span className="font-medium text-yellow-600">{pendingBefore}</span>
+                                                                                            <span className="text-gray-400 mx-1">→</span>
+                                                                                            <span className={`font-medium ${pendingAfter < pendingBefore ? 'text-red-600' : 'text-yellow-600'}`}>
+                                                                                                {pendingAfter}
+                                                                                            </span>
+                                                                                        </div>
+                                                                                    )}
+                                                                                    {wasFromPending && (
+                                                                                        <div className="text-xs text-blue-500 italic">From pending-consult</div>
+                                                                                    )}
+                                                                                </div>
                                                                             </div>
-                                                                        </div>
-                                                                    );
-                                                                })}
-                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            );
+                                                        })()
                                                         ) : actualLogEntry.details?.pendingStockUpdates && Array.isArray(actualLogEntry.details.pendingStockUpdates) && actualLogEntry.details.pendingStockUpdates.length > 0 ? (
                                                             /* Show pending stock updates for pending-consult/pending-review orders with color-coded flow */
                                                             <div className="min-w-[200px]">
