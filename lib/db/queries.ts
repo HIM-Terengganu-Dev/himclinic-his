@@ -1373,7 +1373,8 @@ export async function getAllCurrentStock(): Promise<Record<string, { stock: numb
     `, []);
     
     // Calculate back orders: Quantity ordered but not available for immediate fulfillment
-    // Back Order = (Pending OR Processing quantities, one per order_id) - Available for Purchase
+    // Back Order = (Pending Review/Consult quantities) - Available for Purchase
+    // Note: Processing orders are NOT counted because they're already being fulfilled
     const backOrderResult = await query(`
         WITH latest_stock AS (
             SELECT DISTINCT ON (sku)
@@ -1393,45 +1394,18 @@ export async function getAllCurrentStock(): Promise<Record<string, { stock: numb
             AND pending_after > pending_before
             ORDER BY sku, source_id, created_at DESC
         ),
-        processing_orders AS (
-            SELECT DISTINCT ON (st.sku, st.source_id)
-                st.sku,
-                st.source_id as order_id,
-                COALESCE(
-                    (st.details->>'deductedQty')::int,
-                    ABS(st.quantity_change),
-                    (st.details->>'quantity')::int,
-                    0
-                ) as quantity
-            FROM "his_db".stock_transactions st
-            WHERE st.source_type = 'order'
-            AND st.transaction_type = 'order_processing'
-            AND NOT EXISTS (
-                SELECT 1 FROM "his_db".stock_transactions po
-                WHERE po.source_type = 'order'
-                AND po.source_id = st.source_id
-                AND po.sku = st.sku
-                AND po.transaction_type IN ('order_pending_consult', 'order_pending_review')
-            )
-            ORDER BY st.sku, st.source_id, st.created_at DESC
-        ),
-        all_order_quantities AS (
-            SELECT sku, quantity FROM pending_orders
-            UNION ALL
-            SELECT sku, quantity FROM processing_orders
-        ),
         back_order_calc AS (
             SELECT 
                 ls.sku,
                 ls.available_for_purchase,
-                COALESCE(SUM(aoq.quantity), 0) as total_ordered_qty
+                COALESCE(SUM(po.quantity), 0) as total_pending_qty
             FROM latest_stock ls
-            LEFT JOIN all_order_quantities aoq ON ls.sku = aoq.sku
+            LEFT JOIN pending_orders po ON ls.sku = po.sku
             GROUP BY ls.sku, ls.available_for_purchase
         )
         SELECT 
             sku,
-            GREATEST(0, total_ordered_qty - available_for_purchase) as back_order
+            GREATEST(0, total_pending_qty - available_for_purchase) as back_order
         FROM back_order_calc
     `, []);
     
