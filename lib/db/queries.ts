@@ -1362,7 +1362,7 @@ export async function getStockTransactions(filters: {
  */
 export async function getAllCurrentStock(): Promise<Record<string, { stock: number; pending: number; display: number; backOrder: number }>> {
     // Read directly from transactions using DISTINCT ON for latest per SKU
-    const result = await query(`
+    const stockResult = await query(`
         SELECT DISTINCT ON (sku)
             sku,
             stock_after as stock,
@@ -1372,12 +1372,77 @@ export async function getAllCurrentStock(): Promise<Record<string, { stock: numb
         ORDER BY sku, created_at DESC, id DESC
     `, []);
     
+    // Calculate back orders: In Warehouse - (Pending OR Processing, only one per order_id)
+    // For each SKU, get orders that are either pending-consult/review OR processing
+    // If an order has both, only count it once (prefer pending-consult/review)
+    const backOrderResult = await query(`
+        WITH latest_stock AS (
+            SELECT DISTINCT ON (sku)
+                sku,
+                (stock_after + pending_after) as in_warehouse
+            FROM "his_db".stock_transactions
+            ORDER BY sku, created_at DESC, id DESC
+        ),
+        pending_orders AS (
+            SELECT DISTINCT ON (sku, source_id)
+                sku,
+                source_id as order_id,
+                ABS(quantity_change) as quantity
+            FROM "his_db".stock_transactions
+            WHERE source_type = 'order'
+            AND transaction_type IN ('order_pending_consult', 'order_pending_review')
+            AND pending_after > pending_before
+            ORDER BY sku, source_id, created_at DESC
+        ),
+        processing_orders AS (
+            SELECT DISTINCT ON (st.sku, st.source_id)
+                st.sku,
+                st.source_id as order_id,
+                ABS(st.quantity_change) as quantity
+            FROM "his_db".stock_transactions st
+            WHERE st.source_type = 'order'
+            AND st.transaction_type = 'order_processing'
+            AND st.stock_after < st.stock_before
+            AND NOT EXISTS (
+                SELECT 1 FROM "his_db".stock_transactions po
+                WHERE po.source_type = 'order'
+                AND po.source_id = st.source_id
+                AND po.sku = st.sku
+                AND po.transaction_type IN ('order_pending_consult', 'order_pending_review')
+            )
+            ORDER BY st.sku, st.source_id, st.created_at DESC
+        ),
+        all_order_quantities AS (
+            SELECT sku, quantity FROM pending_orders
+            UNION ALL
+            SELECT sku, quantity FROM processing_orders
+        ),
+        back_order_calc AS (
+            SELECT 
+                ls.sku,
+                ls.in_warehouse,
+                COALESCE(SUM(aoq.quantity), 0) as pending_or_processing_qty
+            FROM latest_stock ls
+            LEFT JOIN all_order_quantities aoq ON ls.sku = aoq.sku
+            GROUP BY ls.sku, ls.in_warehouse
+        )
+        SELECT 
+            sku,
+            GREATEST(0, pending_or_processing_qty - in_warehouse) as back_order
+        FROM back_order_calc
+    `, []);
+    
     const stockMap: Record<string, { stock: number; pending: number; display: number; backOrder: number }> = {};
-    result.rows.forEach((row: any) => {
+    const backOrderMap = new Map<string, number>();
+    
+    backOrderResult.rows.forEach((row: any) => {
+        backOrderMap.set(row.sku, row.back_order || 0);
+    });
+    
+    stockResult.rows.forEach((row: any) => {
         const stock = row.stock || 0;
         const pending = row.pending || 0;
-        // Back order: negative amount if stock is 0 but there are pending orders
-        const backOrder = stock === 0 && pending > 0 ? -pending : 0;
+        const backOrder = backOrderMap.get(row.sku) || 0;
         
         stockMap[row.sku] = {
             stock,

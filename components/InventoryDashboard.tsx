@@ -69,13 +69,13 @@ export default function InventoryDashboard({
                   singleSkuList.map((sku) => {
                     const stock = inventory[sku.sku] || 0;
                     const pending = pendingStock[sku.sku] || 0;
-                    const backOrder = backOrderStock[sku.sku] || 0;
+                    const backOrder = Math.abs(backOrderStock[sku.sku] || 0); // Display as positive
                     const inWarehouse = stock + pending; // Current stock including pending
                     const availableForPurchase = stock; // Current stock excluding pending
                     
                     const isLowStock = availableForPurchase < 5 && availableForPurchase > 0;
                     const isOutOfStock = availableForPurchase === 0;
-                    const hasBackOrder = backOrder < 0;
+                    const hasBackOrder = backOrder > 0;
 
                     return (
                       <tr 
