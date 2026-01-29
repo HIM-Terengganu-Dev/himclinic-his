@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
         }
 
         const body = await req.json();
-        const { sku, name, description, components } = body;
+        const { sku, name, description, components, woocommerceProductId } = body;
         // components: [{ sku: 'him1', quantity: 3 }, ...]
 
         if (!sku || !name || !components || !Array.isArray(components) || components.length === 0) {
@@ -43,8 +43,6 @@ export async function POST(req: NextRequest) {
 
         // Create in DB (WooCommerce product ID must be provided manually or set to null)
         // Note: We no longer create products in WooCommerce via API
-        const body = await req.json();
-        const { woocommerceProductId } = body;
         
         const newSku = await createComboSku({
             sku,

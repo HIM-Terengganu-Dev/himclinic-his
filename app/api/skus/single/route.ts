@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
         }
 
         const body = await req.json();
-        const { sku, name, description } = body;
+        const { sku, name, description, woocommerceProductId } = body;
 
         if (!sku || !name) {
             return NextResponse.json({ error: 'SKU and Name are required' }, { status: 400 });
@@ -40,8 +40,6 @@ export async function POST(req: NextRequest) {
 
         // Create in DB (WooCommerce product ID must be provided manually or set to null)
         // Note: We no longer create products in WooCommerce via API
-        const body = await req.json();
-        const { woocommerceProductId } = body;
         
         const newSku = await createSingleSku({
             sku,
