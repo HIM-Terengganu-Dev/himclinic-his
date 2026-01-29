@@ -31,21 +31,22 @@ Database (SKU Definitions, Users, Logs)
 
 ### Source of Truth
 
-- **Inventory Quantities**: Stored in WooCommerce, fetched in real-time
-- **SKU Definitions**: Stored in PostgreSQL (single_skus, combo_skus tables)
-- **User Data**: Stored in PostgreSQL (users table)
-- **Activity Logs**: Stored in PostgreSQL (activity_logs, wc_webhook_logs tables)
+- **Inventory Quantities**: Stored in PostgreSQL `stock_transactions` table (source of truth)
+- **SKU Definitions**: Stored in PostgreSQL `his_db` schema (single_skus, combo_skus tables)
+- **User Data**: Stored in PostgreSQL `his_db` schema (users table)
+- **Activity Logs**: Stored in PostgreSQL `his_db` schema (activity_logs, wc_webhook_logs tables)
 
 ## Database Schema
 
-The system uses PostgreSQL with the `inventory_management` schema containing 6 tables:
+The system uses PostgreSQL with the `his_db` schema containing the following tables:
 
 1. **users** - Google OAuth user authentication
 2. **single_skus** - Master data for single SKU products
 3. **combo_skus** - Combo SKU definitions with components
 4. **procurement_updates** - History of manual stock updates
 5. **activity_logs** - Audit trail of manual system changes (HIS System tab)
-6. **wc_webhook_logs** - WooCommerce webhook events (WooCommerce tab)
+6. **wc_webhook_logs** - WooCommerce webhook events (Orders tab)
+7. **stock_transactions** - Source of truth for all stock changes (stock and pending tracking)
 
 For detailed database setup instructions, see [database/README.md](database/README.md).
 
@@ -82,7 +83,7 @@ The system listens to WooCommerce webhooks to automatically sync inventory chang
    - Updates combo SKUs back to WooCommerce
 4. For single SKU orders:
    - WooCommerce handles stock deduction automatically (marked as WC-side)
-   - System tracks the deduction for audit purposes
+   - System tracks the deduction via `stock_transactions` table
    - System recalculates and updates affected combo SKUs
 5. Logs all details (component deductions with WC/HIS indicators, combo updates) to `wc_webhook_logs` table
 

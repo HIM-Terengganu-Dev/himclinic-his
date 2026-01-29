@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
         }
 
         // Get total count
-        const countSql = `SELECT COUNT(*) as total FROM inventory_management.wc_webhook_logs ${whereClause}`;
+        const countSql = `SELECT COUNT(*) as total FROM "his_db".wc_webhook_logs ${whereClause}`;
         const countResult = await query(countSql, params);
         const total = parseInt(countResult.rows[0].total);
 
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
             SELECT 
                 *,
                 to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
-            FROM inventory_management.wc_webhook_logs
+            FROM "his_db".wc_webhook_logs
             ${whereClause}
             ORDER BY created_at DESC
             LIMIT $${pIdx++}
@@ -89,7 +89,7 @@ export async function GET(req: NextRequest) {
             SELECT 
                 *,
                 to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
-            FROM inventory_management.activity_logs
+            FROM "his_db".activity_logs
             WHERE action IN ('webhook_log_failed_after_stock_deduction', 'webhook_log_failed_after_stock_restoration', 'webhook_log_failed_product_update')
         `;
         const activityParams: any[] = [];

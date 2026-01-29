@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingConsultationStock, getPendingConsultationStockByOrder, getPendingStockAtTime, logStockMovement } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingStockByOrder, getPendingStockByOrderFromTransactions } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
 // Disable body parsing to get raw body for signature verification
@@ -127,7 +127,7 @@ export async function POST(request: Request) {
             if (previousPendingConsultLog || previousPendingReviewLog) {
                 // Order was in pending-consult or pending-review (payment made), now cancelled
                 // Remove pending stock tracking but DON'T restore stock (refund handled manually via procurement tab)
-                await removePendingConsultationStock(orderId);
+                await removePendingStockByOrder(orderId);
                 return await handlePendingCancellation(orderId, payload, request, previousPendingConsultLog ? 'pending-consult' : 'pending-review');
             }
             // Otherwise, handle as normal cancellation (for orders that were in processing status)
@@ -625,8 +625,9 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
         const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
 
-        // Get pending stock for this order BEFORE removing it (to know what to restore)
-        const pendingStockRecords = await getPendingConsultationStockByOrder(orderId);
+        // Get pending stock for this order from stock_transactions (replaces legacy pending_consultation_stock table)
+        // Note: This is currently unused but kept for potential future use
+        const pendingStockRecords = await getPendingStockByOrderFromTransactions(orderId);
         const pendingStockMap = new Map(pendingStockRecords.map((r: any) => [r.sku, r.quantity]));
 
         // Identify combo SKUs in the order
@@ -719,7 +720,8 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
         }
 
         // Step 2: Remove pending stock tracking (after restoring combo components)
-        await removePendingConsultationStock(orderId);
+        // This creates transactions in stock_transactions to remove pending (replaces legacy pending_consultation_stock table)
+        await removePendingStockByOrder(orderId);
 
         // Step 3: Read current stock from database for reporting
         const stockReadings: Array<{ sku: string; wcStock: number }> = [];
@@ -1365,26 +1367,6 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         }
                     });
 
-                    // Calculate pending stock at the time of this movement
-                    const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
-                    
-                    // Log stock movement
-                    await logStockMovement({
-                        sku,
-                        singleSkuId: singleSku.id,
-                        previousStock: stockBefore,
-                        newStock: stockAfter,
-                        pendingStock: pendingStockAtTime,
-                        sourceType: 'order_cancellation',
-                        sourceId: orderId,
-                        sourceEvent: 'order.cancelled',
-                        details: {
-                            restoredQty: totalQty,
-                            changeMadeBy: 'HIS',
-                            orderId,
-                            isComboComponent: true
-                        }
-                    });
 
                     restoredUpdates.push({
                         sku,
@@ -1466,26 +1448,6 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         }
                     });
                     
-                    // Calculate pending stock at the time of this movement
-                    const pendingStockAtTime = await getPendingStockAtTime(sku, new Date());
-                    
-                    // Log stock movement
-                    await logStockMovement({
-                        sku,
-                        singleSkuId: singleSku.id,
-                        previousStock: stockBefore,
-                        newStock: stockAfter,
-                        pendingStock: pendingStockAtTime,
-                        sourceType: 'order_cancellation',
-                        sourceId: orderId,
-                        sourceEvent: 'order.cancelled',
-                        details: {
-                            restoredQty: restoreQty,
-                            changeMadeBy: 'HIS',
-                            originalDeductionBy: originalChangeMadeBy,
-                            orderId
-                        }
-                    });
                     
                     wcSideRestorations.push({
                         sku,

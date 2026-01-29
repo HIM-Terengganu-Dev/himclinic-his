@@ -1,10 +1,7 @@
 import { NextResponse } from 'next/server';
-import { calculateComboAvailability } from '@/lib/utils/inventory';
 import {
   createProcurementUpdate,
   getSingleSkuByCode,
-  getAllComboSkus,
-  getAllSingleSkus,
   getCurrentStockState,
   createStockTransaction
 } from '@/lib/db/queries';

@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth/middleware';
 import { createComboSku, getSingleSkuByCode, getAllComboSkusAdmin, createSingleSku } from '@/lib/db/queries';
 import { logActivity } from '@/lib/db/queries';
-import { createProduct } from '@/lib/services/woocommerce';
 
 export async function GET(req: NextRequest) {
     try {
@@ -42,29 +41,15 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        // Create in WooCommerce
-        let wcProductId: number;
-        try {
-            const product = await createProduct({
-                name,
-                type: 'simple', // Or 'grouped'? Usually we treat combos as simple products that we manually manage stock for.
-                sku,
-                regular_price: '0',
-                manage_stock: true,
-                stock_quantity: 0,
-                description: description + '\n\nComponents:\n' + components.map((c: any) => `- ${c.quantity}x ${c.sku}`).join('\n')
-            });
-            wcProductId = product.id;
-        } catch (wcError) {
-            console.error('Failed to create WooCommerce product:', wcError);
-            return NextResponse.json({ error: 'Failed to create product in WooCommerce' }, { status: 502 });
-        }
-
-        // Create in DB
+        // Create in DB (WooCommerce product ID must be provided manually or set to null)
+        // Note: We no longer create products in WooCommerce via API
+        const body = await req.json();
+        const { woocommerceProductId } = body;
+        
         const newSku = await createComboSku({
             sku,
             name,
-            woocommerceProductId: wcProductId,
+            woocommerceProductId: woocommerceProductId || null, // Can be set manually if needed
             components,
             description,
             createdBy: session.user.id
@@ -76,7 +61,7 @@ export async function POST(req: NextRequest) {
             action: 'sku_created',
             entityType: 'combo_sku',
             entityId: newSku.id,
-            details: { sku, name, wcProductId, components },
+            details: { sku, name, woocommerceProductId: newSku.woocommerce_product_id, components },
             success: true
         });
 

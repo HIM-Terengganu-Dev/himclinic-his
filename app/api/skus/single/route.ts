@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth/middleware';
 import { createSingleSku, getSingleSkuByCode, getAllSingleSkusAdmin } from '@/lib/db/queries';
 import { logActivity } from '@/lib/db/queries';
-// We'll need a service to create product in WooCommerce
-import { createProduct } from '@/lib/services/woocommerce'; // Need to implement this
 
 export async function GET(req: NextRequest) {
     try {
@@ -40,29 +38,15 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'SKU already exists' }, { status: 400 });
         }
 
-        // Create in WooCommerce
-        let wcProductId: number;
-        try {
-            const product = await createProduct({
-                name,
-                type: 'simple',
-                sku,
-                regular_price: '0', // Default price?
-                manage_stock: true,
-                stock_quantity: 0,
-                description
-            });
-            wcProductId = product.id;
-        } catch (wcError) {
-            console.error('Failed to create WooCommerce product:', wcError);
-            return NextResponse.json({ error: 'Failed to create product in WooCommerce' }, { status: 502 });
-        }
-
-        // Create in DB
+        // Create in DB (WooCommerce product ID must be provided manually or set to null)
+        // Note: We no longer create products in WooCommerce via API
+        const body = await req.json();
+        const { woocommerceProductId } = body;
+        
         const newSku = await createSingleSku({
             sku,
             name,
-            woocommerceProductId: wcProductId,
+            woocommerceProductId: woocommerceProductId || null, // Can be set manually if needed
             description,
             createdBy: session.user.id
         });
@@ -73,7 +57,7 @@ export async function POST(req: NextRequest) {
             action: 'sku_created',
             entityType: 'single_sku',
             entityId: newSku.id,
-            details: { sku, name, wcProductId },
+            details: { sku, name, woocommerceProductId: newSku.woocommerce_product_id },
             success: true
         });
 

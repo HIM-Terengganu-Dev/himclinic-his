@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
-import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
 import {
   createProcurementUpdate,
   getSingleSkuByCode,
   getAllComboSkus,
-  getAllSingleSkus
+  getAllSingleSkus,
+  getCurrentStockState,
+  createStockTransaction
 } from '@/lib/db/queries';
 import { requireAdmin, forbiddenResponse } from '@/lib/auth/middleware';
 
@@ -53,40 +54,53 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. Fetch CURRENT stock from WooCommerce
-    // IMPORTANT: This is the actual WC stock (without pending-consult additions)
-    // Pending stock is only for dashboard display, never used in calculations or writes
-    let currentWooStock = 0;
+    // 4. Get CURRENT stock from database (source of truth)
+    let currentState;
     try {
-      const wooProduct = await getProduct(singleSku.woocommerce_product_id);
-      currentWooStock = wooProduct.stock_quantity || 0; // Actual WC stock, not including pending-consult
+      currentState = await getCurrentStockState(sku);
     } catch (error) {
-      console.error(`Failed to fetch current stock for ${sku} from WooCommerce`, error);
+      console.error(`Failed to fetch current stock for ${sku} from database`, error);
       return NextResponse.json(
-        { success: false, error: 'Failed to fetch current stock from WooCommerce' },
+        { success: false, error: 'Failed to fetch current stock from database' },
         { status: 502 }
       );
     }
+
+    const currentStock = currentState.stock;
 
     // 5. Only restore stock if condition is 'good'
     // For 'lost' and 'damaged', do not restore stock - only log the return
     const shouldRestoreStock = condition === 'good';
     let singleSkuUpdated = false;
-    let newQuantity = currentWooStock;
+    let newQuantity = currentStock;
 
     if (shouldRestoreStock) {
       // Calculate New Quantity (add for good condition returns)
-      newQuantity = currentWooStock + qty;
+      newQuantity = currentStock + qty;
 
-      // 6. Update WooCommerce Stock (only for good condition)
-      // IMPORTANT: Write actual stock quantity (without pending-consult) to WC
-      // WC is not aware of pending-consult, so we write the actual quantity
+      // 6. Update stock in database via stock_transactions (only for good condition)
       try {
-        await updateProductStock(singleSku.woocommerce_product_id, newQuantity); // Actual stock, not including pending-consult
+        await createStockTransaction({
+          sku,
+          singleSkuId: singleSku.id,
+          transactionType: 'refund_return',
+          quantityChange: qty,
+          stockBefore: currentState.stock,
+          stockAfter: newQuantity,
+          pendingBefore: currentState.pending,
+          pendingAfter: currentState.pending, // No pending change for refund/return
+          sourceType: 'manual',
+          createdBy: userId,
+          details: {
+            condition,
+            orderId,
+            notes
+          }
+        });
         singleSkuUpdated = true;
-        console.log(`✅ Updated single SKU ${sku} in WooCommerce (refund/return): ${newQuantity} units (condition: ${condition})`);
+        console.log(`✅ Updated single SKU ${sku} in database (refund/return): ${newQuantity} units (condition: ${condition})`);
       } catch (error) {
-        console.error(`❌ Failed to update single SKU ${sku} in WooCommerce:`, error);
+        console.error(`❌ Failed to update single SKU ${sku} in database:`, error);
         await import('@/lib/db/queries').then(m => m.logActivity({
           userId,
           action: 'refund_return_error',
@@ -98,7 +112,7 @@ export async function POST(request: Request) {
         }));
 
         return NextResponse.json(
-          { success: false, error: 'Failed to update WooCommerce' },
+          { success: false, error: 'Failed to update database' },
           { status: 502 }
         );
       }
@@ -117,8 +131,8 @@ export async function POST(request: Request) {
         singleSkuId: singleSku.id,
         operation: shouldRestoreStock ? 'add' : 'set', // 'add' if good condition, 'set' if lost/damaged (no change)
         quantity: qty,
-        previousQuantity: currentWooStock,
-        newQuantity: shouldRestoreStock ? newQuantity : currentWooStock, // Only change if good condition
+          previousQuantity: currentStock,
+          newQuantity: shouldRestoreStock ? newQuantity : currentStock, // Only change if good condition
         notes: notes || undefined,
         returnCondition: condition as 'lost' | 'damaged' | 'good',
         orderId: orderIdInt,
@@ -139,8 +153,8 @@ export async function POST(request: Request) {
       }));
     }
 
-    // 8. Calculate and Update Combo SKUs (only if stock was restored)
-    const wooCommerceUpdates = [];
+    // 8. Calculate Combo SKU availability (for logging only - we don't update WooCommerce)
+    const comboUpdates = [];
     
     if (shouldRestoreStock && singleSkuUpdated) {
       const allCombos = await getAllComboSkus();
@@ -154,48 +168,37 @@ export async function POST(request: Request) {
           c.components.forEach((comp: any) => neededSkus.add(comp.sku));
         });
 
-        const allSingleSkus = await getAllSingleSkus();
-        const skuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
-
         const stockMap: Record<string, number> = {};
         stockMap[sku] = newQuantity;
 
         const missingSkus = Array.from(neededSkus).filter(s => s !== sku);
 
         await Promise.all(missingSkus.map(async (s) => {
-          const sData = skuMap.get(s);
-          if (sData) {
-            try {
-              const p = await getProduct(sData.woocommerce_product_id);
-              stockMap[s] = p.stock_quantity || 0;
-            } catch (e) {
-              console.warn(`Failed to fetch stock for component ${s}`, e);
-              stockMap[s] = 0;
-            }
+          try {
+            const currentState = await getCurrentStockState(s);
+            stockMap[s] = currentState.stock;
+          } catch (e) {
+            console.warn(`Failed to fetch stock for component ${s} from database`, e);
+            stockMap[s] = 0;
           }
         }));
 
         for (const combo of affectedCombos) {
+          const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
           let comboLimit = Infinity;
-          for (const comp of combo.components) {
+          for (const comp of components) {
             const compStock = stockMap[comp.sku] || 0;
             const canMake = Math.floor(compStock / comp.quantity);
             if (canMake < comboLimit) comboLimit = canMake;
           }
           if (comboLimit === Infinity) comboLimit = 0;
 
-          try {
-            // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
-            // WC is not aware of pending-consult, so we write the actual calculated quantity
-            await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
-            wooCommerceUpdates.push({
-              sku: combo.sku,
-              name: combo.name,
-              newStock: comboLimit
-            });
-          } catch (e) {
-            console.warn(`Failed to update combo ${combo.sku}`, e);
-          }
+          comboUpdates.push({
+            sku: combo.sku,
+            name: combo.name,
+            newStock: comboLimit
+          });
+          console.log(`📊 Calculated combo ${combo.sku} availability: ${comboLimit} units (logged only, not updated in WooCommerce)`);
         }
       }
     } else if (!shouldRestoreStock) {
@@ -213,8 +216,8 @@ export async function POST(request: Request) {
       condition,
       stockRestored: shouldRestoreStock,
       newLocalQuantity: newQuantity,
-      singleSkuUpdatedInWooCommerce: singleSkuUpdated,
-      affectedComboSKUs: wooCommerceUpdates,
+      singleSkuUpdatedInDatabase: singleSkuUpdated,
+      affectedComboSKUs: comboUpdates,
       message: `Refund/return processed successfully. Condition: ${conditionLabel}. ${stockMessage}`
     });
 

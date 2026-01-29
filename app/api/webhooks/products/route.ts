@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { updateProductStock, getProduct } from '@/lib/services/woocommerce';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getCurrentStockState } from '@/lib/db/queries';
 
 export async function POST(request: Request) {
     console.log("!!! PRODUCT WEBHOOK HIT !!! Method:", request.method);
@@ -75,16 +74,16 @@ export async function POST(request: Request) {
                 : parseFloat(String(payload.previous_stock_quantity)) || undefined;
         }
         
-        // If stock_quantity is not in payload or is null/undefined, fetch it from WooCommerce
+        // If stock_quantity is not in payload or is null/undefined, get it from our database (source of truth)
         if (stockQuantity === null || stockQuantity === undefined) {
             try {
-                const currentProduct = await getProduct(productId);
-                stockQuantity = currentProduct.stock_quantity ?? 0;
+                const currentState = await getCurrentStockState(singleSku.sku);
+                stockQuantity = currentState.stock;
                 // If we don't have previous stock, we can't calculate it (stock already updated)
                 if (previousStockQuantity === undefined) {
                     previousStockQuantity = undefined; // Will be logged as null
                 }
-                console.log(`Product Webhook: Stock quantity not in payload, fetched from WC: ${stockQuantity}`);
+                console.log(`Product Webhook: Stock quantity not in payload, fetched from database: ${stockQuantity}`);
             } catch (e: any) {
                 console.error(`Failed to fetch stock quantity for product ${productId}:`, e.message);
                 stockQuantity = 0;
@@ -115,7 +114,7 @@ export async function POST(request: Request) {
 
         console.log(`Recalculating ${affectedCombos.length} combo SKUs affected by ${singleSku.sku}`);
 
-        // Build stock map for combo calculations
+        // Build stock map for combo calculations from our database (source of truth)
         const stockMap: Record<string, number> = {};
         stockMap[singleSku.sku] = stockQuantity || 0; // Use the updated stock from webhook
 
@@ -128,55 +127,38 @@ export async function POST(request: Request) {
             components.forEach((comp: any) => neededSkus.add(comp.sku));
         });
 
-        // Fetch stock for other components needed for combo calculations
+        // Fetch stock for other components needed for combo calculations from our database
         const missingSkus = Array.from(neededSkus).filter(s => s !== singleSku.sku);
-        const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
 
         await Promise.all(missingSkus.map(async (s) => {
-            const sData = singleSkuMap.get(s);
-            if (sData && sData.woocommerce_product_id) {
-                try {
-                    const p = await getProduct(sData.woocommerce_product_id);
-                    stockMap[s] = p.stock_quantity || 0;
-                } catch (e) {
-                    console.warn(`Failed to fetch stock for component ${s}`, e);
-                    stockMap[s] = 0;
-                }
+            try {
+                const currentState = await getCurrentStockState(s);
+                stockMap[s] = currentState.stock;
+            } catch (e) {
+                console.warn(`Failed to fetch stock for component ${s} from database`, e);
+                stockMap[s] = 0;
             }
         }));
 
-        // Calculate and update combo stock in WooCommerce
+        // Calculate combo availability (for logging only - we don't update WooCommerce)
         const comboUpdates: Array<{ sku: string; newStock: number }> = [];
 
         for (const combo of affectedCombos) {
-            if (!combo.woocommerce_product_id) {
-                console.warn(`⚠️ Combo ${combo.sku} missing WooCommerce product ID`);
-                continue;
-            }
-
             const components = Array.isArray(combo.components) 
                 ? combo.components 
                 : JSON.parse(combo.components || '[]');
             let comboLimit = Infinity;
 
             for (const comp of components) {
-                // stockMap contains actual WC stock (without pending-consult)
-                const stock = stockMap[comp.sku] || 0; // Actual WC stock
+                const stock = stockMap[comp.sku] || 0;
                 const canMake = Math.floor(stock / comp.quantity);
                 if (canMake < comboLimit) comboLimit = canMake;
             }
 
             if (comboLimit === Infinity) comboLimit = 0;
 
-            try {
-                // IMPORTANT: Write actual calculated combo availability (without pending-consult) to WC
-                // WC is not aware of pending-consult, so we write the actual calculated quantity
-                await updateProductStock(combo.woocommerce_product_id, comboLimit); // Actual stock, not including pending-consult
-                comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
-                console.log(`✅ Updated combo ${combo.sku} in WooCommerce: ${comboLimit} units`);
-            } catch (e: any) {
-                console.error(`❌ Failed to update combo ${combo.sku} in WooCommerce:`, e.message);
-            }
+            comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
+            console.log(`📊 Calculated combo ${combo.sku} availability: ${comboLimit} units (logged only, not updated in WooCommerce)`);
         }
 
         // Get IP address and user agent from request
@@ -206,7 +188,7 @@ export async function POST(request: Request) {
                     singleSku: singleSku.sku,
                     previousStock: previousStockQuantity,
                     newStock: stockQuantity,
-                    note: 'Product stock updated in WooCommerce. Combo SKU availability recalculated.',
+                    note: 'Product stock updated in WooCommerce (webhook received). Combo SKU availability recalculated (logged only, not updated in WooCommerce).',
                     comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock }))
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
@@ -250,7 +232,7 @@ export async function POST(request: Request) {
 
         return NextResponse.json({ 
             success: true, 
-            message: 'Combo SKU availability updated after product stock change',
+            message: 'Product webhook received and logged. Combo SKU availability calculated (not updated in WooCommerce).',
             singleSku: singleSku.sku,
             newStock: stockQuantity,
             comboUpdates: comboUpdates.length
