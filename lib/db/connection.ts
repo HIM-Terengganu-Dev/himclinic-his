@@ -19,7 +19,7 @@ if (process.env.DATABASE_URL) {
         try {
             await client.query("SET timezone = 'Asia/Kuala_Lumpur'");
             // Set search_path to the schema
-            await client.query('SET search_path = inventory_management, "$user", public');
+            await client.query('SET search_path = "his_db", "$user", public');
         } catch (error) {
             console.error('Failed to set timezone/search_path:', error);
         }
