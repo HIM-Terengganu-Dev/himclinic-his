@@ -40,7 +40,7 @@ interface WcWebhookLogEntry {
     _history?: WcWebhookLogEntry[];
 }
 
-type TabType = 'manual' | 'woocommerce';
+type TabType = 'manual' | 'orders';
 
 export default function ActivityLog({ limit = 20, compact = false }: { limit?: number, compact?: boolean }) {
     const { data: session } = useSession();
@@ -74,7 +74,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             })
             .catch(err => console.error('Failed to fetch SKUs:', err));
         
-        // Fetch combo SKUs for WooCommerce filter dropdown
+        // Fetch combo SKUs for Orders filter dropdown
         fetch('/api/skus/combo')
             .then(res => res.json())
             .then(data => {
@@ -410,7 +410,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                             </div>
 
-                            {activeTab === 'woocommerce' && (filterType === '' || filterType === 'order') && (
+                            {activeTab === 'orders' && (filterType === '' || filterType === 'order') && (
                                 <div className="relative">
                                     <select
                                         value={filterOrderStatus}
@@ -434,7 +434,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                     className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none bg-white"
                                 >
                                     <option value="">All SKUs</option>
-                                    {activeTab === 'woocommerce' ? (
+                                    {activeTab === 'orders' ? (
                                         <>
                                             {singleSkus.map((sku) => (
                                                 <option key={sku.sku} value={sku.sku}>
@@ -509,9 +509,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                             </div>
                         </button>
                         <button
-                            onClick={() => setActiveTab('woocommerce')}
+                            onClick={() => setActiveTab('orders')}
                             className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
-                                activeTab === 'woocommerce'
+                                activeTab === 'orders'
                                     ? 'border-blue-500 text-blue-600'
                                     : 'border-transparent text-gray-500 hover:text-gray-700'
                             }`}
@@ -632,7 +632,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     </span>
                                                                 )}
                                                                 {log.details.orderId && (
-                                                                    <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800" title="WooCommerce Order ID">
+                                                                    <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800" title="Order ID">
                                                                         Order #{log.details.orderId}
                                                                     </span>
                                                                 )}
@@ -921,11 +921,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                             <span className="text-gray-500">:{restoration.previousStock}</span>
                                                                             <span className="text-gray-500">→</span>
                                                                             <span className="text-green-600 font-medium">{restoration.newStock}</span>
-                                                                            {!restoration.hisWrote && (
-                                                                                <span className="text-xs text-blue-600 ml-1" title="Restored by WooCommerce (HIS only tracked)">
-                                                                                    (WC)
-                                                                                </span>
-                                                                            )}
                                                                         </div>
                                                                     </div>
                                                                 ))}
@@ -1110,11 +1105,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                                         )}
                                                                                     </>
                                                                                 )}
-                                                                                {!deduction.hisWrote && (
-                                                                                    <span className="text-xs text-blue-600 ml-1" title="Deducted by WooCommerce (HIS only tracked)">
-                                                                                        (WC)
-                                                                                    </span>
-                                                                                )}
                                                                             </div>
                                                                         </div>
                                                                     );
@@ -1264,8 +1254,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         </table>
                     </div>
                     
-                    {/* Pagination controls for WooCommerce tab */}
-                    {activeTab === 'woocommerce' && wcTotalCount > (limit || 20) && (
+                    {/* Pagination controls for Orders tab */}
+                    {activeTab === 'orders' && wcTotalCount > (limit || 20) && (
                         <div className="mt-4 flex items-center justify-between border-t border-gray-200 pt-4">
                             <div className="text-sm text-gray-600">
                                 Showing {((wcCurrentPage - 1) * (limit || 20)) + 1} to {Math.min(wcCurrentPage * (limit || 20), wcTotalCount)} of {wcTotalCount} entries

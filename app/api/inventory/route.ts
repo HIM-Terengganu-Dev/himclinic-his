@@ -33,16 +33,19 @@ export async function GET() {
     // Build inventory store from transactions
     const inventoryStore: InventoryStock = {};
     const pendingStock: Record<string, number> = {};
+    const backOrderStock: Record<string, number> = {};
     
     singleSkus.forEach((sku: any) => {
       const stockData = currentStockMap[sku.sku];
       if (stockData) {
         inventoryStore[sku.sku] = stockData.stock;
         pendingStock[sku.sku] = stockData.pending;
+        backOrderStock[sku.sku] = stockData.backOrder || 0;
       } else {
         // No transactions yet - default to 0
         inventoryStore[sku.sku] = 0;
         pendingStock[sku.sku] = 0;
+        backOrderStock[sku.sku] = 0;
       }
     });
     
@@ -64,6 +67,7 @@ export async function GET() {
       comboAvailability,
       singleSkuList, // For frontend to know which SKUs to display
       pendingStock: pendingStock, // Pending stock from transactions
+      backOrderStock: backOrderStock, // Back order quantities (negative when stock is 0 but orders exist)
       initializedFromTransactions: true
     }, {
       headers: {

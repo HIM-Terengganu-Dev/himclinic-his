@@ -2,22 +2,24 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSession, signOut } from 'next-auth/react';
-import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, CheckCircle, ArrowLeftCircle } from 'lucide-react';
+import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, CheckCircle, ArrowLeftCircle, Shield } from 'lucide-react';
 import InventoryDashboard from '@/components/InventoryDashboard';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
 import ReturnRefund from '@/components/ReturnRefund';
 import ActivityLog from '@/components/ActivityLog';
 import SkuManagement from '@/components/SkuManagement';
+import AdminAccess from '@/components/AdminAccess';
 import LoginPage from '@/components/LoginPage';
 import { InventoryStock, ComboAvailability } from '@/types/inventory';
 
 export default function Home() {
   const { data: session, status } = useSession();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'return-refund' | 'activity' | 'sku'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'return-refund' | 'activity' | 'admin' | 'sku'>('dashboard');
   const [inventory, setInventory] = useState<InventoryStock>({});
   const [comboAvailability, setComboAvailability] = useState<ComboAvailability[]>([]);
   const [singleSkuList, setSingleSkuList] = useState<Array<{ sku: string; name: string; id?: number }>>([]);
   const [pendingStock, setPendingStock] = useState<Record<string, number>>({});
+  const [backOrderStock, setBackOrderStock] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   // Removed: newOrdersCount - orders are read-only, no notifications needed
@@ -42,6 +44,7 @@ export default function Home() {
         setComboAvailability(data.comboAvailability);
         setSingleSkuList(data.singleSkuList || []);
         setPendingStock(data.pendingStock || {});
+        setBackOrderStock(data.backOrderStock || {});
         setLastUpdated(new Date());
 
         // Show notification if refresh was manually triggered
@@ -235,109 +238,6 @@ export default function Home() {
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
 
-        {/* Top Stats Cards */}
-        {activeTab === 'dashboard' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-            {/* Single SKU Availability Card */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                  <Package className="w-5 h-5 text-blue-600" />
-                  Single SKU Availability
-                </h3>
-                <span className="text-xs font-medium bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full">
-                  {Object.keys(inventory).length} Items
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                {/* No Stock (Includes Oversold) */}
-                <div className="bg-red-50 rounded-lg p-3 border border-red-100">
-                  <p className="text-xs font-medium text-red-600 uppercase tracking-wide">No Stock</p>
-                  <p className="text-2xl font-bold text-red-700 mt-1">
-                    {Object.values(inventory).filter(q => q <= 0).length}
-                  </p>
-                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
-                    <p className="text-[10px] text-red-600 leading-tight">
-                      {Object.entries(inventory).filter(([_, q]) => q <= 0).map(([sku]) => sku).join(', ') || 'None'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Low Stock */}
-                <div className="bg-yellow-50 rounded-lg p-3 border border-yellow-100">
-                  <p className="text-xs font-medium text-yellow-600 uppercase tracking-wide">Low Stock</p>
-                  <p className="text-2xl font-bold text-yellow-700 mt-1">
-                    {Object.values(inventory).filter(q => q > 0 && q <= 10).length}
-                  </p>
-                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
-                    <p className="text-[10px] text-yellow-600 leading-tight">
-                      {Object.entries(inventory).filter(([_, q]) => q > 0 && q <= 10).map(([sku]) => sku).join(', ') || 'None'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Adequate */}
-                <div className="bg-green-50 rounded-lg p-3 border border-green-100">
-                  <p className="text-xs font-medium text-green-600 uppercase tracking-wide">Adequate</p>
-                  <p className="text-2xl font-bold text-green-700 mt-1">
-                    {Object.values(inventory).filter(q => q > 10).length}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Combo SKU Availability Card */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                  <TrendingUp className="w-5 h-5 text-purple-600" />
-                  Combo SKU Availability
-                </h3>
-                <span className="text-xs font-medium bg-purple-50 text-purple-700 px-2.5 py-1 rounded-full">
-                  {comboAvailability.length} Items
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                {/* No Stock (Includes Oversold) */}
-                <div className="bg-red-50 rounded-lg p-3 border border-red-100">
-                  <p className="text-xs font-medium text-red-600 uppercase tracking-wide">No Stock</p>
-                  <p className="text-2xl font-bold text-red-700 mt-1">
-                    {comboAvailability.filter(c => c.maxAvailable <= 0).length}
-                  </p>
-                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
-                    <p className="text-[10px] text-red-600 leading-tight">
-                      {comboAvailability.filter(c => c.maxAvailable <= 0).map(c => c.sku).join(', ') || 'None'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Low Stock */}
-                <div className="bg-yellow-50 rounded-lg p-3 border border-yellow-100">
-                  <p className="text-xs font-medium text-yellow-600 uppercase tracking-wide">Low Stock</p>
-                  <p className="text-2xl font-bold text-yellow-700 mt-1">
-                    {comboAvailability.filter(c => c.maxAvailable > 0 && c.maxAvailable <= 10).length}
-                  </p>
-                  <div className="mt-1 max-h-16 overflow-y-auto custom-scrollbar">
-                    <p className="text-[10px] text-yellow-600 leading-tight">
-                      {comboAvailability.filter(c => c.maxAvailable > 0 && c.maxAvailable <= 10).map(c => c.sku).join(', ') || 'None'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Adequate */}
-                <div className="bg-green-50 rounded-lg p-3 border border-green-100">
-                  <p className="text-xs font-medium text-green-600 uppercase tracking-wide">Adequate</p>
-                  <p className="text-2xl font-bold text-green-700 mt-1">
-                    {comboAvailability.filter(c => c.maxAvailable > 10).length}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Navigation Tabs */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-8">
           <div className="border-b border-gray-200 overflow-x-auto">
@@ -410,6 +310,20 @@ export default function Home() {
                 {activeTab === 'activity' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
 
+              {isAdmin && (
+                <button
+                  onClick={() => setActiveTab('admin')}
+                  className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'admin'
+                    ? 'text-purple-600 bg-purple-50/50'
+                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                    }`}
+                >
+                  <Shield size={18} />
+                  Admin Access
+                  {activeTab === 'admin' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-600" />}
+                </button>
+              )}
+
             </nav>
           </div>
 
@@ -422,6 +336,7 @@ export default function Home() {
                     comboAvailability={comboAvailability}
                     singleSkuList={singleSkuList}
                     pendingStock={pendingStock}
+                    backOrderStock={backOrderStock}
                     loading={loading}
                   />
                 </div>
@@ -438,6 +353,10 @@ export default function Home() {
 
             {activeTab === 'activity' && (
               <ActivityLog />
+            )}
+
+            {activeTab === 'admin' && isAdmin && (
+              <AdminAccess />
             )}
 
             {activeTab === 'sku' && isAdmin && (

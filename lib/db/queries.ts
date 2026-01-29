@@ -1360,7 +1360,7 @@ export async function getStockTransactions(filters: {
 /**
  * Get current stock for all SKUs (read directly from transactions - more reliable than materialized view)
  */
-export async function getAllCurrentStock(): Promise<Record<string, { stock: number; pending: number; display: number }>> {
+export async function getAllCurrentStock(): Promise<Record<string, { stock: number; pending: number; display: number; backOrder: number }>> {
     // Read directly from transactions using DISTINCT ON for latest per SKU
     const result = await query(`
         SELECT DISTINCT ON (sku)
@@ -1372,12 +1372,18 @@ export async function getAllCurrentStock(): Promise<Record<string, { stock: numb
         ORDER BY sku, created_at DESC, id DESC
     `, []);
     
-    const stockMap: Record<string, { stock: number; pending: number; display: number }> = {};
+    const stockMap: Record<string, { stock: number; pending: number; display: number; backOrder: number }> = {};
     result.rows.forEach((row: any) => {
+        const stock = row.stock || 0;
+        const pending = row.pending || 0;
+        // Back order: negative amount if stock is 0 but there are pending orders
+        const backOrder = stock === 0 && pending > 0 ? -pending : 0;
+        
         stockMap[row.sku] = {
-            stock: row.stock,
-            pending: row.pending,
-            display: row.display
+            stock,
+            pending,
+            display: row.display,
+            backOrder
         };
     });
     
