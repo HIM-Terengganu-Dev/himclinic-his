@@ -3,6 +3,10 @@ import crypto from 'crypto';
 import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingConsultationStock, getPendingConsultationStockByOrder, getPendingStockAtTime, logStockMovement } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
+// Disable body parsing to get raw body for signature verification
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(request: Request) {
     console.log("!!! WEBHOOK HIT !!! Method:", request.method);
     try {
@@ -11,29 +15,57 @@ export async function POST(request: Request) {
         // Debug: Log all headers to find the signature
         const headersList = Object.fromEntries(request.headers.entries());
         console.log('Webhook Headers:', JSON.stringify(headersList, null, 2));
+        console.log('All header keys:', Object.keys(headersList));
 
-        const signature = request.headers.get('x-wc-webhook-signature') || request.headers.get('X-WC-Webhook-Signature');
+        // Try multiple header name variations (WooCommerce can send different formats)
+        const signature = request.headers.get('x-wc-webhook-signature') || 
+                         request.headers.get('X-WC-Webhook-Signature') ||
+                         request.headers.get('X-WC-WEBHOOK-SIGNATURE') ||
+                         (headersList as any)['x-wc-webhook-signature'] ||
+                         (headersList as any)['X-WC-Webhook-Signature'] ||
+                         (headersList as any)['x-wc-webhook-signature']?.toString();
+        
         const secret = process.env.WOOCOMMERCE_WEBHOOK_SECRET;
 
-        if (!secret || !signature) {
-            console.error('Webhook Error: Missing secret or signature', {
+        if (!secret) {
+            console.error('Webhook Error: Missing WOOCOMMERCE_WEBHOOK_SECRET environment variable');
+            return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 500 });
+        }
+
+        if (!signature) {
+            console.error('Webhook Error: Missing signature header', {
                 hasSecret: !!secret,
-                hasSignature: !!signature
+                hasSignature: !!signature,
+                allHeaderKeys: Object.keys(headersList),
+                headerKeysLowercase: Object.keys(headersList).map(k => k.toLowerCase()),
+                signatureHeaderPresent: Object.keys(headersList).some(k => 
+                    k.toLowerCase().includes('webhook') && k.toLowerCase().includes('signature')
+                )
             });
-            return NextResponse.json({ error: 'Missing secret or signature' }, { status: 401 });
+            return NextResponse.json({ error: 'Missing signature header' }, { status: 401 });
         }
 
         // Verify Signature
         const hash = crypto.createHmac('sha256', secret).update(bodyText).digest('base64');
 
-        if (hash !== signature) {
+        // Compare signatures (trim whitespace in case of encoding issues)
+        const receivedSig = signature.trim();
+        const computedSig = hash.trim();
+
+        if (receivedSig !== computedSig) {
             console.error('Webhook Error: Invalid signature', {
-                received: signature,
-                computed: hash,
-                secretLength: secret.length
+                received: receivedSig,
+                receivedLength: receivedSig.length,
+                computed: computedSig,
+                computedLength: computedSig.length,
+                secretLength: secret.length,
+                bodyLength: bodyText.length,
+                signaturesMatch: receivedSig === computedSig
             });
             return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
         }
+
+        console.log('✅ Webhook signature verified successfully');
 
         const payload = JSON.parse(bodyText);
         const orderId = payload.id;
