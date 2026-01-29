@@ -41,6 +41,7 @@ export async function getAllSingleSkus() {
     const result = await query(
         `SELECT * FROM "his_db".single_skus 
          WHERE LOWER(COALESCE(description, '')) != 'dummy sku'
+         AND sku NOT IN ('buku/SM', 'buku/BK')
          ORDER BY sku`
     );
     return result.rows;
@@ -75,6 +76,7 @@ export async function getAllComboSkus() {
     const result = await query(
         `SELECT * FROM "his_db".combo_skus 
          WHERE LOWER(COALESCE(description, '')) != 'dummy sku'
+         AND sku NOT IN ('buku/SM', 'buku/BK')
          ORDER BY sku`
     );
     return result.rows;
