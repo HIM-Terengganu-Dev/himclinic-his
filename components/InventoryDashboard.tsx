@@ -230,7 +230,7 @@ export default function InventoryDashboard({
                             <div className="text-sm text-gray-700">
                               <span className="font-medium">{combo.limitingComponent}</span>
                               <span className="text-xs text-gray-400 ml-2">
-                                ({inventory[combo.limitingComponent] || 0} available)
+                                ({availableForPurchaseStock[combo.limitingComponent] || 0} available)
                               </span>
                             </div>
                           ) : (

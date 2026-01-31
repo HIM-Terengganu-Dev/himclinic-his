@@ -69,8 +69,8 @@ export async function GET() {
     
     console.log(`Fetched stock from transactions for ${Object.keys(inventoryStore).length} SKUs at ${new Date().toISOString()}`);
     
-    // Calculate combo availability using in_warehouse (for combo calculations)
-    const comboAvailability = calculateAllComboAvailability(inWarehouseStock, comboSkus);
+    // Calculate combo availability using available_for_purchase (logical: only available stock can be used for new orders)
+    const comboAvailability = calculateAllComboAvailability(availableForPurchaseStock, comboSkus);
 
     // Return SKU list for frontend display
     const singleSkuList = singleSkus.map((sku: any) => ({
