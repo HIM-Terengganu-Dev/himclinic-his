@@ -30,29 +30,47 @@ export async function GET() {
     // Get current stock from transactions table (source of truth)
     const currentStockMap = await getAllCurrentStock();
     
-    // Build inventory store from transactions
+    // Build inventory store from transactions (all 6 statuses)
     const inventoryStore: InventoryStock = {};
-    const pendingStock: Record<string, number> = {};
+    const inWarehouseStock: Record<string, number> = {};
+    const availableForPurchaseStock: Record<string, number> = {};
+    const processingStock: Record<string, number> = {};
+    const pendingConsultStock: Record<string, number> = {};
+    const pendingReviewStock: Record<string, number> = {};
     const backOrderStock: Record<string, number> = {};
+    // Legacy fields for backward compatibility
+    const pendingStock: Record<string, number> = {};
     
     singleSkus.forEach((sku: any) => {
       const stockData = currentStockMap[sku.sku];
       if (stockData) {
-        inventoryStore[sku.sku] = stockData.stock;
-        pendingStock[sku.sku] = stockData.pending;
-        backOrderStock[sku.sku] = stockData.backOrder || 0;
+        // New fields
+        inWarehouseStock[sku.sku] = stockData.inWarehouse;
+        availableForPurchaseStock[sku.sku] = stockData.availableForPurchase;
+        processingStock[sku.sku] = stockData.processing;
+        pendingConsultStock[sku.sku] = stockData.pendingConsult;
+        pendingReviewStock[sku.sku] = stockData.pendingReview;
+        backOrderStock[sku.sku] = stockData.backorder;
+        // Legacy fields
+        inventoryStore[sku.sku] = stockData.stock || stockData.inWarehouse; // Use inWarehouse for legacy
+        pendingStock[sku.sku] = stockData.pending || (stockData.pendingConsult + stockData.pendingReview);
       } else {
         // No transactions yet - default to 0
+        inWarehouseStock[sku.sku] = 0;
+        availableForPurchaseStock[sku.sku] = 0;
+        processingStock[sku.sku] = 0;
+        pendingConsultStock[sku.sku] = 0;
+        pendingReviewStock[sku.sku] = 0;
+        backOrderStock[sku.sku] = 0;
         inventoryStore[sku.sku] = 0;
         pendingStock[sku.sku] = 0;
-        backOrderStock[sku.sku] = 0;
       }
     });
     
     console.log(`Fetched stock from transactions for ${Object.keys(inventoryStore).length} SKUs at ${new Date().toISOString()}`);
     
-    // Calculate combo availability using database combos
-    const comboAvailability = calculateAllComboAvailability(inventoryStore, comboSkus);
+    // Calculate combo availability using in_warehouse (for combo calculations)
+    const comboAvailability = calculateAllComboAvailability(inWarehouseStock, comboSkus);
 
     // Return SKU list for frontend display
     const singleSkuList = singleSkus.map((sku: any) => ({
@@ -63,11 +81,18 @@ export async function GET() {
 
     return NextResponse.json({
       success: true,
+      // New fields (all 6 statuses)
+      inWarehouseStock,
+      availableForPurchaseStock,
+      processingStock,
+      pendingConsultStock,
+      pendingReviewStock,
+      backOrderStock,
+      // Legacy fields (for backward compatibility)
       singleSkus: inventoryStore,
+      pendingStock,
       comboAvailability,
       singleSkuList, // For frontend to know which SKUs to display
-      pendingStock: pendingStock, // Pending stock from transactions
-      backOrderStock: backOrderStock, // Back order quantities (negative when stock is 0 but orders exist)
       initializedFromTransactions: true
     }, {
       headers: {

@@ -349,6 +349,7 @@ export async function logWcWebhook(data: {
     entitySku?: string;
     entityName?: string;
     status?: string;
+    currentStatus?: string; // New: current status of the order
     stockQuantity?: number;
     previousStockQuantity?: number;
     affectedSkus?: string[];
@@ -359,11 +360,31 @@ export async function logWcWebhook(data: {
     success?: boolean;
     errorMessage?: string;
 }) {
+    // Determine current_status from webhook_event if not provided
+    let currentStatus = data.currentStatus;
+    if (!currentStatus && data.webhookType === 'order') {
+        // Map webhook events to current status
+        if (data.webhookEvent === 'order.pending-consult') {
+            currentStatus = 'pending-consult';
+        } else if (data.webhookEvent === 'order.pending-review') {
+            currentStatus = 'pending-review';
+        } else if (data.webhookEvent === 'order.processing') {
+            currentStatus = 'processing';
+        } else if (data.webhookEvent === 'order.nv-pending-pickup') {
+            currentStatus = 'nv-pending-pickup';
+        } else if (data.webhookEvent === 'order.cancelled' || data.webhookEvent === 'order.refunded') {
+            currentStatus = 'cancelled';
+        } else {
+            // Use status field as fallback
+            currentStatus = data.status || undefined;
+        }
+    }
+    
     await query(
         `INSERT INTO "his_db".wc_webhook_logs
-         (webhook_type, webhook_event, entity_id, entity_sku, entity_name, status, stock_quantity, previous_stock_quantity, 
+         (webhook_type, webhook_event, entity_id, entity_sku, entity_name, status, current_status, stock_quantity, previous_stock_quantity, 
           affected_skus, combo_updates, details, ip_address, user_agent, success, error_message)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
             data.webhookType,
             data.webhookEvent,
@@ -371,6 +392,7 @@ export async function logWcWebhook(data: {
             data.entitySku || null,
             data.entityName || null,
             data.status || null,
+            currentStatus || null,
             data.stockQuantity ?? null,
             data.previousStockQuantity ?? null,
             data.affectedSkus ? JSON.stringify(data.affectedSkus) : null,
@@ -382,6 +404,27 @@ export async function logWcWebhook(data: {
             data.errorMessage || null
         ]
     );
+}
+
+/**
+ * Get the current status of an order from the latest webhook log entry
+ */
+export async function getOrderCurrentStatus(orderId: number): Promise<string | null> {
+    const result = await query(`
+        SELECT current_status
+        FROM "his_db".wc_webhook_logs
+        WHERE webhook_type = 'order'
+        AND entity_id = $1
+        AND current_status IS NOT NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+    `, [orderId]);
+    
+    if (result.rows.length === 0) {
+        return null;
+    }
+    
+    return result.rows[0].current_status;
 }
 
 export async function getWcWebhookLogByOrderId(orderId: number, webhookEvent?: string) {
@@ -1119,14 +1162,28 @@ export async function getPendingStockAtTime(sku: string, timestamp: Date): Promi
 
 /**
  * Get current stock state for a SKU from the latest transaction
+ * Returns all 6 order statuses/stages
  */
 export async function getCurrentStockState(sku: string): Promise<{
+    inWarehouse: number;
+    availableForPurchase: number; // calculated: inWarehouse - pendingConsult - pendingReview - processing
+    processing: number;
+    pendingConsult: number;
+    pendingReview: number;
+    backorder: number;
+    // Legacy fields for backward compatibility (will be deprecated)
     stock: number;
     pending: number;
     display: number;
 }> {
     const result = await query(`
         SELECT 
+            in_warehouse_after as in_warehouse,
+            processing_after as processing,
+            pending_consult_after as pending_consult,
+            pending_review_after as pending_review,
+            backorder_after as backorder,
+            -- Legacy fields (for backward compatibility during transition)
             stock_after as stock,
             pending_after as pending,
             (stock_after + pending_after) as display
@@ -1142,34 +1199,85 @@ export async function getCurrentStockState(sku: string): Promise<{
         throw new Error(`No stock transactions found for SKU: ${sku}. Please run reconciliation.`);
     }
     
+    const row = result.rows[0];
+    const inWarehouse = row.in_warehouse || 0;
+    const processing = row.processing || 0;
+    const pendingConsult = row.pending_consult || 0;
+    const pendingReview = row.pending_review || 0;
+    const backorder = row.backorder || 0;
+    
+    // Calculate available for purchase: inWarehouse - pendingConsult - pendingReview - processing
+    const availableForPurchase = Math.max(0, inWarehouse - pendingConsult - pendingReview - processing);
+    
     return {
-        stock: result.rows[0].stock,
-        pending: result.rows[0].pending,
-        display: result.rows[0].display
+        inWarehouse,
+        availableForPurchase,
+        processing,
+        pendingConsult,
+        pendingReview,
+        backorder,
+        // Legacy fields
+        stock: row.stock || 0,
+        pending: row.pending || 0,
+        display: row.display || 0
     };
 }
 
 /**
  * Create a stock transaction (core function for all stock changes)
+ * Now tracks all 6 order statuses/stages
  */
 export async function createStockTransaction(data: {
     sku: string;
     singleSkuId?: number;
-    transactionType: 'order_pending_consult' | 'order_pending_review' | 'order_processing' | 'order_cancelled' | 'manual_add' | 'manual_subtract' | 'manual_set' | 'reconciliation' | 'refund_return';
+    transactionType: 'order_pending_consult' | 'order_pending_review' | 'order_processing' | 'order_cancelled' | 'order_nv_pending_pickup' | 'manual_add' | 'manual_subtract' | 'manual_set' | 'reconciliation' | 'refund_return';
     quantityChange: number;
-    stockBefore: number;
-    stockAfter: number;
-    pendingBefore: number;
-    pendingAfter: number;
+    // Legacy fields (for backward compatibility)
+    stockBefore?: number;
+    stockAfter?: number;
+    pendingBefore?: number;
+    pendingAfter?: number;
+    // New fields for 6 status system
+    inWarehouseBefore?: number;
+    inWarehouseAfter?: number;
+    processingBefore?: number;
+    processingAfter?: number;
+    pendingConsultBefore?: number;
+    pendingConsultAfter?: number;
+    pendingReviewBefore?: number;
+    pendingReviewAfter?: number;
+    backorderBefore?: number;
+    backorderAfter?: number;
     sourceType?: string;
     sourceId?: number;
     sourceEvent?: string;
     createdBy?: number;
     details?: any;
 }): Promise<any> {
-    // Validate: stock_after should equal stock_before + quantity_change
-    if (data.stockAfter !== data.stockBefore + data.quantityChange) {
-        throw new Error(`Stock calculation mismatch: ${data.stockBefore} + ${data.quantityChange} ≠ ${data.stockAfter}`);
+    // If new fields are not provided, use legacy fields for backward compatibility
+    const inWarehouseBefore = data.inWarehouseBefore ?? data.stockBefore ?? 0;
+    const inWarehouseAfter = data.inWarehouseAfter ?? data.stockAfter ?? 0;
+    const processingBefore = data.processingBefore ?? 0;
+    const processingAfter = data.processingAfter ?? 0;
+    const pendingConsultBefore = data.pendingConsultBefore ?? 0;
+    const pendingConsultAfter = data.pendingConsultAfter ?? 0;
+    const pendingReviewBefore = data.pendingReviewBefore ?? 0;
+    const pendingReviewAfter = data.pendingReviewAfter ?? 0;
+    const backorderBefore = data.backorderBefore ?? 0;
+    const backorderAfter = data.backorderAfter ?? 0;
+    
+    // Legacy fields (for backward compatibility during transition)
+    const stockBefore = data.stockBefore ?? inWarehouseBefore;
+    const stockAfter = data.stockAfter ?? inWarehouseAfter;
+    const pendingBefore = data.pendingBefore ?? (pendingConsultBefore + pendingReviewBefore);
+    const pendingAfter = data.pendingAfter ?? (pendingConsultAfter + pendingReviewAfter);
+    
+    // Validate: in_warehouse_after should equal in_warehouse_before + quantity_change (if quantity_change affects in_warehouse)
+    // Note: quantity_change may not always affect in_warehouse (e.g., moving from pending to processing)
+    // So we only validate if quantityChange is non-zero and affects in_warehouse
+    if (data.quantityChange !== 0 && inWarehouseAfter !== inWarehouseBefore + data.quantityChange) {
+        // This might be intentional (e.g., status transitions), so we'll log a warning but not throw
+        console.warn(`In-warehouse calculation note: ${inWarehouseBefore} + ${data.quantityChange} ≠ ${inWarehouseAfter} (this may be intentional for status transitions)`);
     }
     
     const detailsJson = data.details ? JSON.stringify(data.details) : null;
@@ -1177,21 +1285,37 @@ export async function createStockTransaction(data: {
     const result = await query(`
         INSERT INTO "his_db".stock_transactions (
             sku, single_sku_id, transaction_type,
-            quantity_change, stock_before, stock_after,
+            quantity_change, 
+            stock_before, stock_after,
             pending_before, pending_after,
+            in_warehouse_before, in_warehouse_after,
+            processing_before, processing_after,
+            pending_consult_before, pending_consult_after,
+            pending_review_before, pending_review_after,
+            backorder_before, backorder_after,
             source_type, source_id, source_event,
             created_by, details
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
         RETURNING *
     `, [
         data.sku,
         data.singleSkuId || null,
         data.transactionType,
         data.quantityChange,
-        data.stockBefore,
-        data.stockAfter,
-        data.pendingBefore,
-        data.pendingAfter,
+        stockBefore,
+        stockAfter,
+        pendingBefore,
+        pendingAfter,
+        inWarehouseBefore,
+        inWarehouseAfter,
+        processingBefore,
+        processingAfter,
+        pendingConsultBefore,
+        pendingConsultAfter,
+        pendingReviewBefore,
+        pendingReviewAfter,
+        backorderBefore,
+        backorderAfter,
         data.sourceType || null,
         data.sourceId || null,
         data.sourceEvent || null,
@@ -1359,12 +1483,31 @@ export async function getStockTransactions(filters: {
 
 /**
  * Get current stock for all SKUs (read directly from transactions - more reliable than materialized view)
+ * Returns all 6 order statuses/stages
  */
-export async function getAllCurrentStock(): Promise<Record<string, { stock: number; pending: number; display: number; backOrder: number }>> {
+export async function getAllCurrentStock(): Promise<Record<string, { 
+    inWarehouse: number;
+    availableForPurchase: number; // calculated: inWarehouse - pendingConsult - pendingReview - processing
+    processing: number;
+    pendingConsult: number;
+    pendingReview: number;
+    backorder: number;
+    // Legacy fields for backward compatibility
+    stock: number;
+    pending: number;
+    display: number;
+    backOrder: number;
+}>> {
     // Read directly from transactions using DISTINCT ON for latest per SKU
     const stockResult = await query(`
         SELECT DISTINCT ON (sku)
             sku,
+            in_warehouse_after as in_warehouse,
+            processing_after as processing,
+            pending_consult_after as pending_consult,
+            pending_review_after as pending_review,
+            backorder_after as backorder,
+            -- Legacy fields (for backward compatibility during transition)
             stock_after as stock,
             pending_after as pending,
             (stock_after + pending_after) as display
@@ -1372,60 +1515,46 @@ export async function getAllCurrentStock(): Promise<Record<string, { stock: numb
         ORDER BY sku, created_at DESC, id DESC
     `, []);
     
-    // Calculate back orders: Quantity ordered but not available for immediate fulfillment
-    // Back Order = (Pending Review/Consult quantities) - Available for Purchase
-    // Note: Processing orders are NOT counted because they're already being fulfilled
-    const backOrderResult = await query(`
-        WITH latest_stock AS (
-            SELECT DISTINCT ON (sku)
-                sku,
-                stock_after as available_for_purchase
-            FROM "his_db".stock_transactions
-            ORDER BY sku, created_at DESC, id DESC
-        ),
-        pending_orders AS (
-            SELECT DISTINCT ON (sku, source_id)
-                sku,
-                source_id as order_id,
-                ABS(quantity_change) as quantity
-            FROM "his_db".stock_transactions
-            WHERE source_type = 'order'
-            AND transaction_type IN ('order_pending_consult', 'order_pending_review')
-            AND pending_after > pending_before
-            ORDER BY sku, source_id, created_at DESC
-        ),
-        back_order_calc AS (
-            SELECT 
-                ls.sku,
-                ls.available_for_purchase,
-                COALESCE(SUM(po.quantity), 0) as total_pending_qty
-            FROM latest_stock ls
-            LEFT JOIN pending_orders po ON ls.sku = po.sku
-            GROUP BY ls.sku, ls.available_for_purchase
-        )
-        SELECT 
-            sku,
-            GREATEST(0, total_pending_qty - available_for_purchase) as back_order
-        FROM back_order_calc
-    `, []);
-    
-    const stockMap: Record<string, { stock: number; pending: number; display: number; backOrder: number }> = {};
-    const backOrderMap = new Map<string, number>();
-    
-    backOrderResult.rows.forEach((row: any) => {
-        backOrderMap.set(row.sku, row.back_order || 0);
-    });
+    const stockMap: Record<string, { 
+        inWarehouse: number;
+        availableForPurchase: number;
+        processing: number;
+        pendingConsult: number;
+        pendingReview: number;
+        backorder: number;
+        stock: number;
+        pending: number;
+        display: number;
+        backOrder: number;
+    }> = {};
     
     stockResult.rows.forEach((row: any) => {
+        const inWarehouse = row.in_warehouse || 0;
+        const processing = row.processing || 0;
+        const pendingConsult = row.pending_consult || 0;
+        const pendingReview = row.pending_review || 0;
+        const backorder = row.backorder || 0;
+        
+        // Calculate available for purchase: inWarehouse - pendingConsult - pendingReview - processing
+        const availableForPurchase = Math.max(0, inWarehouse - pendingConsult - pendingReview - processing);
+        
+        // Legacy fields
         const stock = row.stock || 0;
         const pending = row.pending || 0;
-        const backOrder = backOrderMap.get(row.sku) || 0;
+        const display = row.display || 0;
         
         stockMap[row.sku] = {
+            inWarehouse,
+            availableForPurchase,
+            processing,
+            pendingConsult,
+            pendingReview,
+            backorder,
+            // Legacy fields
             stock,
             pending,
-            display: row.display,
-            backOrder
+            display,
+            backOrder: backorder // Alias for backward compatibility
         };
     });
     

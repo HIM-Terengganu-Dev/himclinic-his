@@ -51,7 +51,17 @@ export async function POST(request: Request) {
       } catch (error: any) {
         // If no transactions exist, initialize with 0
         if (error.message?.includes('No stock transactions')) {
-          currentState = { stock: 0, pending: 0, display: 0 };
+          currentState = { 
+            inWarehouse: 0, 
+            availableForPurchase: 0,
+            processing: 0,
+            pendingConsult: 0,
+            pendingReview: 0,
+            backorder: 0,
+            stock: 0, 
+            pending: 0, 
+            display: 0 
+          };
         } else {
           console.error(`Failed to fetch current stock for ${sku} from transactions`, error);
           return NextResponse.json(
@@ -61,39 +71,44 @@ export async function POST(request: Request) {
         }
       }
 
-      // 4. Calculate New Quantity
-      let newQuantity: number;
+      // 4. Calculate New Quantity for in_warehouse
+      let newInWarehouse: number;
       let quantityChange: number;
       let reconciliationDetails: { physicalCount: number; pendingStock: number; stock: number } | undefined;
       
       if (operation === 'add') {
         quantityChange = quantity;
-        newQuantity = currentState.stock + quantity;
+        newInWarehouse = currentState.inWarehouse + quantity;
       } else if (operation === 'subtract') {
         quantityChange = -quantity;
-        newQuantity = Math.max(0, currentState.stock - quantity);
+        newInWarehouse = Math.max(0, currentState.inWarehouse - quantity);
       } else { // set (reconciliation)
         // For reconciliation: user enters physical count
-        // Stock should be physical - pending, so dashboard shows: (physical - pending) + pending = physical
-        const pendingStock = currentState.pending;
-        newQuantity = Math.max(0, quantity - pendingStock); // Physical count minus pending stock
-        quantityChange = newQuantity - currentState.stock;
-        
-        // Warn if pending stock exceeds physical count (data integrity issue)
-        if (pendingStock > quantity) {
-          console.warn(`⚠️ WARNING: Reconciliation for ${sku} - Pending stock (${pendingStock}) exceeds physical count (${quantity}). This may indicate a data integrity issue.`);
-        }
+        // in_warehouse should be set to physical count
+        newInWarehouse = Math.max(0, quantity);
+        quantityChange = newInWarehouse - currentState.inWarehouse;
         
         reconciliationDetails = {
           physicalCount: quantity,
-          pendingStock: pendingStock,
-          stock: newQuantity
+          pendingStock: currentState.pendingConsult + currentState.pendingReview,
+          stock: newInWarehouse
         };
-        console.log(`📊 Reconciliation for ${sku}: Physical=${quantity}, Pending=${pendingStock}, Stock=${newQuantity} (dashboard will show ${newQuantity}+${pendingStock}=${quantity})`);
+        console.log(`📊 Reconciliation for ${sku}: Physical=${quantity}, in_warehouse=${newInWarehouse}`);
       }
 
-      // Ensure no negative stock
-      if (newQuantity < 0) newQuantity = 0;
+      // Ensure no negative in_warehouse
+      if (newInWarehouse < 0) newInWarehouse = 0;
+      
+      // 5. Handle backorder deduction when stock is added
+      const backorderBefore = currentState.backorder;
+      let backorderAfter = backorderBefore;
+      if (quantityChange > 0 && backorderBefore > 0) {
+        // Stock was added, deduct from backorder (up to the amount added)
+        backorderAfter = Math.max(0, backorderBefore - quantityChange);
+      }
+      
+      // Calculate available_for_purchase
+      const availableAfter = Math.max(0, newInWarehouse - currentState.pendingConsult - currentState.pendingReview - currentState.processing);
 
       // 5. Log to Database (Procurement History & Activity Log) - Create this first so we can reference it in transaction
       let procurementRecord;
@@ -103,8 +118,8 @@ export async function POST(request: Request) {
           singleSkuId: singleSku.id,
           operation,
           quantity,
-          previousQuantity: currentState.stock,
-          newQuantity,
+          previousQuantity: currentState.inWarehouse, // Use in_warehouse
+          newQuantity: newInWarehouse, // Use in_warehouse
           notes,
           createdBy: userId
         });
@@ -126,10 +141,22 @@ export async function POST(request: Request) {
           singleSkuId: singleSku.id,
           transactionType,
           quantityChange,
-          stockBefore: currentState.stock,
-          stockAfter: newQuantity,
-          pendingBefore: currentState.pending,
-          pendingAfter: currentState.pending, // Pending stock unchanged for manual updates
+          // Legacy fields
+          stockBefore: currentState.inWarehouse,
+          stockAfter: newInWarehouse,
+          pendingBefore: currentState.pendingConsult + currentState.pendingReview,
+          pendingAfter: currentState.pendingConsult + currentState.pendingReview, // Pending unchanged for manual updates
+          // New fields
+          inWarehouseBefore: currentState.inWarehouse,
+          inWarehouseAfter: newInWarehouse,
+          processingBefore: currentState.processing,
+          processingAfter: currentState.processing, // Processing unchanged
+          pendingConsultBefore: currentState.pendingConsult,
+          pendingConsultAfter: currentState.pendingConsult, // Pending unchanged
+          pendingReviewBefore: currentState.pendingReview,
+          pendingReviewAfter: currentState.pendingReview, // Pending unchanged
+          backorderBefore,
+          backorderAfter,
           sourceType: 'manual',
           sourceId: procurementRecord.id,
           createdBy: userId,
@@ -137,11 +164,13 @@ export async function POST(request: Request) {
             operation,
             quantity,
             notes,
-            procurementUpdateId: procurementRecord.id
+            procurementUpdateId: procurementRecord.id,
+            availableForPurchase: availableAfter,
+            backorderDeducted: backorderBefore - backorderAfter
           }
         });
         
-        console.log(`✅ Created transaction for ${sku}: ${currentState.stock}→${newQuantity}`);
+        console.log(`✅ Created transaction for ${sku}: in_warehouse ${currentState.inWarehouse}→${newInWarehouse}, backorder ${backorderBefore}→${backorderAfter}, available=${availableAfter}`);
       } catch (error) {
         console.error(`❌ Failed to create transaction for ${sku}:`, error);
         await import('@/lib/db/queries').then(m => m.logActivity({
@@ -165,9 +194,11 @@ export async function POST(request: Request) {
       return NextResponse.json({
         success: true,
         sku,
-        newLocalQuantity: newQuantity,
-        inventory: { [sku]: newQuantity }, // Partial update response
+        newLocalQuantity: newInWarehouse,
+        inventory: { [sku]: newInWarehouse }, // Partial update response
         reconciliationDetails, // Only present for reconciliation (set operation)
+        availableForPurchase: availableAfter,
+        backorder: backorderAfter
       });
 
     } else {

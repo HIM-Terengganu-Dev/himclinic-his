@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingStockByOrder, getPendingStockByOrderFromTransactions } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingStockByOrder, getPendingStockByOrderFromTransactions, getOrderCurrentStatus } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
 // Disable body parsing to get raw body for signature verification
@@ -142,6 +142,12 @@ export async function POST(request: Request) {
             return await handlePendingStatus(orderId, payload, request, status);
         }
 
+        // Handle 'nv-pending-pickup' status: Final stage that deducts from in_warehouse
+        // This is the ONLY webhook that deducts from in_warehouse
+        if (status === 'nv-pending-pickup') {
+            return await handleNvPendingPickup(orderId, payload, request);
+        }
+
         // Only process 'processing' status orders (paid orders that need stock deduction)
         if (status !== 'processing') {
             return NextResponse.json({ success: true, message: `Order status is ${status}, skipping stock update` });
@@ -210,10 +216,9 @@ export async function POST(request: Request) {
         const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
 
         // Track what needs to be deducted
-        // For combo SKUs, we need to manually deduct component single SKUs
-        // For direct single SKU orders, WooCommerce already deducted them
+        // IMPORTANT: System no longer reads from WooCommerce - HIS system deducts ALL stock (both single SKU and combo components)
         const totalDeductions: Record<string, number> = {};
-        const directSingleSkuOrders: Record<string, number> = {}; // Track SKUs directly ordered (WC-side)
+        const directSingleSkuOrders: Record<string, number> = {}; // Track SKUs directly ordered (HIS will deduct)
         const singleSkuDeductions: Array<{ sku: string; quantity: number; wcProductId: number }> = [];
         const comboSkusInOrder: Array<{ sku: string; quantity: number }> = [];
 
@@ -228,10 +233,20 @@ export async function POST(request: Request) {
 
             // Validate against database: Check if it's a single SKU
             if (singleSkuMap.has(sku)) {
-                // Direct single SKU order: WooCommerce already deducted stock
+                // Direct single SKU order: HIS system will deduct stock (no longer relying on WC)
                 totalDeductions[sku] = (totalDeductions[sku] || 0) + quantity;
-                directSingleSkuOrders[sku] = (directSingleSkuOrders[sku] || 0) + quantity; // Track direct orders separately
-                console.log(`✅ Found single SKU ${sku} in database, quantity: ${quantity} (WC already deducted)`);
+                directSingleSkuOrders[sku] = (directSingleSkuOrders[sku] || 0) + quantity;
+                
+                // Add to singleSkuDeductions so it gets deducted by HIS system
+                const singleSku = singleSkuMap.get(sku);
+                if (singleSku && singleSku.woocommerce_product_id) {
+                    singleSkuDeductions.push({
+                        sku,
+                        quantity,
+                        wcProductId: singleSku.woocommerce_product_id
+                    });
+                }
+                console.log(`✅ Found single SKU ${sku} in database, quantity: ${quantity} (HIS will deduct)`);
             } 
             // Validate against database: Check if it's a combo SKU
             else if (comboSkuMap.has(sku)) {
@@ -289,140 +304,111 @@ export async function POST(request: Request) {
             return NextResponse.json({ success: true, message: 'No valid SKUs found in order' });
         }
 
-        // Step 1: Create transactions for WC-side deductions (direct single SKU orders)
-        // WC already deducted these, we just record the transaction
-        const wcSideDeductions: Array<{ sku: string; previousStock: number; newStock: number; deductedQty: number; isWcSide: true }> = [];
-        
-        // Track single SKUs that were directly ordered (not components of combos)
-        // IMPORTANT: A SKU can be BOTH directly ordered AND a component of a combo.
-        // In that case, the directly ordered quantity is WC-side, and the component quantity is HIS-side.
-        const directSingleSkus = Object.keys(directSingleSkuOrders);
-
-        // Check if order was from pending (stock already deducted in pending transaction)
-        const wasFromPending = previousPendingLog !== null;
-        
-        for (const sku of directSingleSkus) {
-            const deductedQty = directSingleSkuOrders[sku]; // Only the directly ordered quantity (WC-side)
-            const singleSku = singleSkuMap.get(sku);
-            if (singleSku) {
-                try {
-                    // Get current stock state from transactions
-                    const currentState = await getCurrentStockState(sku);
-                    
-                    let stockBefore: number;
-                    let stockAfter: number;
-                    let pendingBefore: number;
-                    let pendingAfter: number;
-                    
-                    if (wasFromPending) {
-                        // Stock was already deducted in pending transaction
-                        // Just remove from pending, stock unchanged
-                        stockBefore = currentState.stock;
-                        stockAfter = currentState.stock; // No change
-                        pendingBefore = currentState.pending;
-                        pendingAfter = Math.max(0, pendingBefore - deductedQty); // Remove this order's pending
-                    } else {
-                        // Stock needs to be deducted now
-                        stockBefore = currentState.stock;
-                        stockAfter = Math.max(0, stockBefore - deductedQty);
-                        pendingBefore = currentState.pending;
-                        pendingAfter = pendingBefore; // No pending change for direct processing
-                    }
-                    
-                    // Create transaction
-                    await createStockTransaction({
-                        sku,
-                        singleSkuId: singleSku.id,
-                        transactionType: 'order_processing',
-                        quantityChange: wasFromPending ? 0 : -deductedQty,
-                        stockBefore,
-                        stockAfter,
-                        pendingBefore,
-                        pendingAfter,
-                        sourceType: 'order',
-                        sourceId: orderId,
-                        sourceEvent: 'order.processing',
-                        details: {
-                            deductedQty,
-                            isWcSide: true,
-                            wasFromPending,
-                            orderId
-                        }
-                    });
-                    
-                    wcSideDeductions.push({
-                        sku,
-                        previousStock: stockBefore,
-                        newStock: stockAfter,
-                        deductedQty,
-                        isWcSide: true
-                    });
-                    
-                    console.log(`✅ Created transaction for WC-side deduction ${sku}: ${stockBefore}→${stockAfter}, pending: ${pendingBefore}→${pendingAfter}`);
-                } catch (e: any) {
-                    console.error(`❌ Failed to create transaction for WC-side deduction ${sku}:`, e.message);
-                }
-            }
-        }
-
-        // Step 2: Deduct component single SKU stocks for combo SKU orders
-        // WooCommerce doesn't know about component breakdown, so we need to deduct them
-        // IMPORTANT: If order was in pending-consult or pending-review, components were ALREADY deducted,
-        // so we should NOT deduct again - just remove pending tracking
-        const singleSkuUpdates: Array<{ sku: string; previousStock: number; newStock: number; isWcSide?: false }> = [];
+        // Step 1 & 2: Deduct ALL single SKU stocks (both direct orders and combo components)
+        // IMPORTANT: System no longer reads from WooCommerce - HIS system deducts everything
+        // Process all single SKU deductions together (direct orders + combo components)
+        const singleSkuUpdates: Array<{ sku: string; previousStock: number; newStock: number; deductedQty: number; isWcSide: false; isComboComponent: boolean }> = [];
         
         if (singleSkuDeductions.length > 0) {
             const wasPending = previousPendingLog !== null;
             const previousPendingStatus = previousPendingConsultLog ? 'pending-consult' : (previousPendingReviewLog ? 'pending-review' : null);
-            console.log(`Processing component single SKU stocks for ${singleSkuDeductions.length} component deductions${wasPending ? ` (order was in ${previousPendingStatus}, components already deducted - will skip deduction and remove pending tracking)` : ' (will deduct components)'}`);
+            console.log(`Processing ${singleSkuDeductions.length} single SKU deductions (direct orders + combo components)${wasPending ? ` (order was in ${previousPendingStatus}, stock already deducted - will skip deduction and remove pending tracking)` : ' (will deduct stock)'}`);
             
-            // Group deductions by SKU (in case multiple combos use same component)
+            // Group deductions by SKU (in case a SKU is both directly ordered AND a combo component)
             const deductionMap = new Map<string, number>();
             const wcIdMap = new Map<string, number>();
+            const isComboComponentMap = new Map<string, boolean>(); // Track if SKU is a combo component
             
             for (const deduction of singleSkuDeductions) {
                 deductionMap.set(deduction.sku, (deductionMap.get(deduction.sku) || 0) + deduction.quantity);
                 wcIdMap.set(deduction.sku, deduction.wcProductId);
+                // Check if this SKU is a direct order (not just a combo component)
+                const isDirectOrder = directSingleSkuOrders.hasOwnProperty(deduction.sku);
+                // If already marked as combo component, keep it; otherwise mark based on whether it's a direct order
+                if (!isComboComponentMap.has(deduction.sku)) {
+                    isComboComponentMap.set(deduction.sku, !isDirectOrder);
+                }
             }
 
-            // Process each component SKU
+            // Process each SKU (both direct orders and combo components)
             for (const [sku, totalQty] of deductionMap.entries()) {
                 const wcProductId = wcIdMap.get(sku);
                 if (!wcProductId) continue;
+
+                const isComboComponent = isComboComponentMap.get(sku) || false;
 
                 try {
                     // Get current stock state from transactions
                     const currentState = await getCurrentStockState(sku);
                     
+                    // NEW BEHAVIOR: Do NOT deduct from in_warehouse, only move from pending to processing or add to processing
+                    const inWarehouseBefore = currentState.inWarehouse;
+                    const inWarehouseAfter = inWarehouseBefore; // No change to in_warehouse
+                    
                     // Check if there's a pending transaction for this order/SKU
-                    const pendingTransactions = await getStockTransactions({
+                    const pendingConsultTransactions = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: status === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review',
+                        transactionType: 'order_pending_consult',
+                        limit: 1
+                    });
+                    const pendingReviewTransactions = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_pending_review',
                         limit: 1
                     });
                     
-                    const wasFromPending = pendingTransactions.length > 0;
-                    const pendingQty = wasFromPending ? (pendingTransactions[0].pending_after - pendingTransactions[0].pending_before) : 0;
+                    const wasFromPendingConsult = pendingConsultTransactions.length > 0;
+                    const wasFromPendingReview = pendingReviewTransactions.length > 0;
+                    const wasFromPending = wasFromPendingConsult || wasFromPendingReview;
                     
-                    let stockBefore: number;
-                    let stockAfter: number;
-                    let pendingBefore: number;
-                    let pendingAfter: number;
+                    let pendingConsultQty = 0;
+                    let pendingReviewQty = 0;
+                    if (wasFromPendingConsult) {
+                        pendingConsultQty = pendingConsultTransactions[0].pending_consult_after - pendingConsultTransactions[0].pending_consult_before;
+                    }
+                    if (wasFromPendingReview) {
+                        pendingReviewQty = pendingReviewTransactions[0].pending_review_after - pendingReviewTransactions[0].pending_review_before;
+                    }
+                    const totalPendingQty = pendingConsultQty + pendingReviewQty;
                     
-                    if (wasFromPending && pendingQty > 0) {
-                        // Component was already deducted in pending transaction
-                        // Just remove from pending, stock unchanged
-                        stockBefore = currentState.stock;
-                        stockAfter = currentState.stock; // No change
-                        pendingBefore = currentState.pending;
-                        pendingAfter = Math.max(0, pendingBefore - pendingQty); // Remove this order's pending
+                    // Get current status counts
+                    const pendingConsultBefore = currentState.pendingConsult;
+                    const pendingReviewBefore = currentState.pendingReview;
+                    const processingBefore = currentState.processing;
+                    
+                    let pendingConsultAfter = pendingConsultBefore;
+                    let pendingReviewAfter = pendingReviewBefore;
+                    let processingAfter = processingBefore;
+                    
+                    if (wasFromPending && totalPendingQty > 0) {
+                        // Move from pending to processing
+                        if (wasFromPendingConsult) {
+                            pendingConsultAfter = Math.max(0, pendingConsultBefore - pendingConsultQty);
+                        }
+                        if (wasFromPendingReview) {
+                            pendingReviewAfter = Math.max(0, pendingReviewBefore - pendingReviewQty);
+                        }
+                        processingAfter = processingBefore + totalPendingQty; // Add to processing
                     } else {
-                        // Component was NOT deducted yet - deduct now
-                        stockBefore = currentState.stock;
-                        stockAfter = Math.max(0, stockBefore - totalQty);
-                        pendingBefore = currentState.pending;
-                        pendingAfter = pendingBefore; // No pending change for direct processing
+                        // Order goes directly to processing (no prior pending)
+                        processingAfter = processingBefore + totalQty; // Add directly to processing
+                    }
+                    
+                    // Calculate available_for_purchase
+                    const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
+                    
+                    // Backorder logic: if available_for_purchase becomes 0, add to backorder
+                    const backorderBefore = currentState.backorder;
+                    let backorderAfter = backorderBefore;
+                    if (availableAfter === 0 && processingAfter > processingBefore) {
+                        // Available is 0 and we're adding to processing, check if we need to add backorder
+                        const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+                        if (availableBefore === 0) {
+                            // Already at 0, add to backorder
+                            backorderAfter = backorderBefore + (processingAfter - processingBefore);
+                        }
                     }
                     
                     // Create transaction
@@ -431,34 +417,53 @@ export async function POST(request: Request) {
                         sku,
                         singleSkuId: singleSku?.id,
                         transactionType: 'order_processing',
-                        quantityChange: wasFromPending ? 0 : -totalQty,
-                        stockBefore,
-                        stockAfter,
-                        pendingBefore,
-                        pendingAfter,
+                        quantityChange: 0, // No change to in_warehouse
+                        // Legacy fields (for backward compatibility)
+                        stockBefore: inWarehouseBefore,
+                        stockAfter: inWarehouseAfter,
+                        pendingBefore: pendingConsultBefore + pendingReviewBefore,
+                        pendingAfter: pendingConsultAfter + pendingReviewAfter,
+                        // New fields
+                        inWarehouseBefore,
+                        inWarehouseAfter,
+                        processingBefore,
+                        processingAfter,
+                        pendingConsultBefore,
+                        pendingConsultAfter,
+                        pendingReviewBefore,
+                        pendingReviewAfter,
+                        backorderBefore,
+                        backorderAfter,
                         sourceType: 'order',
                         sourceId: orderId,
                         sourceEvent: 'order.processing',
                         details: {
-                            deductedQty: totalQty,
-                            isWcSide: false,
-                            hisWrote: true,
+                            quantity: totalQty,
                             wasFromPending,
+                            wasFromPendingConsult,
+                            wasFromPendingReview,
                             orderId,
-                            isComboComponent: true
+                            isComboComponent,
+                            availableForPurchase: availableAfter
                         }
                     });
                     
                     singleSkuUpdates.push({
                         sku,
-                        previousStock: stockBefore,
-                        newStock: stockAfter,
-                        isWcSide: false
+                        previousStock: inWarehouseBefore,
+                        newStock: inWarehouseAfter,
+                        deductedQty: totalQty,
+                        isWcSide: false,
+                        isComboComponent
                     });
                     
-                    console.log(`✅ Created transaction for combo component ${sku}: ${stockBefore}→${stockAfter}, pending: ${pendingBefore}→${pendingAfter}`);
+                    const skuType = isComboComponent ? 'combo component' : 'direct order';
+                    const statusChange = wasFromPending 
+                        ? `moved from pending (${pendingConsultBefore + pendingReviewBefore}) to processing (${processingAfter})`
+                        : `added to processing (${processingAfter})`;
+                    console.log(`✅ Created transaction for ${skuType} ${sku}: in_warehouse=${inWarehouseAfter} (no change), ${statusChange}, available=${availableAfter}`);
                 } catch (e: any) {
-                    console.error(`❌ Failed to create transaction for combo component ${sku}:`, e.message);
+                    console.error(`❌ Failed to create transaction for ${sku}:`, e.message);
                 }
             }
         }
@@ -467,12 +472,16 @@ export async function POST(request: Request) {
         // No need to manually remove pending tracking
 
         console.log(`Processing webhook for Order #${orderId}: Affected ${Object.keys(totalDeductions).length} single SKUs`);
-        console.log(`  - Direct single SKUs (WC-side): ${wcSideDeductions.length}`, wcSideDeductions.map(d => d.sku));
-        if (comboSkusInOrder.length > 0) {
-            console.log(`  - ${comboSkusInOrder.length} combo SKU(s) ordered (component stocks deducted)`);
+        const directOrders = singleSkuUpdates.filter(u => !u.isComboComponent);
+        const comboComponents = singleSkuUpdates.filter(u => u.isComboComponent);
+        if (directOrders.length > 0) {
+            console.log(`  - ${directOrders.length} direct single SKU(s) deducted by HIS system:`, directOrders.map(d => d.sku));
         }
-        if (singleSkuUpdates.length > 0) {
-            console.log(`  - ${singleSkuUpdates.length} component single SKU(s) deducted by HIS system:`, singleSkuUpdates.map(d => d.sku));
+        if (comboSkusInOrder.length > 0) {
+            console.log(`  - ${comboSkusInOrder.length} combo SKU(s) ordered`);
+        }
+        if (comboComponents.length > 0) {
+            console.log(`  - ${comboComponents.length} combo component single SKU(s) deducted by HIS system:`, comboComponents.map(d => d.sku));
         }
 
         // Note: Combo availability is calculated from transactions, no need to update WooCommerce
@@ -511,6 +520,7 @@ export async function POST(request: Request) {
                 entityName: `Order #${orderId}`,
                 entitySku: firstSku, // Show first SKU in order for display
                 status: status,
+                currentStatus: 'processing', // Track current status
                 affectedSkus: orderSkus,
                 comboUpdates: comboUpdates.map(u => ({ 
                     sku: u.sku, 
@@ -525,27 +535,19 @@ export async function POST(request: Request) {
                         quantity: item.quantity
                     })),
                     comboSkusOrdered: comboSkusInOrder,
-                    componentDeductions: [
-                        ...wcSideDeductions.map(u => ({
-                            sku: u.sku,
-                            previousStock: u.previousStock,
-                            newStock: u.newStock,
-                            deductedQty: u.deductedQty,
-                            isWcSide: true, // WC deducted, HIS only tracked (no write)
-                            hisWrote: false // HIS did NOT write
-                        })),
-                        ...singleSkuUpdates.map(u => ({
-                            sku: u.sku,
-                            previousStock: u.previousStock,
-                            newStock: u.newStock,
-                            isWcSide: false, // HIS deducted (wrote)
-                            hisWrote: true // HIS wrote this change
-                        }))
-                    ],
+                    componentDeductions: singleSkuUpdates.map(u => ({
+                        sku: u.sku,
+                        previousStock: u.previousStock,
+                        newStock: u.newStock,
+                        deductedQty: u.deductedQty,
+                        isWcSide: false, // HIS system deducts everything (no longer reads from WC)
+                        hisWrote: true, // HIS wrote
+                        isComboComponent: u.isComboComponent
+                    })),
                     affectedSingleSkus: Object.keys(totalDeductions),
                     note: comboSkusInOrder.length > 0 
-                        ? 'Combo SKU(s) ordered. System deducted component single SKU stocks via transactions.'
-                        : 'Single SKU(s) ordered. Stock deducted via transactions.'
+                        ? 'Combo SKU(s) ordered. Order moved to processing (no in_warehouse deduction). Component stocks tracked in processing status.'
+                        : 'Single SKU(s) ordered. Order moved to processing (no in_warehouse deduction). Stock tracked in processing status.'
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,
@@ -558,8 +560,7 @@ export async function POST(request: Request) {
             console.error(`❌ CRITICAL: Failed to log webhook for Order #${orderId} after stock was deducted!`, {
                 error: logError.message,
                 orderId,
-                componentDeductions: singleSkuUpdates,
-                wcSideDeductions: wcSideDeductions
+                componentDeductions: singleSkuUpdates
             });
             
             // Try to log the error to activity_logs as a fallback
@@ -573,7 +574,6 @@ export async function POST(request: Request) {
                         orderId,
                         error: logError.message,
                         componentDeductions: singleSkuUpdates,
-                        wcSideDeductions: wcSideDeductions,
                         note: 'CRITICAL: Stock was deducted but webhook log failed. This creates unlogged stock changes! Manual reconciliation required.'
                     },
                     success: false,
@@ -644,12 +644,121 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
             }
         }
 
-        // Step 1: Restore component stocks for combo SKU orders (HIS deducted these, so HIS must restore)
-        // For single SKU orders, WC will restore automatically, so we don't need to restore
+        // Step 1: Remove from pending (both single SKU and combo components)
+        // NEW BEHAVIOR: Do NOT restore to in_warehouse (pending doesn't deduct from in_warehouse)
+        // When pending → cancelled: Remove from pending only, no in_warehouse restoration
         const restoredComponentStocks: Array<{ sku: string; previousStock: number; newStock: number; restoredQty: number }> = [];
+        const restoredSingleSkus: Array<{ sku: string; previousStock: number; newStock: number; restoredQty: number }> = [];
         
+        // Step 1a: Remove single SKU from pending (direct orders)
+        if (directSingleSkus.size > 0) {
+            console.log(`Removing ${directSingleSkus.size} direct single SKU(s) from ${previousStatus} in cancelled order`);
+            
+            for (const sku of directSingleSkus) {
+                const singleSku = singleSkuMap.get(sku);
+                if (!singleSku) continue;
+                
+                // Get pending quantity for this order/SKU
+                const pendingTransactions = await getStockTransactions({
+                    sku,
+                    sourceId: orderId,
+                    transactionType: previousStatus === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review',
+                    limit: 1
+                });
+                
+                if (pendingTransactions.length === 0) continue;
+                
+                const pendingQty = previousStatus === 'pending-consult'
+                    ? (pendingTransactions[0].pending_consult_after - pendingTransactions[0].pending_consult_before)
+                    : (pendingTransactions[0].pending_review_after - pendingTransactions[0].pending_review_before);
+                if (pendingQty <= 0) continue;
+                
+                try {
+                    // Get current stock state from database (source of truth)
+                    const currentState = await getCurrentStockState(sku);
+                    
+                    // NEW BEHAVIOR: Do NOT restore to in_warehouse
+                    const inWarehouseBefore = currentState.inWarehouse;
+                    const inWarehouseAfter = inWarehouseBefore; // No change
+                    
+                    // Remove from pending_consult or pending_review
+                    const pendingConsultBefore = currentState.pendingConsult;
+                    const pendingReviewBefore = currentState.pendingReview;
+                    const processingBefore = currentState.processing;
+                    
+                    let pendingConsultAfter = pendingConsultBefore;
+                    let pendingReviewAfter = pendingReviewBefore;
+                    
+                    if (previousStatus === 'pending-consult') {
+                        pendingConsultAfter = Math.max(0, pendingConsultBefore - pendingQty);
+                    } else {
+                        pendingReviewAfter = Math.max(0, pendingReviewBefore - pendingQty);
+                    }
+                    
+                    // Calculate available_for_purchase
+                    const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingBefore);
+                    
+                    // Backorder logic: if available increases and backorder exists, deduct from backorder
+                    const backorderBefore = currentState.backorder;
+                    let backorderAfter = backorderBefore;
+                    const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+                    if (availableAfter > availableBefore && backorderBefore > 0) {
+                        // Available increased, deduct from backorder
+                        backorderAfter = Math.max(0, backorderBefore - (availableAfter - availableBefore));
+                    }
+                    
+                    // Create transaction to remove from pending
+                    await createStockTransaction({
+                        sku,
+                        singleSkuId: singleSku.id,
+                        transactionType: 'order_cancelled',
+                        quantityChange: 0, // No change to in_warehouse
+                        // Legacy fields
+                        stockBefore: inWarehouseBefore,
+                        stockAfter: inWarehouseAfter,
+                        pendingBefore: pendingConsultBefore + pendingReviewBefore,
+                        pendingAfter: pendingConsultAfter + pendingReviewAfter,
+                        // New fields
+                        inWarehouseBefore,
+                        inWarehouseAfter,
+                        processingBefore,
+                        processingAfter: processingBefore, // No change
+                        pendingConsultBefore,
+                        pendingConsultAfter,
+                        pendingReviewBefore,
+                        pendingReviewAfter,
+                        backorderBefore,
+                        backorderAfter,
+                        sourceType: 'order',
+                        sourceId: orderId,
+                        sourceEvent: `order.${payload.status}`,
+                        details: {
+                            removedFromPending: pendingQty,
+                            changeMadeBy: 'HIS',
+                            orderId,
+                            isComboComponent: false,
+                            previousStatus: previousStatus,
+                            availableForPurchase: availableAfter
+                        }
+                    });
+                    
+                    restoredSingleSkus.push({
+                        sku,
+                        previousStock: inWarehouseBefore,
+                        newStock: inWarehouseAfter,
+                        restoredQty: 0 // No restoration, just removal from pending
+                    });
+                    
+                    console.log(`✅ Removed ${pendingQty} from ${previousStatus} for single SKU ${sku}: in_warehouse=${inWarehouseAfter} (no change), available=${availableAfter}`);
+                } catch (e: any) {
+                    console.error(`❌ Failed to remove single SKU ${sku} from pending:`, e.message);
+                }
+            }
+        }
+        
+        // Step 1b: Remove combo component stocks from pending
         if (comboSkusInOrder.length > 0) {
-            console.log(`Restoring component stocks for ${comboSkusInOrder.length} combo SKU(s) in cancelled ${previousStatus} order`);
+            console.log(`Removing component stocks from ${previousStatus} for ${comboSkusInOrder.length} combo SKU(s) in cancelled order`);
             
             // Get all component SKUs that were deducted for combo orders
             const componentRestorations = new Map<string, number>();
@@ -680,48 +789,102 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                 try {
                     // Get current stock state from database (source of truth)
                     const currentState = await getCurrentStockState(sku);
-                    const stockBefore = currentState.stock;
-                    const stockAfter = stockBefore + restoreQty;
                     
-                    // Create transaction to restore stock
+                    // NEW BEHAVIOR: Do NOT restore to in_warehouse
+                    const inWarehouseBefore = currentState.inWarehouse;
+                    const inWarehouseAfter = inWarehouseBefore; // No change
+                    
+                    // Remove from pending_consult or pending_review
+                    const pendingConsultBefore = currentState.pendingConsult;
+                    const pendingReviewBefore = currentState.pendingReview;
+                    const processingBefore = currentState.processing;
+                    
+                    let pendingConsultAfter = pendingConsultBefore;
+                    let pendingReviewAfter = pendingReviewBefore;
+                    
+                    // Get pending quantity for this order/SKU
+                    const pendingTransactions = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: previousStatus === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review',
+                        limit: 1
+                    });
+                    
+                    if (pendingTransactions.length > 0) {
+                        const pendingQty = previousStatus === 'pending-consult' 
+                            ? (pendingTransactions[0].pending_consult_after - pendingTransactions[0].pending_consult_before)
+                            : (pendingTransactions[0].pending_review_after - pendingTransactions[0].pending_review_before);
+                        
+                        if (previousStatus === 'pending-consult') {
+                            pendingConsultAfter = Math.max(0, pendingConsultBefore - pendingQty);
+                        } else {
+                            pendingReviewAfter = Math.max(0, pendingReviewBefore - pendingQty);
+                        }
+                    }
+                    
+                    // Calculate available_for_purchase
+                    const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingBefore);
+                    
+                    // Backorder logic: if available increases and backorder exists, deduct from backorder
+                    const backorderBefore = currentState.backorder;
+                    let backorderAfter = backorderBefore;
+                    const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+                    if (availableAfter > availableBefore && backorderBefore > 0) {
+                        // Available increased, deduct from backorder
+                        backorderAfter = Math.max(0, backorderBefore - (availableAfter - availableBefore));
+                    }
+                    
+                    // Create transaction to remove from pending
                     await createStockTransaction({
                         sku,
                         singleSkuId: singleSku.id,
                         transactionType: 'order_cancelled',
-                        quantityChange: restoreQty,
-                        stockBefore,
-                        stockAfter,
-                        pendingBefore: currentState.pending,
-                        pendingAfter: currentState.pending, // No pending change for cancellation
+                        quantityChange: 0, // No change to in_warehouse
+                        // Legacy fields
+                        stockBefore: inWarehouseBefore,
+                        stockAfter: inWarehouseAfter,
+                        pendingBefore: pendingConsultBefore + pendingReviewBefore,
+                        pendingAfter: pendingConsultAfter + pendingReviewAfter,
+                        // New fields
+                        inWarehouseBefore,
+                        inWarehouseAfter,
+                        processingBefore,
+                        processingAfter: processingBefore, // No change
+                        pendingConsultBefore,
+                        pendingConsultAfter,
+                        pendingReviewBefore,
+                        pendingReviewAfter,
+                        backorderBefore,
+                        backorderAfter,
                         sourceType: 'order',
                         sourceId: orderId,
                         sourceEvent: `order.${payload.status}`,
                         details: {
-                            restoredQty: restoreQty,
+                            removedFromPending: restoreQty,
                             changeMadeBy: 'HIS',
                             orderId,
                             isComboComponent: true,
-                            previousStatus: previousStatus
+                            previousStatus: previousStatus,
+                            availableForPurchase: availableAfter
                         }
                     });
                     
                     restoredComponentStocks.push({
                         sku,
-                        previousStock: stockBefore,
-                        newStock: stockAfter,
-                        restoredQty: restoreQty
+                        previousStock: inWarehouseBefore,
+                        newStock: inWarehouseAfter,
+                        restoredQty: 0 // No restoration, just removal from pending
                     });
                     
-                    console.log(`✅ Restored ${restoreQty} to combo component ${sku} (${stockBefore} → ${stockAfter}) via database transaction`);
+                    console.log(`✅ Removed ${restoreQty} from ${previousStatus} for combo component ${sku}: in_warehouse=${inWarehouseAfter} (no change), available=${availableAfter}`);
                 } catch (e: any) {
-                    console.error(`❌ Failed to restore component ${sku}:`, e.message);
+                    console.error(`❌ Failed to remove component ${sku} from pending:`, e.message);
                 }
             }
         }
 
-        // Step 2: Remove pending stock tracking (after restoring combo components)
-        // This creates transactions in stock_transactions to remove pending (replaces legacy pending_consultation_stock table)
-        await removePendingStockByOrder(orderId);
+        // Step 2: Pending stock removal is handled directly in Step 1 via transactions
+        // No need to call removePendingStockByOrder - we handle it in the transactions above
 
         // Step 3: Read current stock from database for reporting
         const stockReadings: Array<{ sku: string; wcStock: number }> = [];
@@ -800,7 +963,7 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                 if (sData) {
                     try {
                         const currentState = await getCurrentStockState(s);
-                        stockMap[s] = currentState.stock;
+                        stockMap[s] = currentState.inWarehouse; // Use in_warehouse for combo calculations
                     } catch (e) {
                         console.warn(`Failed to fetch stock for component ${s} from database`, e);
                         stockMap[s] = 0;
@@ -847,6 +1010,7 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                 entityName: `Order #${orderId}`,
                 entitySku: firstSku,
                 status: payload.status,
+                currentStatus: 'cancelled', // Track current status
                 affectedSkus: orderSkus,
                 comboUpdates: comboUpdates.map(u => ({ 
                     sku: u.sku, 
@@ -862,17 +1026,24 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                         quantity: item.quantity
                     })),
                     stockReadings: stockReadings,
-                    componentRestorations: restoredComponentStocks.map(r => ({
-                        sku: r.sku,
-                        previousStock: r.previousStock,
-                        newStock: r.newStock,
-                        restoredQty: r.restoredQty,
-                        changeMadeBy: 'HIS' // HIS restored combo component stocks
-                    })),
+                    componentRestorations: [
+                        ...restoredSingleSkus.map(r => ({
+                            sku: r.sku,
+                            previousStock: r.previousStock,
+                            newStock: r.newStock,
+                            restoredQty: r.restoredQty,
+                            changeMadeBy: 'HIS' // HIS restored single SKU stocks
+                        })),
+                        ...restoredComponentStocks.map(r => ({
+                            sku: r.sku,
+                            previousStock: r.previousStock,
+                            newStock: r.newStock,
+                            restoredQty: r.restoredQty,
+                            changeMadeBy: 'HIS' // HIS restored combo component stocks
+                        }))
+                    ],
                     comboSkusCancelled: comboSkusInOrder,
-                    note: comboSkusInOrder.length > 0
-                        ? `Order cancelled from ${previousStatus} status (${statusLabel}). Payment was made, so single SKU stock NOT auto-restored (refund handled manually). Combo component stocks restored by HIS system. Pending stock tracking removed. Combo availability updated.`
-                        : `Order cancelled from ${previousStatus} status (${statusLabel}). Payment was made, so stock NOT auto-restored. Refund must be handled manually via procurement tab. Pending stock tracking removed. Combo availability updated to reflect current stock state.`
+                    note: `Order cancelled from ${previousStatus} status (${statusLabel}). Removed from pending (no in_warehouse restoration). Combo availability updated.`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,
@@ -884,10 +1055,9 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
 
         return NextResponse.json({
             success: true,
-            message: comboSkusInOrder.length > 0
-                ? `${statusLabel} cancellation processed. Combo component stocks restored. Single SKU stock NOT restored (refund handled manually).`
-                : `${statusLabel} cancellation processed. Stock NOT restored (refund handled manually).`,
+            message: `${statusLabel} cancellation processed. Removed from pending (no in_warehouse restoration).`,
             stockReadings: stockReadings.length,
+            restoredSingleSkus: restoredSingleSkus.length,
             restoredComponents: restoredComponentStocks.length,
             comboUpdates: comboUpdates.length
         });
@@ -956,13 +1126,38 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                         // Get current stock state from transactions (source of truth)
                         const currentState = await getCurrentStockState(sku);
                         
-                        // WC already deducted stock, so current stock is after deduction
-                        const stockAfter = currentState.stock;
-                        const stockBefore = stockAfter + quantity; // Stock before WC deduction
+                        // NEW BEHAVIOR: Do NOT deduct from in_warehouse, only track pending counts
+                        const inWarehouseBefore = currentState.inWarehouse;
+                        const inWarehouseAfter = inWarehouseBefore; // No change to in_warehouse
                         
-                        // Calculate pending stock from other orders (before adding this order's pending)
-                        const pendingBefore = currentState.pending;
-                        const pendingAfter = pendingBefore + quantity; // Add this order's pending
+                        // Update pending_consult or pending_review based on status
+                        const pendingConsultBefore = currentState.pendingConsult;
+                        const pendingReviewBefore = currentState.pendingReview;
+                        const processingBefore = currentState.processing;
+                        
+                        let pendingConsultAfter = pendingConsultBefore;
+                        let pendingReviewAfter = pendingReviewBefore;
+                        
+                        if (status === 'pending-consult') {
+                            pendingConsultAfter = pendingConsultBefore + quantity;
+                        } else {
+                            pendingReviewAfter = pendingReviewBefore + quantity;
+                        }
+                        
+                        // Calculate available_for_purchase to check if we need to add backorder
+                        const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+                        const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingBefore);
+                        
+                        // Backorder logic: if available_for_purchase becomes 0, add to backorder
+                        const backorderBefore = currentState.backorder;
+                        let backorderAfter = backorderBefore;
+                        if (availableAfter === 0 && availableBefore > 0) {
+                            // Available went from >0 to 0, add to backorder
+                            backorderAfter = backorderBefore + quantity;
+                        } else if (availableAfter === 0 && availableBefore === 0) {
+                            // Already at 0, add to backorder
+                            backorderAfter = backorderBefore + quantity;
+                        }
                         
                         // Create transaction for pending-consult/pending-review
                         const transactionType = status === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review';
@@ -970,11 +1165,23 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                             sku,
                             singleSkuId: singleSku.id,
                             transactionType,
-                            quantityChange: -quantity, // Negative = deduction
-                            stockBefore,
-                            stockAfter,
-                            pendingBefore,
-                            pendingAfter,
+                            quantityChange: 0, // No change to in_warehouse
+                            // Legacy fields (for backward compatibility)
+                            stockBefore: inWarehouseBefore,
+                            stockAfter: inWarehouseAfter,
+                            pendingBefore: pendingConsultBefore + pendingReviewBefore,
+                            pendingAfter: pendingConsultAfter + pendingReviewAfter,
+                            // New fields
+                            inWarehouseBefore,
+                            inWarehouseAfter,
+                            processingBefore,
+                            processingAfter: processingBefore, // No change
+                            pendingConsultBefore,
+                            pendingConsultAfter,
+                            pendingReviewBefore,
+                            pendingReviewAfter,
+                            backorderBefore,
+                            backorderAfter,
                             sourceType: 'order',
                             sourceId: orderId,
                             sourceEvent: `order.${status}`,
@@ -982,18 +1189,19 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                                 quantity,
                                 status,
                                 isCombo: false,
-                                orderId
+                                orderId,
+                                availableForPurchase: availableAfter
                             }
                         });
                         
                         pendingStockUpdates.push({
                             sku,
                             quantity,
-                            wcStock: stockAfter,
+                            wcStock: inWarehouseAfter, // Use in_warehouse for display
                             isCombo: false
                         });
                         
-                        console.log(`✅ Created transaction for single SKU ${sku}: ${stockBefore}→${stockAfter}, pending: ${pendingBefore}→${pendingAfter}`);
+                        console.log(`✅ Created transaction for single SKU ${sku}: in_warehouse=${inWarehouseAfter} (no change), ${status}=${status === 'pending-consult' ? pendingConsultAfter : pendingReviewAfter}, available=${availableAfter}, backorder=${backorderAfter}`);
                     } catch (e: any) {
                         console.error(`❌ Failed to create transaction for ${sku}:`, e.message);
                     }
@@ -1035,13 +1243,38 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                                 // Get current stock state from transactions (source of truth)
                                 const currentState = await getCurrentStockState(comp.sku);
                                 
-                                // Calculate new stock (deduct)
-                                const stockBefore = currentState.stock;
-                                const stockAfter = Math.max(0, stockBefore - deductedQty);
+                                // NEW BEHAVIOR: Do NOT deduct from in_warehouse, only track pending counts
+                                const inWarehouseBefore = currentState.inWarehouse;
+                                const inWarehouseAfter = inWarehouseBefore; // No change to in_warehouse
                                 
-                                // Calculate pending stock
-                                const pendingBefore = currentState.pending;
-                                const pendingAfter = pendingBefore + deductedQty; // Add this order's pending
+                                // Update pending_consult or pending_review based on status
+                                const pendingConsultBefore = currentState.pendingConsult;
+                                const pendingReviewBefore = currentState.pendingReview;
+                                const processingBefore = currentState.processing;
+                                
+                                let pendingConsultAfter = pendingConsultBefore;
+                                let pendingReviewAfter = pendingReviewBefore;
+                                
+                                if (status === 'pending-consult') {
+                                    pendingConsultAfter = pendingConsultBefore + deductedQty;
+                                } else {
+                                    pendingReviewAfter = pendingReviewBefore + deductedQty;
+                                }
+                                
+                                // Calculate available_for_purchase to check if we need to add backorder
+                                const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+                                const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingBefore);
+                                
+                                // Backorder logic: if available_for_purchase becomes 0, add to backorder
+                                const backorderBefore = currentState.backorder;
+                                let backorderAfter = backorderBefore;
+                                if (availableAfter === 0 && availableBefore > 0) {
+                                    // Available went from >0 to 0, add to backorder
+                                    backorderAfter = backorderBefore + deductedQty;
+                                } else if (availableAfter === 0 && availableBefore === 0) {
+                                    // Already at 0, add to backorder
+                                    backorderAfter = backorderBefore + deductedQty;
+                                }
                                 
                                 // Create transaction for pending-consult/pending-review (combo component)
                                 const transactionType = status === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review';
@@ -1049,11 +1282,23 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                                     sku: comp.sku,
                                     singleSkuId: componentSku.id,
                                     transactionType,
-                                    quantityChange: -deductedQty, // Negative = deduction
-                                    stockBefore,
-                                    stockAfter,
-                                    pendingBefore,
-                                    pendingAfter,
+                                    quantityChange: 0, // No change to in_warehouse
+                                    // Legacy fields (for backward compatibility)
+                                    stockBefore: inWarehouseBefore,
+                                    stockAfter: inWarehouseAfter,
+                                    pendingBefore: pendingConsultBefore + pendingReviewBefore,
+                                    pendingAfter: pendingConsultAfter + pendingReviewAfter,
+                                    // New fields
+                                    inWarehouseBefore,
+                                    inWarehouseAfter,
+                                    processingBefore,
+                                    processingAfter: processingBefore, // No change
+                                    pendingConsultBefore,
+                                    pendingConsultAfter,
+                                    pendingReviewBefore,
+                                    pendingReviewAfter,
+                                    backorderBefore,
+                                    backorderAfter,
                                     sourceType: 'order',
                                     sourceId: orderId,
                                     sourceEvent: `order.${status}`,
@@ -1062,20 +1307,21 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                                         status,
                                         isCombo: true,
                                         comboSku: sku,
-                                        orderId
+                                        orderId,
+                                        availableForPurchase: availableAfter
                                     }
                                 });
                                 
                                 pendingStockUpdates.push({
                                     sku: comp.sku,
                                     quantity: deductedQty,
-                                    wcStock: stockAfter,
+                                    wcStock: inWarehouseAfter, // Use in_warehouse for display
                                     isCombo: false // Track as component, not combo
                                 });
                                 
-                                console.log(`✅ Created transaction for combo component ${comp.sku}: ${stockBefore}→${stockAfter}, pending: ${pendingBefore}→${pendingAfter}`);
+                                console.log(`✅ Created transaction for combo component ${comp.sku}: in_warehouse=${inWarehouseAfter} (no change), ${status}=${status === 'pending-consult' ? pendingConsultAfter : pendingReviewAfter}, available=${availableAfter}, backorder=${backorderAfter}`);
                             } catch (e: any) {
-                                console.error(`❌ Failed to deduct/track component ${comp.sku} for combo ${sku}:`, e.message);
+                                console.error(`❌ Failed to track component ${comp.sku} for combo ${sku}:`, e.message);
                             }
                         }
                     } catch (e: any) {
@@ -1126,7 +1372,7 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                 if (sData) {
                     try {
                         const currentState = await getCurrentStockState(s);
-                        stockMap[s] = currentState.stock;
+                        stockMap[s] = currentState.inWarehouse; // Use in_warehouse for combo calculations
                     } catch (e) {
                         console.warn(`Failed to fetch stock for component ${s} from database`, e);
                         stockMap[s] = 0;
@@ -1173,6 +1419,7 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                 entityName: `Order #${orderId}`,
                 entitySku: firstSku,
                 status: payload.status,
+                currentStatus: status, // Track current status
                 affectedSkus: orderSkus,
                 comboUpdates: comboUpdates.map(u => ({ 
                     sku: u.sku, 
@@ -1192,7 +1439,7 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                         wcStock: u.wcStock,
                         isCombo: u.isCombo
                     })),
-                    note: `Order moved to ${statusLabel} (${status}). WC deducted stock (combo SKU stock for combos, single SKU stock for singles). System tracking pending stock for dashboard display and updated combo availability.`
+                    note: `Order moved to ${statusLabel} (${status}). System tracking pending stock (no in_warehouse deduction). Updated combo availability.`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,
@@ -1216,6 +1463,243 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
 }
 
 /**
+ * Handle nv-pending-pickup status: Final stage that deducts from in_warehouse
+ * This is the ONLY webhook that deducts from in_warehouse
+ * Also deducts from current status (processing, pending-consult, or pending-review)
+ */
+async function handleNvPendingPickup(orderId: number, payload: any, request: Request) {
+    try {
+        console.log(`📦 Processing nv-pending-pickup for Order #${orderId} - deducting from in_warehouse and current status`);
+
+        // Get order's current status
+        const currentStatus = await getOrderCurrentStatus(orderId);
+        if (!currentStatus) {
+            console.warn(`⚠️ Order #${orderId} has no current status - cannot determine what to deduct from`);
+            // Still proceed, but we'll try to deduct from processing as default
+        }
+
+        // Get line items from webhook payload
+        const lineItems = payload.line_items;
+        if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+            return NextResponse.json({ success: true, message: 'No line items in order' });
+        }
+
+        // Get SKU mappings from database
+        const allSingleSkus = await getAllSingleSkus();
+        const allCombos = await getAllComboSkus();
+        const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
+        const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
+
+        // Track all SKUs that need to be deducted
+        const skuQuantities = new Map<string, number>(); // sku -> total quantity
+
+        for (const item of lineItems) {
+            if (!item.sku) {
+                console.warn(`⚠️ Order #${orderId} has line item without SKU: ${item.name || 'Unknown'}`);
+                continue;
+            }
+
+            const sku = item.sku;
+            const quantity = item.quantity || 0;
+
+            // Process single SKU orders
+            if (singleSkuMap.has(sku)) {
+                skuQuantities.set(sku, (skuQuantities.get(sku) || 0) + quantity);
+            } 
+            // Process combo SKU orders - break down to components
+            else if (comboSkuMap.has(sku)) {
+                const combo = comboSkuMap.get(sku);
+                if (!combo) continue;
+
+                const components = Array.isArray(combo.components) 
+                    ? combo.components 
+                    : JSON.parse(combo.components || '[]');
+
+                for (const comp of components) {
+                    if (!comp.sku || !comp.quantity) continue;
+                    const deductedQty = comp.quantity * quantity;
+                    skuQuantities.set(comp.sku, (skuQuantities.get(comp.sku) || 0) + deductedQty);
+                }
+            }
+        }
+
+        if (skuQuantities.size === 0) {
+            return NextResponse.json({ success: true, message: 'No valid SKUs found in order' });
+        }
+
+        // Process deductions for each SKU
+        const deductions: Array<{ sku: string; inWarehouseBefore: number; inWarehouseAfter: number; statusBefore: number; statusAfter: number; statusType: string }> = [];
+
+        for (const [sku, totalQty] of skuQuantities.entries()) {
+            const singleSku = singleSkuMap.get(sku);
+            if (!singleSku) continue;
+
+            try {
+                const currentState = await getCurrentStockState(sku);
+
+                // Get current status counts
+                const inWarehouseBefore = currentState.inWarehouse;
+                const processingBefore = currentState.processing;
+                const pendingConsultBefore = currentState.pendingConsult;
+                const pendingReviewBefore = currentState.pendingReview;
+
+                // Determine what status to deduct from based on order's current status
+                let statusType = 'processing'; // Default
+                let statusBefore = processingBefore;
+                let statusAfter = processingBefore;
+
+                if (currentStatus === 'pending-consult') {
+                    statusType = 'pending-consult';
+                    statusBefore = pendingConsultBefore;
+                    statusAfter = Math.max(0, pendingConsultBefore - totalQty);
+                } else if (currentStatus === 'pending-review') {
+                    statusType = 'pending-review';
+                    statusBefore = pendingReviewBefore;
+                    statusAfter = Math.max(0, pendingReviewBefore - totalQty);
+                } else {
+                    // Default to processing
+                    statusType = 'processing';
+                    statusBefore = processingBefore;
+                    statusAfter = Math.max(0, processingBefore - totalQty);
+                }
+
+                // Deduct from in_warehouse (physical stock)
+                const inWarehouseAfter = Math.max(0, inWarehouseBefore - totalQty);
+
+                // Update status counts
+                let processingAfter = processingBefore;
+                let pendingConsultAfter = pendingConsultBefore;
+                let pendingReviewAfter = pendingReviewBefore;
+
+                if (statusType === 'processing') {
+                    processingAfter = statusAfter;
+                } else if (statusType === 'pending-consult') {
+                    pendingConsultAfter = statusAfter;
+                } else if (statusType === 'pending-review') {
+                    pendingReviewAfter = statusAfter;
+                }
+
+                // Calculate available_for_purchase
+                const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
+
+                // Backorder logic: if stock is added and backorder exists, deduct from backorder
+                const backorderBefore = currentState.backorder;
+                let backorderAfter = backorderBefore;
+                if (backorderBefore > 0 && inWarehouseAfter > inWarehouseBefore - totalQty) {
+                    // Stock was added (shouldn't happen in nv-pending-pickup, but handle it)
+                    const stockAdded = inWarehouseAfter - (inWarehouseBefore - totalQty);
+                    backorderAfter = Math.max(0, backorderBefore - stockAdded);
+                }
+
+                // Create transaction
+                await createStockTransaction({
+                    sku,
+                    singleSkuId: singleSku.id,
+                    transactionType: 'order_nv_pending_pickup',
+                    quantityChange: -totalQty, // Negative = deduction from in_warehouse
+                    // Legacy fields
+                    stockBefore: inWarehouseBefore,
+                    stockAfter: inWarehouseAfter,
+                    pendingBefore: pendingConsultBefore + pendingReviewBefore,
+                    pendingAfter: pendingConsultAfter + pendingReviewAfter,
+                    // New fields
+                    inWarehouseBefore,
+                    inWarehouseAfter,
+                    processingBefore,
+                    processingAfter,
+                    pendingConsultBefore,
+                    pendingConsultAfter,
+                    pendingReviewBefore,
+                    pendingReviewAfter,
+                    backorderBefore,
+                    backorderAfter,
+                    sourceType: 'order',
+                    sourceId: orderId,
+                    sourceEvent: 'order.nv-pending-pickup',
+                    details: {
+                        quantity: totalQty,
+                        deductedFromStatus: statusType,
+                        orderId,
+                        availableForPurchase: availableAfter
+                    }
+                });
+
+                deductions.push({
+                    sku,
+                    inWarehouseBefore,
+                    inWarehouseAfter,
+                    statusBefore,
+                    statusAfter,
+                    statusType
+                });
+
+                console.log(`✅ Created transaction for ${sku}: in_warehouse ${inWarehouseBefore}→${inWarehouseAfter}, ${statusType} ${statusBefore}→${statusAfter}`);
+            } catch (e: any) {
+                console.error(`❌ Failed to create transaction for ${sku}:`, e.message);
+            }
+        }
+
+        // Get IP address and user agent from request
+        const ipAddress = request?.headers.get('x-forwarded-for') || 
+                         request?.headers.get('x-real-ip') || 
+                         'unknown';
+        const userAgent = request?.headers.get('user-agent') || 'unknown';
+
+        // Extract SKUs from line items for logging
+        const orderSkus = lineItems.map((item: any) => item.sku).filter(Boolean);
+        const firstSku = orderSkus.length > 0 ? orderSkus[0] : undefined;
+
+        // Log to WC Webhook Logs
+        try {
+            await logWcWebhook({
+                webhookType: 'order',
+                webhookEvent: 'order.nv-pending-pickup',
+                entityId: orderId,
+                entityName: `Order #${orderId}`,
+                entitySku: firstSku,
+                status: 'nv-pending-pickup',
+                currentStatus: 'nv-pending-pickup',
+                affectedSkus: orderSkus,
+                details: {
+                    orderId,
+                    status: 'nv-pending-pickup',
+                    previousStatus: currentStatus,
+                    lineItems: lineItems.map((item: any) => ({
+                        sku: item.sku,
+                        name: item.name,
+                        quantity: item.quantity
+                    })),
+                    deductions: deductions.map(d => ({
+                        sku: d.sku,
+                        inWarehouseBefore: d.inWarehouseBefore,
+                        inWarehouseAfter: d.inWarehouseAfter,
+                        statusType: d.statusType,
+                        statusBefore: d.statusBefore,
+                        statusAfter: d.statusAfter
+                    })),
+                    note: `Order moved to nv-pending-pickup. Deducted from in_warehouse and ${currentStatus || 'processing'} status.`
+                },
+                ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
+                userAgent,
+                success: true
+            });
+        } catch (logError: any) {
+            console.error(`❌ Failed to log webhook for Order #${orderId}:`, logError.message);
+        }
+
+        return NextResponse.json({
+            success: true,
+            message: 'nv-pending-pickup processed. Deducted from in_warehouse and current status.',
+            deductions: deductions.length
+        });
+
+    } catch (error: any) {
+        console.error('nv-pending-pickup Error:', error);
+        return NextResponse.json({ error: 'Internal Server Error', details: error.message }, { status: 500 });
+    }
+}
+
+/**
  * Handle order cancellation: Restore stock that was deducted
  * Only restores stock if:
  * 1. Order was previously in "processing" status (stock was deducted)
@@ -1225,38 +1709,48 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
     try {
         console.log(`🔄 Processing cancellation for Order #${orderId}`);
 
-        // Check if order was previously in "processing" status (stock was deducted)
+        // Get order's current status
+        const currentStatus = await getOrderCurrentStatus(orderId);
+        console.log(`📋 Order #${orderId} current status: ${currentStatus || 'unknown'}`);
+
+        // Check if order was in nv-pending-pickup (stock was deducted from in_warehouse)
+        const nvPickupLog = await getWcWebhookLogByOrderId(orderId, 'order.nv-pending-pickup');
+        const wasInNvPickup = nvPickupLog !== null;
+
+        // Check if order was in processing
         const previousProcessingLog = await getWcWebhookLogByOrderId(orderId, 'order.processing');
-        if (!previousProcessingLog) {
-            console.log(`⏭️ Order #${orderId} was never in "processing" status - no stock to restore`);
-            return NextResponse.json({ 
-                success: true, 
-                message: 'Order was never in processing status - no stock was deducted, skipping restoration' 
-            });
+        const wasInProcessing = previousProcessingLog !== null;
+
+        // If order was never in processing or nv-pending-pickup, it might have been cancelled from pending
+        // In that case, we just remove from pending (no in_warehouse restoration needed)
+        if (!wasInProcessing && !wasInNvPickup) {
+            console.log(`⏭️ Order #${orderId} was never in processing or nv-pending-pickup - checking if it was in pending`);
+            // This might be handled by handlePendingCancellation, but let's check
+            const previousPendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
+            const previousPendingReviewLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-review');
+            if (previousPendingConsultLog || previousPendingReviewLog) {
+                // This should have been handled by handlePendingCancellation, but if we're here, handle it
+                console.log(`📋 Order #${orderId} was in pending - removing from pending (no in_warehouse restoration)`);
+                // This will be handled below
+            } else {
+                return NextResponse.json({ 
+                    success: true, 
+                    message: 'Order was never processed - no stock changes to reverse' 
+                });
+            }
         }
 
-        // Check if order date is after January 1, 2026
-        const orderDate = payload.date_created || payload.date_created_gmt;
-        if (!orderDate) {
-            console.warn(`⚠️ Order #${orderId} has no date_created - skipping restoration`);
-            return NextResponse.json({ 
-                success: true, 
-                message: 'Order has no creation date - skipping restoration' 
-            });
-        }
-
-        const orderDateObj = new Date(orderDate);
-        const cutoffDate = new Date('2026-01-01T00:00:00Z');
+        // NEW BEHAVIOR: Only restore to in_warehouse if order was in nv-pending-pickup
+        // If order was only in processing, just remove from processing (no in_warehouse restoration)
+        const shouldRestoreInWarehouse = wasInNvPickup;
         
-        if (orderDateObj < cutoffDate) {
-            console.log(`⏭️ Order #${orderId} created before Jan 1, 2026 (${orderDate}) - skipping restoration`);
-            return NextResponse.json({ 
-                success: true, 
-                message: `Order created before Jan 1, 2026 - skipping restoration (order date: ${orderDate})` 
-            });
+        if (shouldRestoreInWarehouse) {
+            console.log(`✅ Order #${orderId} was in nv-pending-pickup - will restore to in_warehouse`);
+        } else if (wasInProcessing) {
+            console.log(`✅ Order #${orderId} was in processing - will remove from processing (no in_warehouse restoration)`);
+        } else {
+            console.log(`✅ Order #${orderId} was in pending - will remove from pending (no in_warehouse restoration)`);
         }
-
-        console.log(`✅ Order #${orderId} meets restoration criteria: was in processing status and created after Jan 1, 2026`);
 
         // Get line items from cancelled order
         const lineItems = payload.line_items;
@@ -1343,40 +1837,111 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                 try {
                     // Get current stock state from database (source of truth)
                     const currentState = await getCurrentStockState(sku);
-                    const stockBefore = currentState.stock;
-                    const stockAfter = stockBefore + totalQty; // Restore stock
+                    
+                    // NEW BEHAVIOR: Only restore to in_warehouse if order was in nv-pending-pickup
+                    const inWarehouseBefore = currentState.inWarehouse;
+                    const inWarehouseAfter = shouldRestoreInWarehouse 
+                        ? inWarehouseBefore + totalQty  // Restore to in_warehouse
+                        : inWarehouseBefore; // No change
+                    
+                    // Get current status counts
+                    const processingBefore = currentState.processing;
+                    const pendingConsultBefore = currentState.pendingConsult;
+                    const pendingReviewBefore = currentState.pendingReview;
+                    
+                    // Determine what status to remove from based on order's current status
+                    let processingAfter = processingBefore;
+                    let pendingConsultAfter = pendingConsultBefore;
+                    let pendingReviewAfter = pendingReviewBefore;
+                    
+                    // Check what status this order is in for this SKU
+                    const processingTx = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_processing',
+                        limit: 1
+                    });
+                    const pendingConsultTx = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_pending_consult',
+                        limit: 1
+                    });
+                    const pendingReviewTx = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_pending_review',
+                        limit: 1
+                    });
+                    
+                    // Determine which status has the quantity for this order
+                    if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
+                        const qtyInProcessing = processingTx[0].processing_after - processingTx[0].processing_before;
+                        processingAfter = Math.max(0, processingBefore - qtyInProcessing);
+                    } else if (pendingConsultTx.length > 0 && pendingConsultTx[0].pending_consult_after > pendingConsultTx[0].pending_consult_before) {
+                        const qtyInPendingConsult = pendingConsultTx[0].pending_consult_after - pendingConsultTx[0].pending_consult_before;
+                        pendingConsultAfter = Math.max(0, pendingConsultBefore - qtyInPendingConsult);
+                    } else if (pendingReviewTx.length > 0 && pendingReviewTx[0].pending_review_after > pendingReviewTx[0].pending_review_before) {
+                        const qtyInPendingReview = pendingReviewTx[0].pending_review_after - pendingReviewTx[0].pending_review_before;
+                        pendingReviewAfter = Math.max(0, pendingReviewBefore - qtyInPendingReview);
+                    }
+                    
+                    // Calculate available_for_purchase
+                    const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
+                    
+                    // Backorder logic: if stock is restored and backorder exists, deduct from backorder
+                    const backorderBefore = currentState.backorder;
+                    let backorderAfter = backorderBefore;
+                    if (shouldRestoreInWarehouse && backorderBefore > 0) {
+                        // Stock was restored, deduct from backorder (up to the amount restored)
+                        backorderAfter = Math.max(0, backorderBefore - totalQty);
+                    }
 
                     // Create transaction to restore stock
                     await createStockTransaction({
                         sku,
                         singleSkuId: singleSku.id,
                         transactionType: 'order_cancelled',
-                        quantityChange: totalQty,
-                        stockBefore,
-                        stockAfter,
-                        pendingBefore: currentState.pending,
-                        pendingAfter: currentState.pending, // No pending change for cancellation
+                        quantityChange: shouldRestoreInWarehouse ? totalQty : 0, // Only change in_warehouse if restoring
+                        // Legacy fields
+                        stockBefore: inWarehouseBefore,
+                        stockAfter: inWarehouseAfter,
+                        pendingBefore: pendingConsultBefore + pendingReviewBefore,
+                        pendingAfter: pendingConsultAfter + pendingReviewAfter,
+                        // New fields
+                        inWarehouseBefore,
+                        inWarehouseAfter,
+                        processingBefore,
+                        processingAfter,
+                        pendingConsultBefore,
+                        pendingConsultAfter,
+                        pendingReviewBefore,
+                        pendingReviewAfter,
+                        backorderBefore,
+                        backorderAfter,
                         sourceType: 'order',
                         sourceId: orderId,
                         sourceEvent: 'order.cancelled',
                         details: {
-                            restoredQty: totalQty,
+                            restoredQty: shouldRestoreInWarehouse ? totalQty : 0,
+                            removedFromStatus: currentStatus,
                             changeMadeBy: 'HIS',
                             orderId,
-                            isComboComponent: true
+                            isComboComponent: true,
+                            availableForPurchase: availableAfter
                         }
                     });
 
 
                     restoredUpdates.push({
                         sku,
-                        previousStock: stockBefore,
-                        newStock: stockAfter,
+                        previousStock: inWarehouseBefore,
+                        newStock: inWarehouseAfter,
                         restoredQty: totalQty,
                         changeMadeBy: 'HIS' // HIS system always restores combo component stocks
                     });
 
-                    console.log(`✅ Restored ${totalQty} to ${sku} (${stockBefore} → ${stockAfter}) via database transaction`);
+                    console.log(`✅ Restored ${totalQty} to ${sku} (${inWarehouseBefore} → ${inWarehouseAfter}) via database transaction`);
                 } catch (e: any) {
                     console.error(`❌ Failed to restore stock for component ${sku}:`, e.message);
                 }
@@ -1394,71 +1959,115 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             const singleSku = singleSkuMap.get(sku);
             if (singleSku) {
                 try {
-                    // Get current stock from database (source of truth)
+                    // Get current stock state from database (source of truth)
                     const currentState = await getCurrentStockState(sku);
-                    const currentStock = currentState.stock;
                     
-                    // Get previous stock from processing webhook log
-                    let previousStockFromLog: number | null = null;
-                    let originalChangeMadeBy: 'HIS' | 'WC' = 'WC'; // Default to WC for single SKU orders
+                    // NEW BEHAVIOR: Only restore to in_warehouse if order was in nv-pending-pickup
+                    const inWarehouseBefore = currentState.inWarehouse;
+                    const inWarehouseAfter = shouldRestoreInWarehouse 
+                        ? inWarehouseBefore + restoreQty  // Restore to in_warehouse
+                        : inWarehouseBefore; // No change
                     
-                    if (previousProcessingLog && previousProcessingLog.details) {
-                        const details = typeof previousProcessingLog.details === 'string' 
-                            ? JSON.parse(previousProcessingLog.details) 
-                            : previousProcessingLog.details;
-                        const componentDeductions = details.componentDeductions || [];
-                        const deduction = componentDeductions.find((d: any) => d.sku === sku);
-                        if (deduction) {
-                            previousStockFromLog = deduction.previousStock;
-                            // Determine who made the original deduction
-                            originalChangeMadeBy = deduction.isWcSide === true ? 'WC' : 'HIS';
-                        }
+                    // Get current status counts
+                    const processingBefore = currentState.processing;
+                    const pendingConsultBefore = currentState.pendingConsult;
+                    const pendingReviewBefore = currentState.pendingReview;
+                    
+                    // Determine what status to remove from based on order's current status
+                    let processingAfter = processingBefore;
+                    let pendingConsultAfter = pendingConsultBefore;
+                    let pendingReviewAfter = pendingReviewBefore;
+                    
+                    // Check what status this order is in for this SKU
+                    const processingTx = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_processing',
+                        limit: 1
+                    });
+                    const pendingConsultTx = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_pending_consult',
+                        limit: 1
+                    });
+                    const pendingReviewTx = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_pending_review',
+                        limit: 1
+                    });
+                    
+                    // Determine which status has the quantity for this order
+                    if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
+                        const qtyInProcessing = processingTx[0].processing_after - processingTx[0].processing_before;
+                        processingAfter = Math.max(0, processingBefore - qtyInProcessing);
+                    } else if (pendingConsultTx.length > 0 && pendingConsultTx[0].pending_consult_after > pendingConsultTx[0].pending_consult_before) {
+                        const qtyInPendingConsult = pendingConsultTx[0].pending_consult_after - pendingConsultTx[0].pending_consult_before;
+                        pendingConsultAfter = Math.max(0, pendingConsultBefore - qtyInPendingConsult);
+                    } else if (pendingReviewTx.length > 0 && pendingReviewTx[0].pending_review_after > pendingReviewTx[0].pending_review_before) {
+                        const qtyInPendingReview = pendingReviewTx[0].pending_review_after - pendingReviewTx[0].pending_review_before;
+                        pendingReviewAfter = Math.max(0, pendingReviewBefore - qtyInPendingReview);
                     }
                     
-                    // Calculate what the stock was before WC restored it
-                    const stockBeforeRestore = previousStockFromLog !== null 
-                        ? previousStockFromLog 
-                        : currentStock - restoreQty;
+                    // Calculate available_for_purchase
+                    const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
                     
-                    // Calculate actual restoration quantity
-                    const actualRestoredQty = currentStock - stockBeforeRestore;
-                    
-                    // Restore stock via database transaction
-                    const stockBefore = stockBeforeRestore;
-                    const stockAfter = stockBefore + restoreQty;
+                    // Backorder logic: if stock is restored and backorder exists, deduct from backorder
+                    const backorderBefore = currentState.backorder;
+                    let backorderAfter = backorderBefore;
+                    if (shouldRestoreInWarehouse && backorderBefore > 0) {
+                        // Stock was restored, deduct from backorder (up to the amount restored)
+                        backorderAfter = Math.max(0, backorderBefore - restoreQty);
+                    }
                     
                     // Create transaction to restore stock
                     await createStockTransaction({
                         sku,
                         singleSkuId: singleSku.id,
                         transactionType: 'order_cancelled',
-                        quantityChange: restoreQty,
-                        stockBefore,
-                        stockAfter,
-                        pendingBefore: currentState.pending,
-                        pendingAfter: currentState.pending, // No pending change for cancellation
+                        quantityChange: shouldRestoreInWarehouse ? restoreQty : 0, // Only change in_warehouse if restoring
+                        // Legacy fields
+                        stockBefore: inWarehouseBefore,
+                        stockAfter: inWarehouseAfter,
+                        pendingBefore: pendingConsultBefore + pendingReviewBefore,
+                        pendingAfter: pendingConsultAfter + pendingReviewAfter,
+                        // New fields
+                        inWarehouseBefore,
+                        inWarehouseAfter,
+                        processingBefore,
+                        processingAfter,
+                        pendingConsultBefore,
+                        pendingConsultAfter,
+                        pendingReviewBefore,
+                        pendingReviewAfter,
+                        backorderBefore,
+                        backorderAfter,
                         sourceType: 'order',
                         sourceId: orderId,
                         sourceEvent: 'order.cancelled',
                         details: {
-                            restoredQty: restoreQty,
+                            restoredQty: shouldRestoreInWarehouse ? restoreQty : 0,
+                            removedFromStatus: currentStatus,
                             changeMadeBy: 'HIS',
-                            originalDeductionBy: originalChangeMadeBy,
-                            orderId
+                            orderId,
+                            availableForPurchase: availableAfter
                         }
                     });
                     
                     
                     wcSideRestorations.push({
                         sku,
-                        previousStock: stockBefore,
-                        newStock: stockAfter,
-                        restoredQty: restoreQty,
-                        changeMadeBy: 'HIS', // HIS handles restoration via database
-                        originalDeductionBy: originalChangeMadeBy
+                        previousStock: inWarehouseBefore,
+                        newStock: inWarehouseAfter,
+                        restoredQty: shouldRestoreInWarehouse ? restoreQty : 0,
+                        changeMadeBy: 'HIS' // HIS handles restoration via database
                     } as any);
                     
-                    console.log(`✅ Restored ${restoreQty} to ${sku} (${stockBefore} → ${stockAfter}) via database transaction`);
+                    const action = shouldRestoreInWarehouse 
+                        ? `Restored ${restoreQty} to in_warehouse`
+                        : `Removed from ${currentStatus || 'processing'}`;
+                    console.log(`✅ ${action} for ${sku}: in_warehouse ${inWarehouseBefore}→${inWarehouseAfter}, ${currentStatus || 'processing'} removed`);
 
                 } catch (e: any) {
                     console.error(`❌ Failed to read stock for ${sku}:`, e.message);
@@ -1492,7 +2101,7 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                 if (singleSku) {
                     try {
                         const currentState = await getCurrentStockState(sku);
-                        stockMap[sku] = currentState.stock;
+                        stockMap[sku] = currentState.inWarehouse; // Use in_warehouse for combo calculations
                     } catch (e) {
                         stockMap[sku] = 0;
                     }
@@ -1512,7 +2121,7 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                 if (sData) {
                     try {
                         const currentState = await getCurrentStockState(s);
-                        stockMap[s] = currentState.stock;
+                        stockMap[s] = currentState.inWarehouse; // Use in_warehouse for combo calculations
                     } catch (e) {
                         stockMap[s] = 0;
                     }
@@ -1559,11 +2168,13 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                 entityName: `Order #${orderId}`,
                 entitySku: firstSku,
                 status: payload.status,
+                currentStatus: 'cancelled', // Track current status
                 affectedSkus: orderSkus,
                 comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
                 details: {
                     orderId,
                     status: payload.status,
+                    previousStatus: currentStatus,
                     lineItems: lineItems.map((item: any) => ({
                         sku: item.sku,
                         name: item.name,
@@ -1576,26 +2187,20 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                             previousStock: r.previousStock,
                             newStock: r.newStock,
                             restoredQty: r.restoredQty,
-                            changeMadeBy: r.changeMadeBy, // Who made the restoration (always 'WC' for single SKUs)
-                            originalDeductionBy: (r as any).originalDeductionBy || 'WC', // Who made the original deduction
-                            isWcSide: true, // WC restored, HIS only tracked (no write)
-                            hisWrote: false // HIS did NOT write
+                            changeMadeBy: r.changeMadeBy
                         })),
                         ...restoredUpdates.map(r => ({
                             sku: r.sku,
                             previousStock: r.previousStock,
                             newStock: r.newStock,
                             restoredQty: r.restoredQty,
-                            changeMadeBy: r.changeMadeBy, // Always 'HIS' for combo components
-                            originalDeductionBy: 'HIS', // Combo components are always deducted by HIS
-                            isWcSide: false, // HIS restored (wrote)
-                            hisWrote: true // HIS wrote this change
+                            changeMadeBy: r.changeMadeBy
                         }))
                     ],
                     comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
-                    note: comboSkusInOrder.length > 0
-                        ? 'Order cancelled. HIS system restored component single SKU stocks (from combo orders) and updated combo availability. Single SKU stocks restored by WC.'
-                        : 'Order cancelled. Single SKU stocks restored by WC automatically. System updated combo SKU availability.'
+                    note: shouldRestoreInWarehouse
+                        ? `Order cancelled from ${currentStatus || 'nv-pending-pickup'}. Restored to in_warehouse and removed from ${currentStatus || 'processing'} status.`
+                        : `Order cancelled from ${currentStatus || 'processing'}. Removed from ${currentStatus || 'processing'} status (no in_warehouse restoration).`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,

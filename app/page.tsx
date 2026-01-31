@@ -18,8 +18,15 @@ export default function Home() {
   const [inventory, setInventory] = useState<InventoryStock>({});
   const [comboAvailability, setComboAvailability] = useState<ComboAvailability[]>([]);
   const [singleSkuList, setSingleSkuList] = useState<Array<{ sku: string; name: string; id?: number }>>([]);
-  const [pendingStock, setPendingStock] = useState<Record<string, number>>({});
+  // New fields (all 6 statuses)
+  const [inWarehouseStock, setInWarehouseStock] = useState<Record<string, number>>({});
+  const [availableForPurchaseStock, setAvailableForPurchaseStock] = useState<Record<string, number>>({});
+  const [processingStock, setProcessingStock] = useState<Record<string, number>>({});
+  const [pendingConsultStock, setPendingConsultStock] = useState<Record<string, number>>({});
+  const [pendingReviewStock, setPendingReviewStock] = useState<Record<string, number>>({});
   const [backOrderStock, setBackOrderStock] = useState<Record<string, number>>({});
+  // Legacy fields (for backward compatibility)
+  const [pendingStock, setPendingStock] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   // Removed: newOrdersCount - orders are read-only, no notifications needed
@@ -40,11 +47,18 @@ export default function Home() {
       const data = await response.json();
 
       if (data.success) {
-        setInventory(data.singleSkus);
-        setComboAvailability(data.comboAvailability);
-        setSingleSkuList(data.singleSkuList || []);
-        setPendingStock(data.pendingStock || {});
+        // New fields (all 6 statuses)
+        setInWarehouseStock(data.inWarehouseStock || {});
+        setAvailableForPurchaseStock(data.availableForPurchaseStock || {});
+        setProcessingStock(data.processingStock || {});
+        setPendingConsultStock(data.pendingConsultStock || {});
+        setPendingReviewStock(data.pendingReviewStock || {});
         setBackOrderStock(data.backOrderStock || {});
+        // Legacy fields (for backward compatibility)
+        setInventory(data.singleSkus || {});
+        setPendingStock(data.pendingStock || {});
+        setComboAvailability(data.comboAvailability || []);
+        setSingleSkuList(data.singleSkuList || []);
         setLastUpdated(new Date());
 
         // Show notification if refresh was manually triggered
@@ -335,8 +349,15 @@ export default function Home() {
                     inventory={inventory}
                     comboAvailability={comboAvailability}
                     singleSkuList={singleSkuList}
-                    pendingStock={pendingStock}
+                    // New fields (all 6 statuses)
+                    inWarehouseStock={inWarehouseStock}
+                    availableForPurchaseStock={availableForPurchaseStock}
+                    processingStock={processingStock}
+                    pendingConsultStock={pendingConsultStock}
+                    pendingReviewStock={pendingReviewStock}
                     backOrderStock={backOrderStock}
+                    // Legacy fields
+                    pendingStock={pendingStock}
                     loading={loading}
                   />
                 </div>

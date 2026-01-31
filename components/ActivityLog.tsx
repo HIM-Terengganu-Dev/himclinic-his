@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import { formatDateTimeWithSecondsGMT8 } from '@/lib/utils/date';
-import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
+import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface ActivityLogEntry {
     id: number;
@@ -59,7 +59,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [comboSkus, setComboSkus] = useState<Array<{ sku: string; name: string }>>([]);
     const [wcCurrentPage, setWcCurrentPage] = useState(1);
     const [wcTotalCount, setWcTotalCount] = useState(0);
-    const [expandedOrderIds, setExpandedOrderIds] = useState<Set<number>>(new Set());
     const [componentDeductionsCache, setComponentDeductionsCache] = useState<Record<number, any[]>>({});
     const topScrollRef = useRef<HTMLDivElement>(null);
     const bottomScrollRef = useRef<HTMLDivElement>(null);
@@ -742,157 +741,124 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                     ))
                                 ) : (
                                     (() => {
-                                        // Group orders by order ID if not already grouped
-                                        const orderGroups = new Map<number, WcWebhookLogEntry[]>();
-                                        const alreadyGroupedLogs: WcWebhookLogEntry[] = [];
-                                        const ungroupedLogs: WcWebhookLogEntry[] = [];
+                                        // Flatten all logs - if a log has _history, expand it to individual entries
+                                        const allLogs: WcWebhookLogEntry[] = [];
                                         
                                         for (const log of wcLogs) {
-                                            // If already grouped from backend, use as-is
-                                            if (log._isGrouped && log._history) {
-                                                alreadyGroupedLogs.push(log);
-                                            } 
-                                            // If it's an order webhook, group it
-                                            else if (log.webhook_type === 'order') {
-                                                const orderId = log.entity_id;
-                                                if (!orderGroups.has(orderId)) {
-                                                    orderGroups.set(orderId, []);
-                                                }
-                                                orderGroups.get(orderId)!.push(log);
-                                            } 
-                                            // Product webhooks or others - don't group
-                                            else {
-                                                ungroupedLogs.push(log);
+                                            if (log._isGrouped && log._history && Array.isArray(log._history)) {
+                                                // If grouped, add all history entries individually
+                                                allLogs.push(...log._history);
+                                            } else {
+                                                // Otherwise, add the log as-is
+                                                allLogs.push(log);
                                             }
                                         }
                                         
-                                        // Create grouped entries for orders that weren't already grouped
-                                        const groupedOrderEntries: WcWebhookLogEntry[] = [];
-                                        for (const [orderId, history] of orderGroups.entries()) {
-                                            // Sort history by created_at DESC (newest first)
-                                            const sortedHistory = [...history].sort((a, b) => {
-                                                const aTime = new Date(a.created_at).getTime();
-                                                const bTime = new Date(b.created_at).getTime();
-                                                return bTime - aTime;
-                                            });
-                                            
-                                            const latest = sortedHistory[0];
-                                            groupedOrderEntries.push({
-                                                ...latest,
-                                                _isGrouped: true,
-                                                _orderId: orderId,
-                                                _history: sortedHistory
-                                            });
+                                        // Filter to only show first pending and first processing event per order ID
+                                        // Rule: If there's a pending event, ignore any processing that comes BEFORE the pending
+                                        // This prevents showing glitchy WC webhooks where processing fires before pending
+                                        const seenEvents = new Map<string, boolean>(); // key: "orderId:eventType"
+                                        const filteredLogs: WcWebhookLogEntry[] = [];
+                                        
+                                        // First pass: Find earliest pending event per order
+                                        const orderPendingTimes = new Map<number, number>(); // orderId -> earliest pending timestamp
+                                        
+                                        // Sort by time ascending first to get chronological order
+                                        allLogs.sort((a, b) => {
+                                            const aTime = new Date(a.created_at).getTime();
+                                            const bTime = new Date(b.created_at).getTime();
+                                            return aTime - bTime;
+                                        });
+                                        
+                                        // First pass: identify earliest pending events per order
+                                        for (const log of allLogs) {
+                                            if (log.webhook_type === 'order' && log.entity_id) {
+                                                const orderId = log.entity_id;
+                                                const eventType = log.webhook_event || log.status || '';
+                                                const isPending = eventType.includes('pending-consult') || eventType === 'pending-consult' || 
+                                                    eventType.includes('pending-review') || eventType === 'pending-review' ||
+                                                    log.status === 'pending-consult' || log.status === 'pending-review' ||
+                                                    log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review';
+                                                
+                                                if (isPending && !orderPendingTimes.has(orderId)) {
+                                                    orderPendingTimes.set(orderId, new Date(log.created_at).getTime());
+                                                }
+                                            }
                                         }
                                         
-                                        // Sort grouped orders by latest created_at DESC
-                                        groupedOrderEntries.sort((a, b) => {
+                                        // Second pass: filter events
+                                        for (const log of allLogs) {
+                                            if (log.webhook_type === 'order' && log.entity_id) {
+                                                const orderId = log.entity_id;
+                                                const eventType = log.webhook_event || log.status || '';
+                                                const logTime = new Date(log.created_at).getTime();
+                                                
+                                                // Determine the event type key
+                                                // Treat all pending events (consult/review) as "pending"
+                                                let eventKey: string | null = null;
+                                                const isPending = eventType.includes('pending-consult') || eventType === 'pending-consult' || 
+                                                    eventType.includes('pending-review') || eventType === 'pending-review' ||
+                                                    log.status === 'pending-consult' || log.status === 'pending-review' ||
+                                                    log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review';
+                                                
+                                                const isProcessing = eventType.includes('processing') || eventType === 'processing' ||
+                                                    log.status === 'processing' || log.webhook_event === 'order.processing';
+                                                
+                                                if (isPending) {
+                                                    eventKey = `${orderId}:pending`;
+                                                } else if (isProcessing) {
+                                                    eventKey = `${orderId}:processing`;
+                                                    
+                                                    // Rule: If there's a pending event for this order, ignore processing that comes BEFORE pending
+                                                    //       If there's NO pending event, include processing (order goes straight to processing)
+                                                    const earliestPendingTime = orderPendingTimes.get(orderId);
+                                                    if (earliestPendingTime !== undefined && logTime < earliestPendingTime) {
+                                                        // Skip this processing event - it comes before pending (glitch from WC)
+                                                        continue;
+                                                    }
+                                                    // If earliestPendingTime is undefined (no pending event), this processing event is valid
+                                                }
+                                                
+                                                // Only include if this is the first occurrence of this event type for this order
+                                                if (eventKey && !seenEvents.has(eventKey)) {
+                                                    seenEvents.set(eventKey, true);
+                                                    filteredLogs.push(log);
+                                                } else if (!eventKey) {
+                                                    // For other event types (cancelled, etc.), always include
+                                                    filteredLogs.push(log);
+                                                }
+                                            } else {
+                                                // For non-order events (products, etc.), always include
+                                                filteredLogs.push(log);
+                                            }
+                                        }
+                                        
+                                        // Sort by time descending (latest first) for display
+                                        filteredLogs.sort((a, b) => {
                                             const aTime = new Date(a.created_at).getTime();
                                             const bTime = new Date(b.created_at).getTime();
                                             return bTime - aTime;
                                         });
                                         
-                                        // Combine: already grouped (from backend), newly grouped, and ungrouped logs
-                                        const allLogs = [...alreadyGroupedLogs, ...groupedOrderEntries, ...ungroupedLogs];
-                                        
-                                        return allLogs.flatMap((log) => {
-                                            const isGrouped = log._isGrouped && log._history && log._history.length > 1;
-                                            const orderId = log._orderId || log.entity_id;
-                                            const isExpanded = expandedOrderIds.has(orderId);
-                                            const history = log._history || [log];
-                                            
-                                            // For grouped orders, only show latest by default, or all if expanded
-                                            const logsToShow = isGrouped && !isExpanded ? [log] : history;
-                                        
-                                        return logsToShow.map((logEntry, idx) => {
-                                            const isHistoryRow = isGrouped && idx > 0;
-                                            const isLatestRow = isGrouped && idx === 0;
-                                            
-                                            // Ensure logEntry has access to history for pending stock calculations
-                                            // When expanded, logEntry is from history array and doesn't have _history
-                                            // When collapsed, logEntry is the grouped log which has _history
-                                            // Also, when collapsed, we want to use the actual log entry's data (processing or pending-consult), not the grouped log's
-                                            // So we need to find the actual log entry from history if this is a grouped order
-                                            let actualLogEntry = logEntry;
-                                            if (isGrouped && !isExpanded && logEntry._history) {
-                                                // When collapsed, find the actual log entry from history based on what we're displaying
-                                                // For component deductions, we want the processing log
-                                                // For pending stock updates, we want the pending-consult/review log
-                                                // Since we don't know which one we need yet, we'll determine it based on the logEntry's type
-                                                // But we also need to check history for pending-consult logs even if the latest log doesn't have them
-                                                const hasComponentDeductions = logEntry.details?.componentDeductions && Array.isArray(logEntry.details.componentDeductions) && logEntry.details.componentDeductions.length > 0;
-                                                const hasPendingStockUpdates = logEntry.details?.pendingStockUpdates && Array.isArray(logEntry.details.pendingStockUpdates) && logEntry.details.pendingStockUpdates.length > 0;
-                                                
-                                                // Check if there's a pending-consult/review log in history (even if latest log doesn't have pendingStockUpdates)
-                                                const pendingLogInHistory = logEntry._history.find((h: any) => 
-                                                    (h.webhook_event === 'order.pending-consult' || h.webhook_event === 'order.pending-review') ||
-                                                    (h.status === 'pending-consult' || h.status === 'pending-review')
-                                                );
-                                                
-                                                if (hasComponentDeductions) {
-                                                    // For component deductions, find the processing log
-                                                    const processingLog = logEntry._history.find((h: any) => 
-                                                        h.webhook_event === 'order.processing' || h.status === 'processing'
-                                                    );
-                                                    if (processingLog) {
-                                                        actualLogEntry = { ...processingLog, _history: logEntry._history };
-                                                    }
-                                                } else if (hasPendingStockUpdates || pendingLogInHistory) {
-                                                    // For pending stock updates, find the pending-consult/review log
-                                                    // Use pendingLogInHistory if found, otherwise use logEntry if it has pendingStockUpdates
-                                                    if (pendingLogInHistory) {
-                                                        actualLogEntry = { ...pendingLogInHistory, _history: logEntry._history };
-                                                    } else if (hasPendingStockUpdates) {
-                                                        actualLogEntry = logEntry._history ? logEntry : { ...logEntry, _history: history };
-                                                    }
-                                                }
-                                                
-                                                // Fallback: use logEntry but ensure it has _history
-                                                if (!actualLogEntry || actualLogEntry === logEntry) {
-                                                    actualLogEntry = logEntry._history ? logEntry : { ...logEntry, _history: history };
-                                                }
-                                            } else {
-                                                // When expanded or not grouped, ensure logEntry has _history
-                                                actualLogEntry = logEntry._history ? logEntry : { ...logEntry, _history: history };
-                                            }
-                                            const logEntryWithHistory = actualLogEntry;
+                                        return filteredLogs.map((logEntry) => {
+                                            // For logs that came from grouped history, ensure they have access to the full history
+                                            // for pending stock calculations
+                                            const history = logEntry._history || [logEntry];
+                                            const logEntryWithHistory = logEntry._history ? logEntry : { ...logEntry, _history: history };
                                             
                                             return (
                                                 <tr 
-                                                    key={`${logEntry.id}-${idx}`} 
-                                                    className={`hover:bg-gray-50/50 transition-colors ${isHistoryRow ? 'bg-gray-50/30 border-l-2 border-gray-300' : ''}`}
+                                                    key={logEntry.id} 
+                                                    className="hover:bg-gray-50/50 transition-colors"
                                                 >
                                                     <td className="px-6 py-4 whitespace-nowrap text-gray-500">
                                                         {formatDateTimeWithSecondsGMT8(logEntry.created_at)}
                                                     </td>
                                                     <td className="px-6 py-4">
-                                                        <div className="flex items-center gap-2">
-                                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getWebhookTypeColor(logEntry.webhook_type, logEntry.status)}`}>
-                                                                {logEntry.webhook_type === 'order' ? <ShoppingCart size={12} className="mr-1" /> : <Package size={12} className="mr-1" />}
-                                                                {logEntry.webhook_type}
-                                                            </span>
-                                                            {isLatestRow && isGrouped && (
-                                                                <button
-                                                                    onClick={() => {
-                                                                        const newExpanded = new Set(expandedOrderIds);
-                                                                        if (isExpanded) {
-                                                                            newExpanded.delete(orderId);
-                                                                        } else {
-                                                                            newExpanded.add(orderId);
-                                                                        }
-                                                                        setExpandedOrderIds(newExpanded);
-                                                                    }}
-                                                                    className="p-1 hover:bg-gray-100 rounded transition-colors"
-                                                                    title={isExpanded ? 'Hide history' : 'Show history'}
-                                                                >
-                                                                    {isExpanded ? (
-                                                                        <ChevronUp size={14} className="text-gray-500" />
-                                                                    ) : (
-                                                                        <ChevronDown size={14} className="text-gray-500" />
-                                                                    )}
-                                                                </button>
-                                                            )}
-                                                        </div>
+                                                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getWebhookTypeColor(logEntry.webhook_type, logEntry.status)}`}>
+                                                            {logEntry.webhook_type === 'order' ? <ShoppingCart size={12} className="mr-1" /> : <Package size={12} className="mr-1" />}
+                                                            {logEntry.webhook_type}
+                                                        </span>
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         <div className="text-gray-900 font-medium">
@@ -975,16 +941,16 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             </div>
                                                         ) : (() => {
                                                             // Try to get component deductions from database (stock_transactions)
-                                                            const orderId = actualLogEntry.entity_id;
+                                                            const orderId = logEntry.entity_id;
                                                             const dbDeductions = componentDeductionsCache[orderId] || [];
                                                             
                                                             // Fallback to webhook log data if database data not available
-                                                            const webhookDeductions = actualLogEntry.details?.componentDeductions || [];
+                                                            const webhookDeductions = logEntry.details?.componentDeductions || [];
                                                             const deductions = dbDeductions.length > 0 ? dbDeductions : webhookDeductions;
                                                             
                                                             if (deductions.length === 0) {
                                                                 // If no deductions, check for pendingStockUpdates
-                                                                if (actualLogEntry.details?.pendingStockUpdates && Array.isArray(actualLogEntry.details.pendingStockUpdates) && actualLogEntry.details.pendingStockUpdates.length > 0) {
+                                                                if (logEntry.details?.pendingStockUpdates && Array.isArray(logEntry.details.pendingStockUpdates) && logEntry.details.pendingStockUpdates.length > 0) {
                                                                     return null; // Will be handled by next ternary
                                                                 }
                                                                 return <span className="text-gray-400 text-xs">—</span>;
@@ -994,41 +960,54 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 <div className="min-w-[200px]">
                                                                     {deductions.map((deduction: any, deductionIdx: number) => {
                                                                         // Use database transaction data if available, otherwise use webhook log data
-                                                                        const stockBefore = deduction.stockBefore ?? deduction.previousStock ?? 0;
-                                                                        const stockAfter = deduction.stockAfter ?? deduction.newStock ?? 0;
-                                                                        const pendingBefore = deduction.pendingBefore ?? 0;
-                                                                        const pendingAfter = deduction.pendingAfter ?? 0;
-                                                                        const deductedQty = deduction.deductedQty || Math.abs(deduction.quantityChange) || Math.abs(stockBefore - stockAfter) || 0;
-                                                                        const wasFromPending = deduction.wasFromPending ?? false;
+                                                                        const inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
+                                                                        const availableAfter = deduction.availableForPurchase ?? deduction.available ?? 0;
+                                                                        const processingAfter = deduction.processingAfter ?? 0;
+                                                                        const pendingConsultAfter = deduction.pendingConsultAfter ?? 0;
+                                                                        const pendingReviewAfter = deduction.pendingReviewAfter ?? 0;
+                                                                        const backorderAfter = deduction.backorderAfter ?? 0;
+                                                                        
+                                                                        // Calculate available if not provided
+                                                                        const available = availableAfter > 0 ? availableAfter : Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
                                                                         
                                                                         return (
-                                                                            <div key={deductionIdx} className="text-xs text-gray-600 mb-2">
-                                                                                <div className="font-mono font-semibold">{deduction.sku}</div>
-                                                                                <div className="mt-1 space-y-0.5">
+                                                                            <div key={deductionIdx} className="text-xs text-gray-600 mb-3">
+                                                                                <div className="font-mono font-semibold mb-1.5">{deduction.sku}</div>
+                                                                                <div className="mt-1 space-y-1">
                                                                                     <div className="whitespace-nowrap">
-                                                                                        <span className="text-gray-500">Stock: </span>
-                                                                                        <span className="font-medium">{stockBefore}</span>
-                                                                                        <span className="text-gray-400 mx-1">→</span>
-                                                                                        <span className={`font-medium ${stockAfter < stockBefore ? 'text-red-600' : 'text-green-600'}`}>
-                                                                                            {stockAfter}
-                                                                                        </span>
-                                                                                        {deductedQty > 0 && (
-                                                                                            <span className="text-gray-400 ml-1">(-{deductedQty})</span>
-                                                                                        )}
+                                                                                        <span className="text-gray-500">In Warehouse: </span>
+                                                                                        <span className="font-medium text-gray-900">{inWarehouseAfter}</span>
                                                                                     </div>
-                                                                                    {(pendingBefore > 0 || pendingAfter > 0) && (
-                                                                                        <div className="whitespace-nowrap">
-                                                                                            <span className="text-yellow-600">Pending: </span>
-                                                                                            <span className="font-medium text-yellow-600">{pendingBefore}</span>
-                                                                                            <span className="text-gray-400 mx-1">→</span>
-                                                                                            <span className={`font-medium ${pendingAfter < pendingBefore ? 'text-red-600' : 'text-yellow-600'}`}>
-                                                                                                {pendingAfter}
-                                                                                            </span>
-                                                                                        </div>
-                                                                                    )}
-                                                                                    {wasFromPending && (
-                                                                                        <div className="text-xs text-blue-500 italic">From pending-consult</div>
-                                                                                    )}
+                                                                                    <div className="whitespace-nowrap">
+                                                                                        <span className="text-gray-500">Available: </span>
+                                                                                        <span className={`font-medium ${available > 0 ? 'text-green-600' : 'text-gray-600'}`}>
+                                                                                            {available}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                    <div className="whitespace-nowrap">
+                                                                                        <span className="text-blue-600">Processing: </span>
+                                                                                        <span className={`font-medium ${processingAfter > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+                                                                                            {processingAfter > 0 ? processingAfter : '-'}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                    <div className="whitespace-nowrap">
+                                                                                        <span className="text-yellow-600">Pending Consult: </span>
+                                                                                        <span className={`font-medium ${pendingConsultAfter > 0 ? 'text-yellow-600' : 'text-gray-400'}`}>
+                                                                                            {pendingConsultAfter > 0 ? pendingConsultAfter : '-'}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                    <div className="whitespace-nowrap">
+                                                                                        <span className="text-yellow-600">Pending Review: </span>
+                                                                                        <span className={`font-medium ${pendingReviewAfter > 0 ? 'text-yellow-600' : 'text-gray-400'}`}>
+                                                                                            {pendingReviewAfter > 0 ? pendingReviewAfter : '-'}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                    <div className="whitespace-nowrap">
+                                                                                        <span className="text-orange-600">Backorder: </span>
+                                                                                        <span className={`font-medium ${backorderAfter > 0 ? 'text-orange-600' : 'text-gray-400'}`}>
+                                                                                            {backorderAfter > 0 ? backorderAfter : '-'}
+                                                                                        </span>
+                                                                                    </div>
                                                                                 </div>
                                                                             </div>
                                                                         );
@@ -1040,20 +1019,19 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                         {(() => {
                                                             // Only show if not already showing component deductions or restorations
                                                             const hasRestorations = logEntry.details?.componentRestorations && Array.isArray(logEntry.details.componentRestorations) && logEntry.details.componentRestorations.length > 0;
-                                                            const orderId = actualLogEntry.entity_id;
+                                                            const orderId = logEntry.entity_id;
                                                             const dbDeductions = componentDeductionsCache[orderId] || [];
-                                                            const webhookDeductions = actualLogEntry.details?.componentDeductions || [];
+                                                            const webhookDeductions = logEntry.details?.componentDeductions || [];
                                                             const hasDeductions = (dbDeductions.length > 0 || webhookDeductions.length > 0);
                                                             
                                                             if (hasRestorations || hasDeductions) return null;
                                                             
-                                                            if (actualLogEntry.details?.pendingStockUpdates && Array.isArray(actualLogEntry.details.pendingStockUpdates) && actualLogEntry.details.pendingStockUpdates.length > 0) {
+                                                            if (logEntry.details?.pendingStockUpdates && Array.isArray(logEntry.details.pendingStockUpdates) && logEntry.details.pendingStockUpdates.length > 0) {
                                                                 return (
                                                                     <div className="min-w-[200px] mt-2">
-                                                                        {actualLogEntry.details.pendingStockUpdates.map((pending: any, pendingIdx: number) => {
+                                                                        {logEntry.details.pendingStockUpdates.map((pending: any, pendingIdx: number) => {
                                                                             // Calculate pending stock from OTHER orders at the time of this pending order
-                                                                            // Use actualLogEntry (the pending-consult/review log) for timestamp and entity_id
-                                                                            const currentOrderTime = new Date(actualLogEntry.created_at).getTime();
+                                                                            const currentOrderTime = new Date(logEntry.created_at).getTime();
                                                                             let pendingFromOtherOrders = 0;
                                                                             
                                                                             // Track pending stock by order ID to handle removals correctly
@@ -1071,8 +1049,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                                 if (logTime >= currentOrderTime) return; // Only look at logs before this order
                                                                                 
                                                                                 // Skip this order's own logs
-                                                                                // Use actualLogEntry.entity_id to ensure we use the pending-consult/review log's entity_id
-                                                                                if (log.entity_id === actualLogEntry.entity_id) return;
+                                                                                if (log.entity_id === logEntry.entity_id) return;
                                                                                 
                                                                                 // Add pending stock from pending-consult/pending-review entries
                                                                                 // Check both status and webhook_event to ensure we catch all pending logs
@@ -1167,7 +1144,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                 </tr>
                                             );
                                         });
-                                    });
                                     })()
                                 )
                             ) : (

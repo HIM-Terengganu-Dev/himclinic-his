@@ -10,11 +10,18 @@ interface SingleSkuInfo {
 }
 
 interface InventoryDashboardProps {
-  inventory: InventoryStock;
+  inventory: InventoryStock; // Legacy field
   comboAvailability: ComboAvailability[];
   singleSkuList?: SingleSkuInfo[];
-  pendingStock?: Record<string, number>;
+  // New fields (all 6 statuses)
+  inWarehouseStock?: Record<string, number>;
+  availableForPurchaseStock?: Record<string, number>;
+  processingStock?: Record<string, number>;
+  pendingConsultStock?: Record<string, number>;
+  pendingReviewStock?: Record<string, number>;
   backOrderStock?: Record<string, number>;
+  // Legacy fields (for backward compatibility)
+  pendingStock?: Record<string, number>;
   loading: boolean;
 }
 
@@ -22,8 +29,15 @@ export default function InventoryDashboard({
   inventory,
   comboAvailability,
   singleSkuList = [],
-  pendingStock = {},
+  // New fields
+  inWarehouseStock = {},
+  availableForPurchaseStock = {},
+  processingStock = {},
+  pendingConsultStock = {},
+  pendingReviewStock = {},
   backOrderStock = {},
+  // Legacy fields
+  pendingStock = {},
   loading,
 }: InventoryDashboardProps) {
   if (loading) {
@@ -57,7 +71,13 @@ export default function InventoryDashboard({
                     Available for Purchase
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Pending Review/Consult
+                    Processing
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Pending Consult
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Pending Review
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Back Order
@@ -67,11 +87,13 @@ export default function InventoryDashboard({
               <tbody className="bg-white divide-y divide-gray-200">
                 {singleSkuList.length > 0 ? (
                   singleSkuList.map((sku) => {
-                    const stock = inventory[sku.sku] || 0;
-                    const pending = pendingStock[sku.sku] || 0;
+                    // Use new fields if available, otherwise fall back to legacy fields
+                    const inWarehouse = inWarehouseStock[sku.sku] ?? inventory[sku.sku] ?? 0;
+                    const availableForPurchase = availableForPurchaseStock[sku.sku] ?? 0;
+                    const processing = processingStock[sku.sku] ?? 0;
+                    const pendingConsult = pendingConsultStock[sku.sku] ?? 0;
+                    const pendingReview = pendingReviewStock[sku.sku] ?? 0;
                     const backOrder = Math.abs(backOrderStock[sku.sku] || 0); // Display as positive
-                    const inWarehouse = stock + pending; // Current stock including pending
-                    const availableForPurchase = stock; // Current stock excluding pending
                     
                     const isLowStock = availableForPurchase < 5 && availableForPurchase > 0;
                     const isOutOfStock = availableForPurchase === 0;
@@ -109,9 +131,23 @@ export default function InventoryDashboard({
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <span className={`text-sm font-medium ${
-                            pending > 0 ? 'text-yellow-600' : 'text-gray-400'
+                            processing > 0 ? 'text-blue-600' : 'text-gray-400'
                           }`}>
-                            {pending > 0 ? pending : '-'}
+                            {processing > 0 ? processing : '-'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`text-sm font-medium ${
+                            pendingConsult > 0 ? 'text-yellow-600' : 'text-gray-400'
+                          }`}>
+                            {pendingConsult > 0 ? pendingConsult : '-'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`text-sm font-medium ${
+                            pendingReview > 0 ? 'text-yellow-600' : 'text-gray-400'
+                          }`}>
+                            {pendingReview > 0 ? pendingReview : '-'}
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
@@ -126,7 +162,7 @@ export default function InventoryDashboard({
                   })
                 ) : (
                   <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-gray-500 text-sm">
+                    <td colSpan={7} className="px-6 py-8 text-center text-gray-500 text-sm">
                       No single SKUs found in database. Please configure SKUs first.
                     </td>
                   </tr>
