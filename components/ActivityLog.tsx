@@ -108,7 +108,7 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
     // Fallback to webhook log data if database data not available
     const webhookDeductions = logEntry.details?.componentDeductions || [];
     
-    // If no matching deductions found, try loose matching
+    // If no matching deductions found, try loose matching (time-based only, no type check)
     let deductions = matchingDeductions;
     if (deductions.length === 0 && dbDeductions.length > 0) {
         const looseMatches = dbDeductions.filter((deduction: any) => {
@@ -117,6 +117,7 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
             return timeDiff < 300000; // 5 minutes
         });
         if (looseMatches.length > 0) {
+            console.log(`[ComponentDeductionsCell] Using loose match for Order #${orderId}, eventType: ${eventType}, found ${looseMatches.length} matches`);
             deductions = looseMatches;
         }
     }
@@ -124,6 +125,25 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
     // Final fallback to webhook log details
     if (deductions.length === 0) {
         deductions = webhookDeductions;
+    }
+    
+    // Debug logging if no deductions found
+    if (deductions.length === 0 && orderId) {
+        console.log(`[ComponentDeductionsCell] No deductions found for Order #${orderId}`, {
+            eventType,
+            expectedTransactionType,
+            webhookEvent: logEntry.webhook_event,
+            currentStatus: (logEntry as any).current_status,
+            status: logEntry.status,
+            dbDeductionsCount: dbDeductions.length,
+            webhookDeductionsCount: webhookDeductions.length,
+            logTime: new Date(logEntry.created_at).toISOString(),
+            dbDeductions: dbDeductions.map((d: any) => ({
+                sku: d.sku,
+                transactionType: d.transactionType || d.sourceEvent,
+                createdAt: d.createdAt
+            }))
+        });
     }
     
     if (deductions.length === 0) {
@@ -181,27 +201,58 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
                 const changedStatuses: Array<{ label: string; before: number; after: number; color: string }> = [];
                 
                 const isEdgeCase = logEntry.details?.isEdgeCase === true;
+                
+                // For cancelled transactions: show status changes (processing/pending → 0, available changes)
+                // BUT do NOT show in_warehouse if it's the same (e.g., 10→10 is misleading)
+                // For edge case (shipped order cancelled): no changes shown
                 if (isCancelledTransaction) {
                     if (isEdgeCase && logEntry.details?.edgeCaseType === 'shipped_order_cancelled') {
-                        // Edge case - no changes shown
+                        // Edge case - no changes shown (already shipped, can't restore)
+                    } else {
+                        // Normal cancellation: show status changes, but NOT in_warehouse if unchanged
+                        // Only show in_warehouse if it actually changed (shouldn't happen for processing/pending cancellations)
+                        if (inWarehouseBefore !== inWarehouseAfter) {
+                            changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
+                        }
+                        // Always show available, processing, and pending changes for cancellations
+                        if (availableBefore !== availableAfter) {
+                            changedStatuses.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
+                        }
+                        if (processingBefore !== processingAfter) {
+                            changedStatuses.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
+                        }
+                        if (pendingConsultBefore !== pendingConsultAfter) {
+                            changedStatuses.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
+                        }
+                        if (pendingReviewBefore !== pendingReviewAfter) {
+                            changedStatuses.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
+                        }
+                        if (backorderBefore !== backorderAfter) {
+                            changedStatuses.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
+                        }
                     }
                 } else if (inWarehouseBefore !== inWarehouseAfter && !isProcessingTransaction) {
+                    // Non-cancellation, non-processing transactions can show in_warehouse changes
                     changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
                 }
-                if (availableBefore !== availableAfter) {
-                    changedStatuses.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
-                }
-                if (processingBefore !== processingAfter) {
-                    changedStatuses.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
-                }
-                if (pendingConsultBefore !== pendingConsultAfter) {
-                    changedStatuses.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
-                }
-                if (pendingReviewBefore !== pendingReviewAfter) {
-                    changedStatuses.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
-                }
-                if (backorderBefore !== backorderAfter) {
-                    changedStatuses.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
+                
+                // For non-cancelled transactions, show all status changes
+                if (!isCancelledTransaction) {
+                    if (availableBefore !== availableAfter) {
+                        changedStatuses.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
+                    }
+                    if (processingBefore !== processingAfter) {
+                        changedStatuses.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
+                    }
+                    if (pendingConsultBefore !== pendingConsultAfter) {
+                        changedStatuses.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
+                    }
+                    if (pendingReviewBefore !== pendingReviewAfter) {
+                        changedStatuses.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
+                    }
+                    if (backorderBefore !== backorderAfter) {
+                        changedStatuses.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
+                    }
                 }
                 
                 return (
