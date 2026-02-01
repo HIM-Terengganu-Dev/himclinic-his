@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/auth/middleware';
+import { requireAuth, getEffectiveRole } from '@/lib/auth/middleware';
 import { getActivityLogs } from '@/lib/db/queries';
 
 export const dynamic = 'force-dynamic';
@@ -30,6 +30,12 @@ export async function GET(req: NextRequest) {
             operation = op; // Extract operation
         }
 
+        // Get effective role (switched role for dev users, otherwise actual role)
+        const effectiveRole = getEffectiveRole(session, req);
+        
+        // Exclude test activities (dummy SKU reconciliations) for non-dev users
+        const excludeTestActivities = effectiveRole !== 'dev';
+
         const logs = await getActivityLogs({
             userId,
             limit,
@@ -38,7 +44,8 @@ export async function GET(req: NextRequest) {
             operation,
             sku,
             dateFrom,
-            dateTo
+            dateTo,
+            excludeTestActivities
         });
 
         return NextResponse.json({ logs });

@@ -55,6 +55,14 @@ export async function getSingleSkuByCode(sku: string) {
     return result.rows[0];
 }
 
+export async function getComboSkuByCode(sku: string) {
+    const result = await query(
+        `SELECT * FROM "his_db".combo_skus WHERE sku = $1`,
+        [sku]
+    );
+    return result.rows[0];
+}
+
 export async function createSingleSku(data: {
     sku: string;
     name: string;
@@ -93,6 +101,25 @@ export async function getAllSingleSkusAdmin() {
 export async function getAllComboSkusAdmin() {
     const result = await query(
         `SELECT * FROM "his_db".combo_skus ORDER BY sku`
+    );
+    return result.rows;
+}
+
+// Test environment functions - get ONLY dummy SKUs
+export async function getDummySingleSkus() {
+    const result = await query(
+        `SELECT * FROM "his_db".single_skus 
+         WHERE LOWER(COALESCE(description, '')) = 'dummy sku'
+         ORDER BY sku`
+    );
+    return result.rows;
+}
+
+export async function getDummyComboSkus() {
+    const result = await query(
+        `SELECT * FROM "his_db".combo_skus 
+         WHERE LOWER(COALESCE(description, '')) = 'dummy sku'
+         ORDER BY sku`
     );
     return result.rows;
 }
@@ -273,6 +300,7 @@ export async function getActivityLogs(filters: {
     sku?: string;
     dateFrom?: string;
     dateTo?: string;
+    excludeTestActivities?: boolean; // If true, exclude test activities (dummy SKU reconciliations)
 }) {
     let sql = `
     SELECT 
@@ -318,6 +346,14 @@ export async function getActivityLogs(filters: {
     if (filters.dateTo) {
         sql += ` AND al.created_at <= $${pIdx++}`;
         params.push(filters.dateTo);
+    }
+
+    // Filter out test activities (dummy SKU reconciliations) for non-dev users
+    if (filters.excludeTestActivities) {
+        sql += ` AND (
+            ss.id IS NULL OR 
+            LOWER(COALESCE(ss.description, '')) != 'dummy sku'
+        )`;
     }
 
     sql += ` ORDER BY al.created_at DESC`;
@@ -488,6 +524,7 @@ export async function getWcWebhookLogs(filters: {
     dateFrom?: string;
     dateTo?: string;
     orderStatus?: string;
+    excludeTestActivities?: boolean; // If true, exclude orders containing dummy SKUs and dummy SKU activities
 }) {
     // Build WHERE clause for both count and data queries
     let whereClause = `WHERE 1=1`;
@@ -556,6 +593,29 @@ export async function getWcWebhookLogs(filters: {
     if (filters.orderStatus) {
         whereClause += ` AND status = $${pIdx++}`;
         params.push(filters.orderStatus);
+    }
+
+    // Filter out test activities for non-dev users
+    if (filters.excludeTestActivities) {
+        // Exclude orders that contain dummy SKUs
+        // Check if any SKU in affected_skus array has description = 'dummy sku'
+        whereClause += ` AND (
+            webhook_type != 'order' OR
+            NOT EXISTS (
+                SELECT 1 
+                FROM jsonb_array_elements_text(COALESCE(affected_skus, '[]'::jsonb)) AS sku_value
+                WHERE EXISTS (
+                    SELECT 1 FROM "his_db".single_skus ss 
+                    WHERE ss.sku = sku_value 
+                    AND LOWER(COALESCE(ss.description, '')) = 'dummy sku'
+                )
+                OR EXISTS (
+                    SELECT 1 FROM "his_db".combo_skus cs 
+                    WHERE cs.sku = sku_value 
+                    AND LOWER(COALESCE(cs.description, '')) = 'dummy sku'
+                )
+            )
+        )`;
     }
 
     // For order webhooks, group by order ID and show latest status with history
@@ -652,6 +712,19 @@ export async function getWcWebhookLogs(filters: {
     }
     
     // For product webhooks or when webhookType is 'product', return as-is
+    // If excluding test activities, also filter out dummy SKU product webhooks
+    if (filters.excludeTestActivities && filters.webhookType === 'product') {
+        // Add filter to exclude product webhooks for dummy SKUs
+        whereClause += ` AND (
+            entity_sku IS NULL OR
+            NOT EXISTS (
+                SELECT 1 FROM "his_db".single_skus ss 
+                WHERE ss.sku = "his_db".wc_webhook_logs.entity_sku 
+                AND LOWER(COALESCE(ss.description, '')) = 'dummy sku'
+            )
+        )`;
+    }
+    
     // Get total count
     const countSql = `SELECT COUNT(*) as total FROM "his_db".wc_webhook_logs ${whereClause}`;
     const countResult = await query(countSql, params);
@@ -1204,10 +1277,13 @@ export async function getCurrentStockState(sku: string): Promise<{
     const processing = row.processing || 0;
     const pendingConsult = row.pending_consult || 0;
     const pendingReview = row.pending_review || 0;
-    const backorder = row.backorder || 0;
     
     // Calculate available for purchase: inWarehouse - pendingConsult - pendingReview - processing
     const availableForPurchase = Math.max(0, inWarehouse - pendingConsult - pendingReview - processing);
+    
+    // Calculate backorder: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+    // This represents orders that exceed available stock
+    const backorder = Math.max(0, (pendingConsult + pendingReview + processing) - inWarehouse);
     
     return {
         inWarehouse,
@@ -1533,10 +1609,18 @@ export async function getAllCurrentStock(): Promise<Record<string, {
         const processing = row.processing || 0;
         const pendingConsult = row.pending_consult || 0;
         const pendingReview = row.pending_review || 0;
-        const backorder = row.backorder || 0;
         
         // Calculate available for purchase: inWarehouse - pendingConsult - pendingReview - processing
         const availableForPurchase = Math.max(0, inWarehouse - pendingConsult - pendingReview - processing);
+        
+        // Calculate backorder: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+        // This represents orders that exceed available stock
+        const backorder = Math.max(0, (pendingConsult + pendingReview + processing) - inWarehouse);
+        
+        // Debug logging for backorder calculation
+        if (backorder > 0) {
+            console.log(`[getAllCurrentStock] ${row.sku}: backorder=${backorder} (pendingConsult=${pendingConsult}, pendingReview=${pendingReview}, processing=${processing}, inWarehouse=${inWarehouse})`);
+        }
         
         // Legacy fields
         const stock = row.stock || 0;

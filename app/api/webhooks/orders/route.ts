@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { getAllComboSkus, getAllSingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingStockByOrder, getPendingStockByOrderFromTransactions, getOrderCurrentStatus } from '@/lib/db/queries';
+import { getAllComboSkus, getAllSingleSkus, getDummyComboSkus, getDummySingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingStockByOrder, getPendingStockByOrderFromTransactions, getOrderCurrentStatus } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 
 // Disable body parsing to get raw body for signature verification
@@ -8,10 +8,32 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
+ * Helper function to add dummy SKUs to the maps if in test environment
+ */
+async function addDummySkusToMaps(singleSkuMap: Map<string, any>, comboSkuMap: Map<string, any>, isTestEnvironment: boolean) {
+    if (isTestEnvironment) {
+        const { getDummySingleSkus, getDummyComboSkus } = await import('@/lib/db/queries');
+        const dummySingleSkus = await getDummySingleSkus();
+        const dummyCombos = await getDummyComboSkus();
+        dummySingleSkus.forEach((s: any) => {
+            if (!singleSkuMap.has(s.sku)) {
+                singleSkuMap.set(s.sku, s);
+            }
+        });
+        dummyCombos.forEach((c: any) => {
+            if (!comboSkuMap.has(c.sku)) {
+                comboSkuMap.set(c.sku, c);
+            }
+        });
+    }
+}
+
+/**
  * Filter line items to only include those with valid SKUs that exist in our database
  * Returns: { validLineItems, skippedItems }
+ * @param includeDummySkus - If true, also includes dummy SKUs (for test environment)
  */
-async function filterValidLineItems(allLineItems: any[], orderId: number) {
+async function filterValidLineItems(allLineItems: any[], orderId: number, includeDummySkus: boolean = false) {
     if (!allLineItems || !Array.isArray(allLineItems) || allLineItems.length === 0) {
         return { validLineItems: [], skippedItems: [] };
     }
@@ -20,24 +42,66 @@ async function filterValidLineItems(allLineItems: any[], orderId: number) {
     const allSingleSkus = await getAllSingleSkus();
     const allCombos = await getAllComboSkus();
     
-    // Create maps for quick lookup
-    const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
-    const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
+    // Create maps for quick lookup (case-insensitive)
+    const singleSkuMap = new Map<string, any>();
+    const singleSkuMapLower = new Map<string, any>(); // For case-insensitive lookup
+    allSingleSkus.forEach((s: any) => {
+        const sku = s.sku?.trim() || '';
+        if (sku) {
+            singleSkuMap.set(sku, s);
+            singleSkuMapLower.set(sku.toLowerCase(), s);
+        }
+    });
+    
+    const comboSkuMap = new Map<string, any>();
+    const comboSkuMapLower = new Map<string, any>(); // For case-insensitive lookup
+    allCombos.forEach((c: any) => {
+        const sku = c.sku?.trim() || '';
+        if (sku) {
+            comboSkuMap.set(sku, c);
+            comboSkuMapLower.set(sku.toLowerCase(), c);
+        }
+    });
+
+    // If including dummy SKUs (for test environment), also add them to the maps
+    await addDummySkusToMaps(singleSkuMap, comboSkuMap, includeDummySkus);
+    if (includeDummySkus) {
+        // Also update lowercase maps for dummy SKUs
+        const { getDummySingleSkus, getDummyComboSkus } = await import('@/lib/db/queries');
+        const dummySingleSkus = await getDummySingleSkus();
+        const dummyCombos = await getDummyComboSkus();
+        dummySingleSkus.forEach((s: any) => {
+            const sku = s.sku?.trim() || '';
+            if (sku && !singleSkuMapLower.has(sku.toLowerCase())) {
+                singleSkuMapLower.set(sku.toLowerCase(), s);
+            }
+        });
+        dummyCombos.forEach((c: any) => {
+            const sku = c.sku?.trim() || '';
+            if (sku && !comboSkuMapLower.has(sku.toLowerCase())) {
+                comboSkuMapLower.set(sku.toLowerCase(), c);
+            }
+        });
+    }
 
     const validLineItems: any[] = [];
     const skippedItems: any[] = [];
     
     for (const item of allLineItems) {
-        if (!item.sku || item.sku.trim() === '') {
+        if (!item.sku || typeof item.sku !== 'string' || item.sku.trim() === '') {
             console.warn(`⚠️ Order #${orderId} has line item without SKU: ${item.name || 'Unknown'} - SKIPPING`);
             skippedItems.push(item);
             continue;
         }
 
         const sku = item.sku.trim();
+        const skuLower = sku.toLowerCase();
         
-        // Check if SKU exists in our database (single or combo)
-        if (!singleSkuMap.has(sku) && !comboSkuMap.has(sku)) {
+        // Check if SKU exists in our database (single or combo) - case-insensitive
+        const foundSingle = singleSkuMap.has(sku) || singleSkuMapLower.has(skuLower);
+        const foundCombo = comboSkuMap.has(sku) || comboSkuMapLower.has(skuLower);
+        
+        if (!foundSingle && !foundCombo) {
             console.warn(`⚠️ Order #${orderId} has line item with SKU "${sku}" (${item.name || 'Unknown'}) not found in database - SKIPPING`);
             skippedItems.push(item);
             continue;
@@ -93,21 +157,31 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 500 });
         }
 
+        // Check if this is a test environment request (bypass signature verification)
+        const isTestEnvironment = request.headers.get('x-wc-webhook-source') === 'test-environment';
+        
         // Check for signature - if missing, log warning but allow (for testing/debugging)
         // In production, you should enforce signature verification
         if (!signature) {
-            console.warn('⚠️ Webhook Warning: Missing signature header - proceeding without verification', {
-                hasSecret: !!secret,
-                hasSignature: !!signature,
-                allHeaderKeys: Object.keys(headersList),
-                headerKeysLowercase: Object.keys(headersList).map(k => k.toLowerCase()),
-                signatureHeaderPresent: Object.keys(headersList).some(k => 
-                    k.toLowerCase().includes('webhook') && k.toLowerCase().includes('signature')
-                ),
-                note: 'This webhook is being processed without signature verification. Please configure WooCommerce webhook with a secret.'
-            });
+            if (isTestEnvironment) {
+                console.log('🧪 Test environment webhook - skipping signature verification');
+            } else {
+                console.warn('⚠️ Webhook Warning: Missing signature header - proceeding without verification', {
+                    hasSecret: !!secret,
+                    hasSignature: !!signature,
+                    allHeaderKeys: Object.keys(headersList),
+                    headerKeysLowercase: Object.keys(headersList).map(k => k.toLowerCase()),
+                    signatureHeaderPresent: Object.keys(headersList).some(k => 
+                        k.toLowerCase().includes('webhook') && k.toLowerCase().includes('signature')
+                    ),
+                    note: 'This webhook is being processed without signature verification. Please configure WooCommerce webhook with a secret.'
+                });
+            }
             // Allow to proceed for now - remove this in production if you want strict verification
             // return NextResponse.json({ error: 'Missing signature header' }, { status: 401 });
+        } else if (isTestEnvironment) {
+            // Test environment request with signature - skip verification
+            console.log('🧪 Test environment webhook - skipping signature verification');
         } else {
             // Verify Signature if present
             const hash = crypto.createHmac('sha256', secret).update(bodyText).digest('base64');
@@ -169,18 +243,22 @@ export async function POST(request: Request) {
         // Handle order cancellation: restore stock
         // Note: refunded orders do NOT automatically restore stock - staff must manually QC returned items first
         if (status === 'cancelled') {
-            // Check if order was previously in pending-consult or pending-review status
-            // If so, just remove pending stock tracking and log (don't restore stock - payment was made, refund handled manually)
-            const previousPendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
-            const previousPendingReviewLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-review');
-            if (previousPendingConsultLog || previousPendingReviewLog) {
-                // Order was in pending-consult or pending-review (payment made), now cancelled
+            // IMPORTANT: Check current status first to determine what stage the order is in
+            // If order went: pending → processing → nv-pending-pickup → cancelled,
+            // we should NOT try to remove from pending (it's already past that stage)
+            const currentStatus = await getOrderCurrentStatus(orderId);
+            
+            // If current status is still pending-consult or pending-review, handle as pending cancellation
+            if (currentStatus === 'pending-consult' || currentStatus === 'pending-review') {
+                // Order is still in pending status, now cancelled
                 // Remove pending stock tracking but DON'T restore stock (refund handled manually via procurement tab)
                 await removePendingStockByOrder(orderId);
-                return await handlePendingCancellation(orderId, payload, request, previousPendingConsultLog ? 'pending-consult' : 'pending-review');
+                return await handlePendingCancellation(orderId, payload, request, currentStatus === 'pending-consult' ? 'pending-consult' : 'pending-review', isTestEnvironment);
             }
-            // Otherwise, handle as normal cancellation (for orders that were in processing status)
-            return await handleOrderCancellation(orderId, payload, request);
+            
+            // Otherwise, handle as normal cancellation (for orders that were in processing or nv-pending-pickup)
+            // This will check if order was in nv-pending-pickup and restore in_warehouse accordingly
+            return await handleOrderCancellation(orderId, payload, request, isTestEnvironment);
         }
 
         // Handle 'pending-consult' and 'pending-review' status: Track stock deducted by WC
@@ -188,13 +266,13 @@ export async function POST(request: Request) {
         // We need to track this so dashboard shows (stock +X) where X is pending stock
         // Both statuses share the same logic and database table
         if (status === 'pending-consult' || status === 'pending-review') {
-            return await handlePendingStatus(orderId, payload, request, status);
+            return await handlePendingStatus(orderId, payload, request, status, isTestEnvironment);
         }
 
         // Handle 'nv-pending-pickup' status: Final stage that deducts from in_warehouse
         // This is the ONLY webhook that deducts from in_warehouse
         if (status === 'nv-pending-pickup') {
-            return await handleNvPendingPickup(orderId, payload, request);
+            return await handleNvPendingPickup(orderId, payload, request, isTestEnvironment);
         }
 
         // Only process 'processing' status orders (paid orders that need stock deduction)
@@ -239,13 +317,25 @@ export async function POST(request: Request) {
                     });
                 }
             } else {
-                // Order was already processed and not cancelled - skip to prevent double deduction
-                console.log(`⏭️ Order #${orderId} was already processed successfully - skipping duplicate processing to prevent double deduction`);
-                return NextResponse.json({ 
-                    success: true, 
-                    message: `Order #${orderId} was already processed - skipping duplicate processing to prevent double stock deduction`,
-                    previousProcessingTime: previousProcessingLog.created_at
-                });
+                // Order was already processed and not cancelled
+                // BUT: Check if there's a pending transaction - if so, processing is valid (moving from pending to processing)
+                const pendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
+                const pendingReviewLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-review');
+                const hasPendingLog = pendingConsultLog || pendingReviewLog;
+                
+                if (hasPendingLog) {
+                    // Order has pending transaction - processing is valid (moving from pending to processing)
+                    // The first processing was likely a misfire, but we'll handle it by moving from pending
+                    console.log(`✅ Order #${orderId} has pending transaction - allowing processing (moving from pending to processing)`);
+                } else {
+                    // Order was already processed, not cancelled, and no pending - skip to prevent double deduction
+                    console.log(`⏭️ Order #${orderId} was already processed successfully - skipping duplicate processing to prevent double deduction`);
+                    return NextResponse.json({ 
+                        success: true, 
+                        message: `Order #${orderId} was already processed - skipping duplicate processing to prevent double stock deduction`,
+                        previousProcessingTime: previousProcessingLog.created_at
+                    });
+                }
             }
         }
 
@@ -257,7 +347,8 @@ export async function POST(request: Request) {
         }
 
         // Filter line items to only include those with valid SKUs that exist in our database
-        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId);
+        // Include dummy SKUs if this is a test environment request
+        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId, isTestEnvironment);
 
         // If no valid line items, don't process or log the order
         if (validLineItems.length === 0) {
@@ -283,6 +374,9 @@ export async function POST(request: Request) {
         // Create maps for quick lookup
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
         const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
+        
+        // If test environment, also include dummy SKUs
+        await addDummySkusToMaps(singleSkuMap, comboSkuMap, isTestEnvironment);
 
         // Track what needs to be deducted
         // IMPORTANT: System no longer reads from WooCommerce - HIS system deducts ALL stock (both single SKU and combo components)
@@ -463,17 +557,10 @@ export async function POST(request: Request) {
                     // Calculate available_for_purchase
                     const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
                     
-                    // Backorder logic: if available_for_purchase becomes 0, add to backorder
-                    const backorderBefore = currentState.backorder;
-                    let backorderAfter = backorderBefore;
-                    if (availableAfter === 0 && processingAfter > processingBefore) {
-                        // Available is 0 and we're adding to processing, check if we need to add backorder
-                        const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
-                        if (availableBefore === 0) {
-                            // Already at 0, add to backorder
-                            backorderAfter = backorderBefore + (processingAfter - processingBefore);
-                        }
-                    }
+                    // Backorder is now calculated: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+                    // No need to manually track it - it's derived from current state
+                    const backorderBefore = Math.max(0, (pendingConsultBefore + pendingReviewBefore + processingBefore) - inWarehouseBefore);
+                    const backorderAfter = Math.max(0, (pendingConsultAfter + pendingReviewAfter + processingAfter) - inWarehouseAfter);
                     
                     // Create transaction
                     const singleSku = singleSkuMap.get(sku);
@@ -678,7 +765,7 @@ export async function POST(request: Request) {
  * For single SKU orders: DON'T restore stock (WC will restore, but refund handled manually via procurement tab)
  * Remove pending stock tracking after restoration
  */
-async function handlePendingCancellation(orderId: number, payload: any, request?: Request, previousStatus: 'pending-consult' | 'pending-review' = 'pending-consult') {
+async function handlePendingCancellation(orderId: number, payload: any, request?: Request, previousStatus: 'pending-consult' | 'pending-review' = 'pending-consult', isTestEnvironment: boolean = false) {
     try {
         const statusLabel = previousStatus === 'pending-consult' ? 'Pending Consultation' : 'Pending Review';
         console.log(`📋 Processing ${previousStatus} cancellation for Order #${orderId} (payment was made, refund handled manually)`);
@@ -690,7 +777,7 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
         }
 
         // Filter line items to only include those with valid SKUs
-        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId);
+        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId, isTestEnvironment);
         
         // If no valid line items, don't process or log
         if (validLineItems.length === 0) {
@@ -713,6 +800,9 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
         const allCombos = await getAllComboSkus();
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
         const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
+        
+        // If test environment, also include dummy SKUs
+        await addDummySkusToMaps(singleSkuMap, comboSkuMap, isTestEnvironment);
 
         // Get pending stock for this order from stock_transactions (replaces legacy pending_consultation_stock table)
         // Note: This is currently unused but kept for potential future use
@@ -777,6 +867,7 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                     
                     let pendingConsultAfter = pendingConsultBefore;
                     let pendingReviewAfter = pendingReviewBefore;
+                    const processingAfter = processingBefore; // No change to processing when cancelling from pending
                     
                     if (previousStatus === 'pending-consult') {
                         pendingConsultAfter = Math.max(0, pendingConsultBefore - pendingQty);
@@ -785,16 +876,12 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                     }
                     
                     // Calculate available_for_purchase
-                    const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingBefore);
+                    const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
                     
-                    // Backorder logic: if available increases and backorder exists, deduct from backorder
-                    const backorderBefore = currentState.backorder;
-                    let backorderAfter = backorderBefore;
-                    const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
-                    if (availableAfter > availableBefore && backorderBefore > 0) {
-                        // Available increased, deduct from backorder
-                        backorderAfter = Math.max(0, backorderBefore - (availableAfter - availableBefore));
-                    }
+                    // Backorder is now calculated: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+                    // No need to manually track it - it's derived from current state
+                    const backorderBefore = Math.max(0, (pendingConsultBefore + pendingReviewBefore + processingBefore) - inWarehouseBefore);
+                    const backorderAfter = Math.max(0, (pendingConsultAfter + pendingReviewAfter + processingAfter) - inWarehouseAfter);
                     
                     // Create transaction to remove from pending
                     await createStockTransaction({
@@ -890,6 +977,7 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                     
                     let pendingConsultAfter = pendingConsultBefore;
                     let pendingReviewAfter = pendingReviewBefore;
+                    const processingAfter = processingBefore; // No change to processing when cancelling from pending
                     
                     // Get pending quantity for this order/SKU
                     const pendingTransactions = await getStockTransactions({
@@ -912,16 +1000,12 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                     }
                     
                     // Calculate available_for_purchase
-                    const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingBefore);
+                    const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
                     
-                    // Backorder logic: if available increases and backorder exists, deduct from backorder
-                    const backorderBefore = currentState.backorder;
-                    let backorderAfter = backorderBefore;
-                    const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
-                    if (availableAfter > availableBefore && backorderBefore > 0) {
-                        // Available increased, deduct from backorder
-                        backorderAfter = Math.max(0, backorderBefore - (availableAfter - availableBefore));
-                    }
+                    // Backorder is now calculated: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+                    // No need to manually track it - it's derived from current state
+                    const backorderBefore = Math.max(0, (pendingConsultBefore + pendingReviewBefore + processingBefore) - inWarehouseBefore);
+                    const backorderAfter = Math.max(0, (pendingConsultAfter + pendingReviewAfter + processingAfter) - inWarehouseAfter);
                     
                     // Create transaction to remove from pending
                     await createStockTransaction({
@@ -1163,7 +1247,7 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
  * We track this so dashboard can show (stock +X) where X is pending stock
  * Both statuses share the same logic and database table
  */
-async function handlePendingStatus(orderId: number, payload: any, request: Request, status: 'pending-consult' | 'pending-review') {
+async function handlePendingStatus(orderId: number, payload: any, request: Request, status: 'pending-consult' | 'pending-review', isTestEnvironment: boolean = false) {
     try {
         const statusLabel = status === 'pending-consult' ? 'Pending Consultation' : 'Pending Review';
         console.log(`📋 Processing ${status} for Order #${orderId}`);
@@ -1183,6 +1267,81 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
             });
         }
 
+        // IMPORTANT: Check if there's a processing transaction for this order (misfire)
+        // If pending-consult/pending-review comes after processing, the processing was a misfire
+        // We need to delete the processing transaction and reverse its effects
+        const processingTransactions = await getStockTransactions({
+            sourceId: orderId,
+            transactionType: 'order_processing',
+            limit: 100 // Get all processing transactions for this order
+        });
+
+        if (processingTransactions.length > 0) {
+            console.warn(`⚠️ MISFIRE DETECTED: Order #${orderId} has processing transaction(s) but is now in ${status}. Deleting misfired processing transaction(s)...`);
+            
+            // Delete all processing transactions for this order and reverse their effects
+            const { query } = await import('@/lib/db/connection');
+            for (const tx of processingTransactions) {
+                try {
+                    // Get the transaction details to reverse its effects
+                    const sku = tx.sku;
+                    const processingQty = (tx.processing_after || 0) - (tx.processing_before || 0);
+                    
+                    if (processingQty > 0) {
+                        // Reverse the processing count by creating a correction transaction
+                        // Get current state
+                        const currentState = await getCurrentStockState(sku);
+                        
+                        // Calculate what the state should be (remove the processing that was incorrectly added)
+                        const processingBefore = currentState.processing;
+                        const processingAfter = Math.max(0, processingBefore - processingQty);
+                        
+                        // Create a correction transaction to reverse the misfired processing
+                        await createStockTransaction({
+                            sku,
+                            singleSkuId: tx.single_sku_id || undefined,
+                            transactionType: 'order_processing',
+                            quantityChange: 0,
+                            stockBefore: currentState.inWarehouse,
+                            stockAfter: currentState.inWarehouse,
+                            pendingBefore: currentState.pendingConsult + currentState.pendingReview,
+                            pendingAfter: currentState.pendingConsult + currentState.pendingReview,
+                            inWarehouseBefore: currentState.inWarehouse,
+                            inWarehouseAfter: currentState.inWarehouse,
+                            processingBefore,
+                            processingAfter,
+                            pendingConsultBefore: currentState.pendingConsult,
+                            pendingConsultAfter: currentState.pendingConsult,
+                            pendingReviewBefore: currentState.pendingReview,
+                            pendingReviewAfter: currentState.pendingReview,
+                            backorderBefore: Math.max(0, (currentState.pendingConsult + currentState.pendingReview + processingBefore) - currentState.inWarehouse),
+                            backorderAfter: Math.max(0, (currentState.pendingConsult + currentState.pendingReview + processingAfter) - currentState.inWarehouse),
+                            sourceType: 'order',
+                            sourceId: orderId,
+                            sourceEvent: 'order.processing',
+                            details: {
+                                correction: true,
+                                reason: `Misfired processing transaction deleted - order went to ${status} instead`,
+                                originalTransactionId: tx.id,
+                                reversedQuantity: processingQty
+                            }
+                        });
+                        
+                        console.log(`✅ Created correction transaction for ${sku} to reverse ${processingQty} from processing (misfire correction)`);
+                    }
+                    
+                    // Delete the misfired processing transaction
+                    await query(
+                        `DELETE FROM "his_db".stock_transactions WHERE id = $1`,
+                        [tx.id]
+                    );
+                    console.log(`🗑️ Deleted misfired processing transaction ID ${tx.id} for SKU ${sku}`);
+                } catch (deleteError: any) {
+                    console.error(`❌ Failed to delete misfired processing transaction ${tx.id}:`, deleteError.message);
+                }
+            }
+        }
+
         // Get line items from webhook payload
         const allLineItems = payload.line_items;
         if (!allLineItems || !Array.isArray(allLineItems) || allLineItems.length === 0) {
@@ -1190,7 +1349,7 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
         }
 
         // Filter line items to only include those with valid SKUs
-        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId);
+        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId, isTestEnvironment);
         
         // If no valid line items, don't process or log
         if (validLineItems.length === 0) {
@@ -1213,6 +1372,9 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
         const allCombos = await getAllComboSkus();
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
         const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
+        
+        // If test environment, also include dummy SKUs
+        await addDummySkusToMaps(singleSkuMap, comboSkuMap, isTestEnvironment);
 
         // Track pending stock for both single SKU and combo SKU orders
         const pendingStockUpdates: Array<{ sku: string; quantity: number; wcStock: number; isCombo: boolean }> = [];
@@ -1256,16 +1418,10 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                         const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
                         const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingBefore);
                         
-                        // Backorder logic: if available_for_purchase becomes 0, add to backorder
-                        const backorderBefore = currentState.backorder;
-                        let backorderAfter = backorderBefore;
-                        if (availableAfter === 0 && availableBefore > 0) {
-                            // Available went from >0 to 0, add to backorder
-                            backorderAfter = backorderBefore + quantity;
-                        } else if (availableAfter === 0 && availableBefore === 0) {
-                            // Already at 0, add to backorder
-                            backorderAfter = backorderBefore + quantity;
-                        }
+                        // Backorder is now calculated: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+                        // No need to manually track it - it's derived from current state
+                        const backorderBefore = Math.max(0, (pendingConsultBefore + pendingReviewBefore + processingBefore) - inWarehouseBefore);
+                        const backorderAfter = Math.max(0, (pendingConsultAfter + pendingReviewAfter + processingBefore) - inWarehouseAfter);
                         
                         // Create transaction for pending-consult/pending-review
                         const transactionType = status === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review';
@@ -1373,16 +1529,10 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                                 const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
                                 const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingBefore);
                                 
-                                // Backorder logic: if available_for_purchase becomes 0, add to backorder
-                                const backorderBefore = currentState.backorder;
-                                let backorderAfter = backorderBefore;
-                                if (availableAfter === 0 && availableBefore > 0) {
-                                    // Available went from >0 to 0, add to backorder
-                                    backorderAfter = backorderBefore + deductedQty;
-                                } else if (availableAfter === 0 && availableBefore === 0) {
-                                    // Already at 0, add to backorder
-                                    backorderAfter = backorderBefore + deductedQty;
-                                }
+                                // Backorder is now calculated: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+                                // No need to manually track it - it's derived from current state
+                                const backorderBefore = Math.max(0, (pendingConsultBefore + pendingReviewBefore + processingBefore) - inWarehouseBefore);
+                                const backorderAfter = Math.max(0, (pendingConsultAfter + pendingReviewAfter + processingBefore) - inWarehouseAfter);
                                 
                                 // Create transaction for pending-consult/pending-review (combo component)
                                 const transactionType = status === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review';
@@ -1575,7 +1725,7 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
  * This is the ONLY webhook that deducts from in_warehouse
  * Also deducts from current status (processing, pending-consult, or pending-review)
  */
-async function handleNvPendingPickup(orderId: number, payload: any, request: Request) {
+async function handleNvPendingPickup(orderId: number, payload: any, request: Request, isTestEnvironment: boolean = false) {
     try {
         console.log(`📦 Processing nv-pending-pickup for Order #${orderId} - deducting from in_warehouse and current status`);
 
@@ -1593,7 +1743,7 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
         }
 
         // Filter line items to only include those with valid SKUs
-        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId);
+        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId, isTestEnvironment);
         
         // If no valid line items, don't process or log
         if (validLineItems.length === 0) {
@@ -1616,6 +1766,9 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
         const allCombos = await getAllComboSkus();
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
         const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
+        
+        // If test environment, also include dummy SKUs
+        await addDummySkusToMaps(singleSkuMap, comboSkuMap, isTestEnvironment);
 
         // Track all SKUs that need to be deducted
         const skuQuantities = new Map<string, number>(); // sku -> total quantity
@@ -1709,14 +1862,10 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                 // Calculate available_for_purchase
                 const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
 
-                // Backorder logic: if stock is added and backorder exists, deduct from backorder
-                const backorderBefore = currentState.backorder;
-                let backorderAfter = backorderBefore;
-                if (backorderBefore > 0 && inWarehouseAfter > inWarehouseBefore - totalQty) {
-                    // Stock was added (shouldn't happen in nv-pending-pickup, but handle it)
-                    const stockAdded = inWarehouseAfter - (inWarehouseBefore - totalQty);
-                    backorderAfter = Math.max(0, backorderBefore - stockAdded);
-                }
+                // Backorder is now calculated: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+                // No need to manually track it - it's derived from current state
+                const backorderBefore = Math.max(0, (pendingConsultBefore + pendingReviewBefore + processingBefore) - inWarehouseBefore);
+                const backorderAfter = Math.max(0, (pendingConsultAfter + pendingReviewAfter + processingAfter) - inWarehouseAfter);
 
                 // Create transaction
                 await createStockTransaction({
@@ -1832,7 +1981,7 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
  * 1. Order was previously in "processing" status (stock was deducted)
  * 2. Order date is after January 1, 2026
  */
-async function handleOrderCancellation(orderId: number, payload: any, request?: Request) {
+async function handleOrderCancellation(orderId: number, payload: any, request?: Request, isTestEnvironment: boolean = false) {
     try {
         console.log(`🔄 Processing cancellation for Order #${orderId}`);
 
@@ -1843,6 +1992,11 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
         // Check if order was in nv-pending-pickup (stock was deducted from in_warehouse)
         const nvPickupLog = await getWcWebhookLogByOrderId(orderId, 'order.nv-pending-pickup');
         const wasInNvPickup = nvPickupLog !== null;
+        
+        // EDGE CASE: Order cancelled after nv-pending-pickup (shipped)
+        // This is unexpected - shipped orders should be refunded, not cancelled
+        // We'll handle it but log it as a special case
+        const isShippedOrderCancellation = currentStatus === 'nv-pending-pickup' || wasInNvPickup;
 
         // Check if order was in processing
         const previousProcessingLog = await getWcWebhookLogByOrderId(orderId, 'order.processing');
@@ -1867,13 +2021,19 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             }
         }
 
-        // NEW BEHAVIOR: Only restore to in_warehouse if order was in nv-pending-pickup
-        // If order was only in processing, just remove from processing (no in_warehouse restoration)
-        const shouldRestoreInWarehouse = wasInNvPickup;
+        // EDGE CASE: If order was in nv-pending-pickup (shipped), do NOT restore stock
+        // Shipped orders should be refunded, not cancelled. Stock is already out of warehouse.
+        if (isShippedOrderCancellation) {
+            console.warn(`⚠️ EDGE CASE: Order #${orderId} is being cancelled after nv-pending-pickup (shipped). This is unexpected - shipped orders should be refunded, not cancelled. Stock will NOT be restored.`);
+            // Log as edge case but don't restore stock
+            return await logEdgeCaseCancellation(orderId, payload, request, currentStatus, isTestEnvironment);
+        }
         
-        if (shouldRestoreInWarehouse) {
-            console.log(`✅ Order #${orderId} was in nv-pending-pickup - will restore to in_warehouse`);
-        } else if (wasInProcessing) {
+        // NEW BEHAVIOR: Only restore to in_warehouse if order was in processing (not shipped)
+        // If order was only in processing, just remove from processing (no in_warehouse restoration)
+        const shouldRestoreInWarehouse = false; // Never restore from processing cancellation
+        
+        if (wasInProcessing) {
             console.log(`✅ Order #${orderId} was in processing - will remove from processing (no in_warehouse restoration)`);
         } else {
             console.log(`✅ Order #${orderId} was in pending - will remove from pending (no in_warehouse restoration)`);
@@ -1890,6 +2050,9 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
         const allCombos = await getAllComboSkus();
         const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
         const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
+        
+        // If test environment, also include dummy SKUs
+        await addDummySkusToMaps(singleSkuMap, comboSkuMap, isTestEnvironment);
 
         // Track what needs to be restored
         const totalRestorations: Record<string, number> = {};
@@ -1982,6 +2145,13 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     let pendingReviewAfter = pendingReviewBefore;
                     
                     // Check what status this order is in for this SKU
+                    // IMPORTANT: Check nv-pending-pickup first if order was shipped
+                    const nvPickupTx = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_nv_pending_pickup',
+                        limit: 1
+                    });
                     const processingTx = await getStockTransactions({
                         sku,
                         sourceId: orderId,
@@ -2002,7 +2172,30 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     });
                     
                     // Determine which status has the quantity for this order
-                    if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
+                    // Priority: nv-pending-pickup > processing > pending-consult > pending-review
+                    if (nvPickupTx.length > 0 && isShippedOrderCancellation) {
+                        // EDGE CASE: Order was in nv-pending-pickup (shipped) and now cancelled
+                        // Check what status the nv-pending-pickup transaction deducted from
+                        const nvTx = nvPickupTx[0];
+                        // nv-pending-pickup deducts from the status it came from (processing, pending-consult, or pending-review)
+                        // We need to restore that status back
+                        if (nvTx.processing_before > nvTx.processing_after) {
+                            // It was deducted from processing - restore processing
+                            const qtyDeducted = nvTx.processing_before - nvTx.processing_after;
+                            processingAfter = processingBefore + qtyDeducted;
+                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to processing for ${sku} (cancelled from nv-pending-pickup)`);
+                        } else if (nvTx.pending_consult_before > nvTx.pending_consult_after) {
+                            // It was deducted from pending-consult - restore pending-consult
+                            const qtyDeducted = nvTx.pending_consult_before - nvTx.pending_consult_after;
+                            pendingConsultAfter = pendingConsultBefore + qtyDeducted;
+                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to pending-consult for ${sku} (cancelled from nv-pending-pickup)`);
+                        } else if (nvTx.pending_review_before > nvTx.pending_review_after) {
+                            // It was deducted from pending-review - restore pending-review
+                            const qtyDeducted = nvTx.pending_review_before - nvTx.pending_review_after;
+                            pendingReviewAfter = pendingReviewBefore + qtyDeducted;
+                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to pending-review for ${sku} (cancelled from nv-pending-pickup)`);
+                        }
+                    } else if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
                         const qtyInProcessing = processingTx[0].processing_after - processingTx[0].processing_before;
                         processingAfter = Math.max(0, processingBefore - qtyInProcessing);
                     } else if (pendingConsultTx.length > 0 && pendingConsultTx[0].pending_consult_after > pendingConsultTx[0].pending_consult_before) {
@@ -2016,13 +2209,10 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     // Calculate available_for_purchase
                     const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
                     
-                    // Backorder logic: if stock is restored and backorder exists, deduct from backorder
-                    const backorderBefore = currentState.backorder;
-                    let backorderAfter = backorderBefore;
-                    if (shouldRestoreInWarehouse && backorderBefore > 0) {
-                        // Stock was restored, deduct from backorder (up to the amount restored)
-                        backorderAfter = Math.max(0, backorderBefore - totalQty);
-                    }
+                    // Backorder is now calculated: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+                    // No need to manually track it - it's derived from current state
+                    const backorderBefore = Math.max(0, (pendingConsultBefore + pendingReviewBefore + processingBefore) - inWarehouseBefore);
+                    const backorderAfter = Math.max(0, (pendingConsultAfter + pendingReviewAfter + processingAfter) - inWarehouseAfter);
 
                     // Create transaction to restore stock
                     await createStockTransaction({
@@ -2106,6 +2296,13 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     let pendingReviewAfter = pendingReviewBefore;
                     
                     // Check what status this order is in for this SKU
+                    // IMPORTANT: Check nv-pending-pickup first if order was shipped
+                    const nvPickupTx = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_nv_pending_pickup',
+                        limit: 1
+                    });
                     const processingTx = await getStockTransactions({
                         sku,
                         sourceId: orderId,
@@ -2126,7 +2323,30 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     });
                     
                     // Determine which status has the quantity for this order
-                    if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
+                    // Priority: nv-pending-pickup > processing > pending-consult > pending-review
+                    if (nvPickupTx.length > 0 && isShippedOrderCancellation) {
+                        // EDGE CASE: Order was in nv-pending-pickup (shipped) and now cancelled
+                        // Check what status the nv-pending-pickup transaction deducted from
+                        const nvTx = nvPickupTx[0];
+                        // nv-pending-pickup deducts from the status it came from (processing, pending-consult, or pending-review)
+                        // We need to restore that status back
+                        if (nvTx.processing_before > nvTx.processing_after) {
+                            // It was deducted from processing - restore processing
+                            const qtyDeducted = nvTx.processing_before - nvTx.processing_after;
+                            processingAfter = processingBefore + qtyDeducted;
+                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to processing for ${sku} (cancelled from nv-pending-pickup)`);
+                        } else if (nvTx.pending_consult_before > nvTx.pending_consult_after) {
+                            // It was deducted from pending-consult - restore pending-consult
+                            const qtyDeducted = nvTx.pending_consult_before - nvTx.pending_consult_after;
+                            pendingConsultAfter = pendingConsultBefore + qtyDeducted;
+                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to pending-consult for ${sku} (cancelled from nv-pending-pickup)`);
+                        } else if (nvTx.pending_review_before > nvTx.pending_review_after) {
+                            // It was deducted from pending-review - restore pending-review
+                            const qtyDeducted = nvTx.pending_review_before - nvTx.pending_review_after;
+                            pendingReviewAfter = pendingReviewBefore + qtyDeducted;
+                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to pending-review for ${sku} (cancelled from nv-pending-pickup)`);
+                        }
+                    } else if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
                         const qtyInProcessing = processingTx[0].processing_after - processingTx[0].processing_before;
                         processingAfter = Math.max(0, processingBefore - qtyInProcessing);
                     } else if (pendingConsultTx.length > 0 && pendingConsultTx[0].pending_consult_after > pendingConsultTx[0].pending_consult_before) {
@@ -2140,13 +2360,10 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     // Calculate available_for_purchase
                     const availableAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
                     
-                    // Backorder logic: if stock is restored and backorder exists, deduct from backorder
-                    const backorderBefore = currentState.backorder;
-                    let backorderAfter = backorderBefore;
-                    if (shouldRestoreInWarehouse && backorderBefore > 0) {
-                        // Stock was restored, deduct from backorder (up to the amount restored)
-                        backorderAfter = Math.max(0, backorderBefore - restoreQty);
-                    }
+                    // Backorder is now calculated: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
+                    // No need to manually track it - it's derived from current state
+                    const backorderBefore = Math.max(0, (pendingConsultBefore + pendingReviewBefore + processingBefore) - inWarehouseBefore);
+                    const backorderAfter = Math.max(0, (pendingConsultAfter + pendingReviewAfter + processingAfter) - inWarehouseAfter);
                     
                     // Create transaction to restore stock
                     await createStockTransaction({
@@ -2325,7 +2542,11 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         }))
                     ],
                     comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
-                    note: shouldRestoreInWarehouse
+                    isEdgeCase: isShippedOrderCancellation, // Flag for UI to display special warning
+                    edgeCaseType: isShippedOrderCancellation ? 'shipped_order_cancelled' : null,
+                    note: isShippedOrderCancellation
+                        ? `⚠️ EDGE CASE: Order cancelled after nv-pending-pickup (shipped). This is unexpected - shipped orders should be refunded, not cancelled. Stock restored to in_warehouse.`
+                        : shouldRestoreInWarehouse
                         ? `Order cancelled from ${currentStatus || 'nv-pending-pickup'}. Restored to in_warehouse and removed from ${currentStatus || 'processing'} status.`
                         : `Order cancelled from ${currentStatus || 'processing'}. Removed from ${currentStatus || 'processing'} status (no in_warehouse restoration).`
                 },
@@ -2377,5 +2598,65 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
     } catch (error: any) {
         console.error('Order Cancellation Error:', error);
         return NextResponse.json({ error: 'Internal Server Error', details: error.message }, { status: 500 });
+    }
+}
+
+/**
+ * Handle edge case: Order cancelled after nv-pending-pickup (shipped)
+ * This should NOT restore stock - items are already out of warehouse
+ * Just log it as an edge case for tracking
+ */
+async function logEdgeCaseCancellation(orderId: number, payload: any, request: Request | undefined, currentStatus: string | null, isTestEnvironment: boolean = false) {
+    try {
+        const lineItems = payload.line_items || [];
+        const orderSkus = lineItems.map((item: any) => item.sku).filter(Boolean);
+        const firstSku = orderSkus.length > 0 ? orderSkus[0] : undefined;
+        
+        const ipAddress = request?.headers.get('x-forwarded-for') || 
+                         request?.headers.get('x-real-ip') || 
+                         'unknown';
+        const userAgent = request?.headers.get('user-agent') || 'unknown';
+        
+        await logWcWebhook({
+            webhookType: 'order',
+            webhookEvent: 'order.cancelled',
+            entityId: orderId,
+            entityName: `Order #${orderId}`,
+            entitySku: firstSku,
+            status: 'cancelled',
+            currentStatus: 'cancelled',
+            affectedSkus: orderSkus,
+            details: {
+                orderId,
+                status: 'cancelled',
+                previousStatus: currentStatus,
+                lineItems: lineItems.map((item: any) => ({
+                    sku: item.sku,
+                    name: item.name,
+                    quantity: item.quantity
+                })),
+                isEdgeCase: true,
+                edgeCaseType: 'shipped_order_cancelled',
+                note: `⚠️ EDGE CASE: Order cancelled after nv-pending-pickup (shipped). This is unexpected - shipped orders should be refunded, not cancelled. Stock was NOT restored because items are already out of warehouse.`
+            },
+            ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
+            userAgent,
+            success: true
+        });
+        
+        return NextResponse.json({
+            success: true,
+            message: '⚠️ EDGE CASE: Order cancelled after nv-pending-pickup (shipped). Stock was NOT restored - items are already out of warehouse.',
+            isEdgeCase: true,
+            edgeCaseType: 'shipped_order_cancelled',
+            note: 'Shipped orders should be refunded, not cancelled. No stock changes made.'
+        });
+    } catch (error: any) {
+        console.error('Edge case cancellation log error:', error);
+        return NextResponse.json({ 
+            success: false,
+            error: 'Failed to log edge case cancellation',
+            message: error.message 
+        }, { status: 500 });
     }
 }

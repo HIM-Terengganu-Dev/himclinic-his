@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/auth/middleware';
+import { requireAuth, getEffectiveRole } from '@/lib/auth/middleware';
 import { getWcWebhookLogs } from '@/lib/db/queries';
 
 export async function GET(req: NextRequest) {
@@ -19,6 +19,12 @@ export async function GET(req: NextRequest) {
         const dateTo = searchParams.get('dateTo') || undefined;
         const orderStatus = searchParams.get('orderStatus') || undefined;
 
+        // Get effective role (switched role for dev users, otherwise actual role)
+        const effectiveRole = getEffectiveRole(session, req);
+        
+        // Exclude test activities (test orders and dummy SKU activities) for non-dev users
+        const excludeTestActivities = effectiveRole !== 'dev';
+
         const result = await getWcWebhookLogs({
             webhookType,
             webhookEvent,
@@ -27,7 +33,8 @@ export async function GET(req: NextRequest) {
             entitySku,
             dateFrom,
             dateTo,
-            orderStatus
+            orderStatus,
+            excludeTestActivities
         });
 
         return NextResponse.json({ 

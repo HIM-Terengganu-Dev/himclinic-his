@@ -4,7 +4,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import { formatDateTimeWithSecondsGMT8 } from '@/lib/utils/date';
-import { Download, RefreshCw, Filter, Search, User, AlertCircle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight } from 'lucide-react';
+import { fetchWithRole } from '@/lib/utils/fetchWithRole';
+import { Download, RefreshCw, Filter, Search, User, AlertCircle, AlertTriangle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface ActivityLogEntry {
     id: number;
@@ -65,7 +66,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
 
     useEffect(() => {
         // Fetch single SKUs for filter dropdown
-        fetch('/api/skus/single')
+        fetchWithRole('/api/skus/single')
             .then(res => res.json())
             .then(data => {
                 if (data.skus) {
@@ -75,7 +76,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             .catch(err => console.error('Failed to fetch SKUs:', err));
         
         // Fetch combo SKUs for Orders filter dropdown
-        fetch('/api/skus/combo')
+        fetchWithRole('/api/skus/combo')
             .then(res => res.json())
             .then(data => {
                 if (data.skus) {
@@ -103,7 +104,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             if (filterDateFrom) queryParams.append('dateFrom', filterDateFrom);
             if (filterDateTo) queryParams.append('dateTo', filterDateTo);
 
-            const res = await fetch(`/api/activity-logs?${queryParams.toString()}`);
+            const res = await fetchWithRole(`/api/activity-logs?${queryParams.toString()}`);
             if (!res.ok) throw new Error('Failed to fetch logs');
 
             const data = await res.json();
@@ -131,7 +132,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             if (filterDateTo) queryParams.append('dateTo', filterDateTo);
             if (filterOrderStatus) queryParams.append('orderStatus', filterOrderStatus);
 
-            const res = await fetch(`/api/webhook-logs?${queryParams.toString()}`);
+            const res = await fetchWithRole(`/api/webhook-logs?${queryParams.toString()}`);
             if (!res.ok) throw new Error('Failed to fetch webhook logs');
 
             const data = await res.json();
@@ -156,7 +157,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             // Fetch with a high limit to get all logs (or implement pagination if needed)
             allLogsParams.append('limit', '10000'); // High limit to get all logs
             
-            const allLogsRes = await fetch(`/api/webhook-logs?${allLogsParams.toString()}`);
+            const allLogsRes = await fetchWithRole(`/api/webhook-logs?${allLogsParams.toString()}`);
             if (allLogsRes.ok) {
                 const allLogsData = await allLogsRes.json();
                 setAllWcLogs(allLogsData.logs || []);
@@ -205,7 +206,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             
             const promises = orderIds.map(async (orderId) => {
                 try {
-                    const res = await fetch(`/api/orders/${orderId}/component-deductions`);
+                    const res = await fetchWithRole(`/api/orders/${orderId}/component-deductions`);
                     if (res.ok) {
                         const data = await res.json();
                         if (data.success && data.componentDeductions) {
@@ -868,6 +869,17 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                         {logEntry.status && (
                                                             <div className="text-xs text-gray-500">{logEntry.status}</div>
                                                         )}
+                                                        {/* Display edge case warning */}
+                                                        {logEntry.details?.isEdgeCase && (
+                                                            <div className="mt-1">
+                                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 border border-red-300">
+                                                                    <AlertTriangle size={12} className="mr-1" />
+                                                                    {logEntry.details.edgeCaseType === 'shipped_order_cancelled' 
+                                                                        ? 'EDGE CASE: Shipped Order Cancelled'
+                                                                        : 'EDGE CASE'}
+                                                                </span>
+                                                            </div>
+                                                        )}
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         {/* For orders: Show SKUs with quantities from lineItems */}
@@ -939,6 +951,18 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         </div>
                                                                     </div>
                                                                 ))}
+                                                                {/* Display edge case warning note after restorations */}
+                                                                {logEntry.details?.isEdgeCase && logEntry.details?.note && (
+                                                                    <div className="mt-3 pt-3 border-t border-red-200">
+                                                                        <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg p-3">
+                                                                            <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
+                                                                            <div className="flex-1">
+                                                                                <p className="text-xs font-semibold text-red-800 mb-1">⚠️ Edge Case Detected</p>
+                                                                                <p className="text-xs text-red-700">{logEntry.details.note}</p>
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         ) : (() => {
                                                             // Try to get component deductions from database (stock_transactions)
@@ -946,17 +970,19 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             const dbDeductions = componentDeductionsCache[orderId] || [];
                                                             
                                                             // Match deductions to this specific log entry by event type and timestamp
-                                                            // Get the event type from logEntry
-                                                            const eventType = logEntry.webhook_event || logEntry.status || '';
+                                                            // Get the event type from logEntry - check current_status first, then webhook_event, then status
+                                                            const eventType = (logEntry as any).current_status || logEntry.webhook_event || logEntry.status || '';
                                                             const logTime = new Date(logEntry.created_at).getTime();
                                                             
                                                             // Map webhook event to transaction type
                                                             const mapEventToTransactionType = (event: string): string => {
-                                                                if (event.includes('pending-consult') || event === 'pending-consult') return 'order_pending_consult';
-                                                                if (event.includes('pending-review') || event === 'pending-review') return 'order_pending_review';
-                                                                if (event.includes('processing') || event === 'processing') return 'order_processing';
-                                                                if (event.includes('nv-pending-pickup') || event === 'nv-pending-pickup') return 'order_nv_pending_pickup';
-                                                                if (event.includes('cancelled') || event === 'cancelled') return 'order_cancelled';
+                                                                if (!event) return '';
+                                                                const lowerEvent = event.toLowerCase();
+                                                                if (lowerEvent.includes('pending-consult') || lowerEvent === 'pending-consult') return 'order_pending_consult';
+                                                                if (lowerEvent.includes('pending-review') || lowerEvent === 'pending-review') return 'order_pending_review';
+                                                                if (lowerEvent.includes('processing') || lowerEvent === 'processing') return 'order_processing';
+                                                                if (lowerEvent.includes('nv-pending-pickup') || lowerEvent === 'nv-pending-pickup' || lowerEvent.includes('nv_pending_pickup')) return 'order_nv_pending_pickup';
+                                                                if (lowerEvent.includes('cancelled') || lowerEvent === 'cancelled') return 'order_cancelled';
                                                                 return '';
                                                             };
                                                             
@@ -967,8 +993,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             const matchingDeductions = dbDeductions.filter((deduction: any) => {
                                                                 const deductionTime = new Date(deduction.createdAt).getTime();
                                                                 const timeDiff = Math.abs(deductionTime - logTime);
-                                                                // Match if within 5 seconds (to handle slight timing differences)
-                                                                const timeMatches = timeDiff < 5000;
+                                                                // Match if within 30 seconds (to handle timing differences between webhook and transaction creation)
+                                                                const timeMatches = timeDiff < 30000;
                                                                 
                                                                 // Strict transaction type matching - must exactly match the expected type
                                                                 const txType = deduction.transactionType || deduction.sourceEvent || '';

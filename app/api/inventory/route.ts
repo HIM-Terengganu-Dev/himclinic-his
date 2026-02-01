@@ -1,23 +1,38 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import {
   calculateAllComboAvailability,
 } from '@/lib/utils/inventory';
-import { getAllSingleSkus, getAllComboSkus, getAllCurrentStock } from '@/lib/db/queries';
+import { getAllSingleSkus, getAllComboSkus, getAllCurrentStock, getDummySingleSkus, getDummyComboSkus } from '@/lib/db/queries';
 import { InventoryStock } from '@/types/inventory';
 
 // Force dynamic rendering to prevent Next.js caching
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    // Check if this is a request to include dummy SKUs (for test environment)
+    const includeDummy = request.nextUrl?.searchParams?.get('includeDummy') === 'true';
+    
     // Fetch SKU definitions from database (source of truth)
     const [singleSkus, comboSkus] = await Promise.all([
       getAllSingleSkus(),
       getAllComboSkus()
     ]);
+    
+    // If includeDummy is true, also fetch dummy SKUs
+    let allSingleSkus = [...singleSkus];
+    let allComboSkus = [...comboSkus];
+    if (includeDummy) {
+      const [dummySingleSkus, dummyComboSkus] = await Promise.all([
+        getDummySingleSkus(),
+        getDummyComboSkus()
+      ]);
+      allSingleSkus = [...singleSkus, ...dummySingleSkus];
+      allComboSkus = [...comboSkus, ...dummyComboSkus];
+    }
 
-    if (singleSkus.length === 0) {
+    if (allSingleSkus.length === 0) {
       return NextResponse.json({
         success: true,
         singleSkus: {},
@@ -41,7 +56,7 @@ export async function GET() {
     // Legacy fields for backward compatibility
     const pendingStock: Record<string, number> = {};
     
-    singleSkus.forEach((sku: any) => {
+    allSingleSkus.forEach((sku: any) => {
       const stockData = currentStockMap[sku.sku];
       if (stockData) {
         // New fields
@@ -50,12 +65,14 @@ export async function GET() {
         processingStock[sku.sku] = stockData.processing;
         pendingConsultStock[sku.sku] = stockData.pendingConsult;
         pendingReviewStock[sku.sku] = stockData.pendingReview;
+        // Backorder is calculated, not stored - use the calculated value from getAllCurrentStock
         backOrderStock[sku.sku] = stockData.backorder;
         // Legacy fields
         inventoryStore[sku.sku] = stockData.stock || stockData.inWarehouse; // Use inWarehouse for legacy
         pendingStock[sku.sku] = stockData.pending || (stockData.pendingConsult + stockData.pendingReview);
       } else {
         // No transactions yet - default to 0
+        // Note: backorder would also be 0 since there are no pending/processing orders
         inWarehouseStock[sku.sku] = 0;
         availableForPurchaseStock[sku.sku] = 0;
         processingStock[sku.sku] = 0;
@@ -70,10 +87,10 @@ export async function GET() {
     console.log(`Fetched stock from transactions for ${Object.keys(inventoryStore).length} SKUs at ${new Date().toISOString()}`);
     
     // Calculate combo availability using available_for_purchase (logical: only available stock can be used for new orders)
-    const comboAvailability = calculateAllComboAvailability(availableForPurchaseStock, comboSkus);
+    const comboAvailability = calculateAllComboAvailability(availableForPurchaseStock, allComboSkus);
 
     // Return SKU list for frontend display
-    const singleSkuList = singleSkus.map((sku: any) => ({
+    const singleSkuList = allSingleSkus.map((sku: any) => ({
       sku: sku.sku,
       name: sku.name,
       id: sku.woocommerce_product_id

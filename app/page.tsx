@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSession, signOut } from 'next-auth/react';
-import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, CheckCircle, ArrowLeftCircle, Shield } from 'lucide-react';
+import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, CheckCircle, ArrowLeftCircle, Shield, FlaskConical } from 'lucide-react';
 import InventoryDashboard from '@/components/InventoryDashboard';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
 import ReturnRefund from '@/components/ReturnRefund';
@@ -10,11 +10,15 @@ import ActivityLog from '@/components/ActivityLog';
 import SkuManagement from '@/components/SkuManagement';
 import AdminAccess from '@/components/AdminAccess';
 import LoginPage from '@/components/LoginPage';
+import TestEnvironment from '@/components/TestEnvironment';
 import { InventoryStock, ComboAvailability } from '@/types/inventory';
 
 export default function Home() {
   const { data: session, status } = useSession();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'return-refund' | 'activity' | 'admin' | 'sku'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'return-refund' | 'activity' | 'admin' | 'sku' | 'test'>('dashboard');
+  const [switchedRole, setSwitchedRole] = useState<string | null>(null);
+  const [showRoleMenu, setShowRoleMenu] = useState(false);
+  const roleMenuRef = useRef<HTMLDivElement>(null);
   const [inventory, setInventory] = useState<InventoryStock>({});
   const [comboAvailability, setComboAvailability] = useState<ComboAvailability[]>([]);
   const [singleSkuList, setSingleSkuList] = useState<Array<{ sku: string; name: string; id?: number }>>([]);
@@ -105,31 +109,54 @@ export default function Home() {
     await signOut({ callbackUrl: '/' });
   };
 
+  // Load switched role from sessionStorage on mount
+  useEffect(() => {
+    if (session?.user?.role === 'dev') {
+      const stored = sessionStorage.getItem('switchedRole');
+      if (stored && (stored === 'admin' || stored === 'dev' || stored === 'user')) {
+        setSwitchedRole(stored);
+      }
+    } else {
+      // Clear switched role if user is not dev
+      setSwitchedRole(null);
+      sessionStorage.removeItem('switchedRole');
+    }
+  }, [session]);
+
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
         setShowUserMenu(false);
       }
+      if (roleMenuRef.current && !roleMenuRef.current.contains(event.target as Node)) {
+        setShowRoleMenu(false);
+      }
     };
 
-    if (showUserMenu) {
+    if (showUserMenu || showRoleMenu) {
       document.addEventListener('mousedown', handleClickOutside);
     }
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showUserMenu]);
+  }, [showUserMenu, showRoleMenu]);
+
+  // Get effective role (switched role for dev users, otherwise actual role)
+  const effectiveRole = (session?.user?.role === 'dev' && switchedRole) ? switchedRole : session?.user?.role;
+  const isAdmin = effectiveRole === 'admin';
+  const isDev = effectiveRole === 'dev';
+  const actualRole = session?.user?.role; // Keep track of actual role for dev users
 
   // Redirect non-admin users away from stock update tabs
   useEffect(() => {
-    if (status === 'authenticated' && session?.user?.role !== 'admin') {
+    if (status === 'authenticated' && effectiveRole !== 'admin') {
       if (activeTab === 'procurement' || activeTab === 'return-refund') {
         setActiveTab('dashboard');
       }
     }
-  }, [status, session, activeTab]);
+  }, [status, effectiveRole, activeTab]);
 
   if (status === 'loading') {
     return (
@@ -146,7 +173,6 @@ export default function Home() {
   const totalSingleSkuStock = Object.values(inventory).reduce((sum, qty) => sum + qty, 0);
   const totalComboAvailable = comboAvailability.reduce((sum, combo) => sum + combo.maxAvailable, 0);
   const lowStockItems = Object.entries(inventory).filter(([_, qty]) => qty < 5).length;
-  const isAdmin = session?.user?.role === 'admin';
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#EEEEEE' }}>
@@ -226,9 +252,58 @@ export default function Home() {
                           {session?.user?.email}
                         </p>
                         {session?.user?.role && (
-                          <span className="inline-block mt-2 px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700">
-                            {session.user.role === 'admin' ? 'Administrator' : 'Staff'}
-                          </span>
+                          <div className="mt-2 relative">
+                            {actualRole === 'dev' ? (
+                              <div className="relative">
+                                <button
+                                  onClick={() => setShowRoleMenu(!showRoleMenu)}
+                                  className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700 hover:bg-blue-200 cursor-pointer transition-colors"
+                                  title="Click to switch role"
+                                >
+                                  {effectiveRole === 'admin' ? 'Administrator' : effectiveRole === 'dev' ? 'Developer' : 'Staff'}
+                                  {switchedRole && switchedRole !== actualRole && ' (switched)'}
+                                </button>
+                                {showRoleMenu && (
+                                  <div className="absolute left-0 mt-1 w-40 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                                    <button
+                                      onClick={() => {
+                                        setSwitchedRole('dev');
+                                        sessionStorage.setItem('switchedRole', 'dev');
+                                        setShowRoleMenu(false);
+                                      }}
+                                      className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-50 ${effectiveRole === 'dev' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'}`}
+                                    >
+                                      Developer
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setSwitchedRole('admin');
+                                        sessionStorage.setItem('switchedRole', 'admin');
+                                        setShowRoleMenu(false);
+                                      }}
+                                      className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-50 ${effectiveRole === 'admin' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'}`}
+                                    >
+                                      Administrator
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setSwitchedRole('user');
+                                        sessionStorage.setItem('switchedRole', 'user');
+                                        setShowRoleMenu(false);
+                                      }}
+                                      className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-50 ${effectiveRole === 'user' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'}`}
+                                    >
+                                      Staff
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="inline-block px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700">
+                                {effectiveRole === 'admin' ? 'Administrator' : effectiveRole === 'dev' ? 'Developer' : 'Staff'}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
 
@@ -338,6 +413,20 @@ export default function Home() {
                 </button>
               )}
 
+              {isDev && (
+                <button
+                  onClick={() => setActiveTab('test')}
+                  className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'test'
+                    ? 'text-purple-600 bg-purple-50/50'
+                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                    }`}
+                >
+                  <FlaskConical size={18} />
+                  Test Environment
+                  {activeTab === 'test' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-600" />}
+                </button>
+              )}
+
             </nav>
           </div>
 
@@ -382,6 +471,10 @@ export default function Home() {
 
             {activeTab === 'sku' && isAdmin && (
               <SkuManagement />
+            )}
+
+            {activeTab === 'test' && isDev && (
+              <TestEnvironment />
             )}
 
           </div>
