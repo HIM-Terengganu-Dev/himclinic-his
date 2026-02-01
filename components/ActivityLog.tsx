@@ -1102,17 +1102,22 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         // For cancellation transactions:
                                                                         // - If cancelled from processing: show Processing and Available changes (no in_warehouse change)
                                                                         // - If cancelled from pending: show Pending Consult/Review and Available changes (no in_warehouse change)
-                                                                        // - If cancelled from nv-pending-pickup (shipped): show in_warehouse restoration
+                                                                        // - If cancelled from nv-pending-pickup (shipped): EDGE CASE - no stock restoration, no in_warehouse change
+                                                                        //   (This is handled by logEdgeCaseCancellation and displayed with edge case warning badge)
                                                                         // For processing transactions: should NOT change in_warehouse
                                                                         // If they do, it's a data issue - don't display it
+                                                                        const isEdgeCase = logEntry.details?.isEdgeCase === true;
                                                                         if (isCancelledTransaction) {
-                                                                            // For cancellations, only show in_warehouse if it actually changed (means it was shipped)
-                                                                            // Otherwise, show the status it was removed from (processing, pending-consult, pending-review)
-                                                                            if (inWarehouseBefore !== inWarehouseAfter) {
-                                                                                // This was a shipped order cancellation - show in_warehouse restoration
+                                                                            // For cancellations, check if it's an edge case (shipped order cancellation)
+                                                                            if (isEdgeCase && logEntry.details?.edgeCaseType === 'shipped_order_cancelled') {
+                                                                                // EDGE CASE: Shipped order cancelled - NO stock restoration, NO in_warehouse change
+                                                                                // The edge case warning badge will be displayed separately
+                                                                                // Don't show any in_warehouse changes
+                                                                            } else if (inWarehouseBefore !== inWarehouseAfter) {
+                                                                                // Regular cancellation with in_warehouse restoration (shouldn't happen for processing/pending)
                                                                                 changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
                                                                             }
-                                                                            // Don't show in_warehouse if it didn't change (processing/pending cancellations)
+                                                                            // For processing/pending cancellations: show the status it was removed from (no in_warehouse change)
                                                                         } else if (inWarehouseBefore !== inWarehouseAfter && !isProcessingTransaction) {
                                                                             // Non-cancellation, non-processing transactions can show in_warehouse changes
                                                                             changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
