@@ -64,11 +64,30 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
     
     const expectedTransactionType = mapEventToTransactionType(eventType);
     
+    console.log(`[ComponentDeductionsCell] Order #${orderId} matching:`, {
+        eventType,
+        expectedTransactionType,
+        webhookEvent: logEntry.webhook_event,
+        currentStatus: (logEntry as any).current_status,
+        status: logEntry.status,
+        logTime: new Date(logEntry.created_at).toISOString(),
+        dbDeductionsCount: dbDeductions.length,
+        dbDeductions: dbDeductions.map((d: any) => ({
+            sku: d.sku,
+            transactionType: d.transactionType,
+            sourceEvent: d.sourceEvent,
+            createdAt: d.createdAt
+        }))
+    });
+    
     // Find deductions that match this event (same event type and similar timestamp)
+    // Note: There may be timezone differences between webhook log time and transaction time
+    // Use a larger window (10 minutes) to account for timezone conversion issues
     const matchingDeductions = dbDeductions.filter((deduction: any) => {
         const deductionTime = new Date(deduction.createdAt).getTime();
         const timeDiff = Math.abs(deductionTime - logTime);
-        const timeMatches = timeDiff < 60000; // 60 seconds
+        // Increased to 10 minutes to handle timezone differences
+        const timeMatches = timeDiff < 600000; // 10 minutes (600000ms)
         
         const txType = deduction.transactionType || deduction.sourceEvent || '';
         let typeMatches = false;
@@ -102,28 +121,54 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
             if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
         }
         
-        return timeMatches && typeMatches;
+        const matches = timeMatches && typeMatches;
+        if (orderId) {
+            console.log(`[ComponentDeductionsCell] Order #${orderId} deduction ${deduction.sku}:`, {
+                txType,
+                expectedTransactionType,
+                timeDiff: `${timeDiff}ms (${Math.round(timeDiff / 1000)}s)`,
+                timeMatches,
+                typeMatches,
+                matches
+            });
+        }
+        
+        return matches;
     });
     
     // Fallback to webhook log data if database data not available
     const webhookDeductions = logEntry.details?.componentDeductions || [];
     
     // If no matching deductions found, try loose matching (time-based only, no type check)
+    // Use a very large window (1 hour) to catch timezone issues
     let deductions = matchingDeductions;
     if (deductions.length === 0 && dbDeductions.length > 0) {
         const looseMatches = dbDeductions.filter((deduction: any) => {
             const deductionTime = new Date(deduction.createdAt).getTime();
             const timeDiff = Math.abs(deductionTime - logTime);
-            return timeDiff < 300000; // 5 minutes
+            // Use 1 hour window to handle timezone conversion issues
+            return timeDiff < 3600000; // 1 hour
         });
         if (looseMatches.length > 0) {
-            console.log(`[ComponentDeductionsCell] Using loose match for Order #${orderId}, eventType: ${eventType}, found ${looseMatches.length} matches`);
+            console.log(`[ComponentDeductionsCell] Using loose match for Order #${orderId}, eventType: ${eventType}, found ${looseMatches.length} matches`, {
+                logTime: new Date(logEntry.created_at).toISOString(),
+                matches: looseMatches.map((d: any) => ({
+                    sku: d.sku,
+                    transactionType: d.transactionType,
+                    createdAt: d.createdAt,
+                    timeDiff: `${Math.abs(new Date(d.createdAt).getTime() - logTime)}ms`
+                }))
+            });
             deductions = looseMatches;
         }
     }
     
     // Final fallback to webhook log details
     if (deductions.length === 0) {
+        console.log(`[ComponentDeductionsCell] Order #${orderId}: No matching dbDeductions, falling back to webhookDeductions`, {
+            webhookDeductionsCount: webhookDeductions.length,
+            webhookDeductions: webhookDeductions
+        });
         deductions = webhookDeductions;
     }
     
@@ -144,11 +189,20 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
                 createdAt: d.createdAt
             }))
         });
-    }
-    
-    if (deductions.length === 0) {
         return <span className="text-gray-400 text-xs">—</span>;
     }
+    
+    console.log(`[ComponentDeductionsCell] Order #${orderId}: Found ${deductions.length} deductions to display`, {
+        eventType,
+        deductions: deductions.map((d: any) => ({
+            sku: d.sku,
+            transactionType: d.transactionType || d.sourceEvent,
+            processingBefore: d.processingBefore,
+            processingAfter: d.processingAfter,
+            inWarehouseBefore: d.inWarehouseBefore,
+            inWarehouseAfter: d.inWarehouseAfter
+        }))
+    });
     
     // Get transaction event label
     const getTransactionEventLabel = (deduction: any) => {
