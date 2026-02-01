@@ -80,15 +80,13 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
         }))
     });
     
-    // Find deductions that match this event (same event type and similar timestamp)
-    // Note: There may be timezone differences between webhook log time and transaction time
-    // Use a larger window (10 minutes) to account for timezone conversion issues
+    // Find deductions that match this event
+    // For nv-pending-pickup (NinjaVan webhooks), timezone is unreliable, so match by type only
+    // For other events, still use time matching but with a very lenient window
+    const isNvPendingPickup = eventType.toLowerCase().includes('nv-pending-pickup') || 
+                               eventType.toLowerCase().includes('nv_pending_pickup');
+    
     const matchingDeductions = dbDeductions.filter((deduction: any) => {
-        const deductionTime = new Date(deduction.createdAt).getTime();
-        const timeDiff = Math.abs(deductionTime - logTime);
-        // Increased to 10 minutes to handle timezone differences
-        const timeMatches = timeDiff < 600000; // 10 minutes (600000ms)
-        
         const txType = deduction.transactionType || deduction.sourceEvent || '';
         let typeMatches = false;
         
@@ -121,13 +119,40 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
             if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
         }
         
+        // Time matching strategy:
+        // 1. nv-pending-pickup: Ignore time completely (NinjaVan timezone issues)
+        // 2. cancelled: Very lenient (24 hours) due to timezone issues
+        // 3. processing/pending: Keep strict (60 seconds) - these work fine, don't break them
+        // 4. Other events: Moderate window (5 minutes)
+        let timeMatches = true;
+        const deductionTime = new Date(deduction.createdAt).getTime();
+        const timeDiff = Math.abs(deductionTime - logTime);
+        
+        if (isNvPendingPickup) {
+            // Ignore time for nv-pending-pickup
+            timeMatches = true;
+        } else if (eventType.toLowerCase().includes('cancelled')) {
+            // Cancelled: Very lenient (24 hours) to handle timezone issues
+            timeMatches = timeDiff < 86400000; // 24 hours
+        } else if (eventType.toLowerCase().includes('processing') || 
+                   eventType.toLowerCase().includes('pending-consult') || 
+                   eventType.toLowerCase().includes('pending-review')) {
+            // Processing/Pending: Keep strict matching (these work fine)
+            timeMatches = timeDiff < 60000; // 60 seconds
+        } else {
+            // Other events: Moderate window
+            timeMatches = timeDiff < 300000; // 5 minutes
+        }
+        
         const matches = timeMatches && typeMatches;
         if (orderId) {
+            const deductionTime = new Date(deduction.createdAt).getTime();
+            const timeDiff = Math.abs(deductionTime - logTime);
             console.log(`[ComponentDeductionsCell] Order #${orderId} deduction ${deduction.sku}:`, {
                 txType,
                 expectedTransactionType,
                 timeDiff: `${timeDiff}ms (${Math.round(timeDiff / 1000)}s)`,
-                timeMatches,
+                timeMatches: isNvPendingPickup ? 'IGNORED (nv-pending-pickup)' : timeMatches,
                 typeMatches,
                 matches
             });
@@ -204,134 +229,185 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
         }))
     });
     
-    // Get transaction event label
-    const getTransactionEventLabel = (deduction: any) => {
-        const txType = deduction.transactionType || deduction.sourceEvent || eventType;
-        if (txType) {
-            if (txType.includes('pending_consult')) return 'Pending Consult';
-            if (txType.includes('pending_review')) return 'Pending Review';
-            if (txType.includes('processing')) return 'Processing';
-            if (txType.includes('nv_pending_pickup') || txType.includes('nv-pending-pickup')) return 'NV Pending Pickup';
-            if (txType.includes('cancelled')) return 'Cancelled';
+    /**
+     * Display component deductions based on Stock Management Flow documentation
+     * Shows only the statuses that change according to the documented flow
+     */
+    const renderDeduction = (deduction: any, deductionIdx: number) => {
+        // Get all status values
+        const inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? deduction.previousStock ?? 0;
+        const inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
+        const processingBefore = deduction.processingBefore ?? 0;
+        const processingAfter = deduction.processingAfter ?? 0;
+        const pendingConsultBefore = deduction.pendingConsultBefore ?? 0;
+        const pendingConsultAfter = deduction.pendingConsultAfter ?? 0;
+        const pendingReviewBefore = deduction.pendingReviewBefore ?? 0;
+        const pendingReviewAfter = deduction.pendingReviewAfter ?? 0;
+        const backorderBefore = deduction.backorderBefore ?? 0;
+        const backorderAfter = deduction.backorderAfter ?? 0;
+        
+        // Calculate available_for_purchase (always calculated, never set directly)
+        const availableBefore = deduction.availableForPurchaseBefore ?? Math.max(0, 
+            inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore
+        );
+        const availableAfter = deduction.availableForPurchaseAfter ?? deduction.availableForPurchase ?? Math.max(0,
+            inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter
+        );
+        
+        // Determine transaction type
+        const txType = deduction.transactionType || deduction.sourceEvent || eventType || '';
+        const isPendingConsult = txType.includes('pending_consult') || eventType.toLowerCase().includes('pending-consult');
+        const isPendingReview = txType.includes('pending_review') || eventType.toLowerCase().includes('pending-review');
+        const isProcessing = txType.includes('processing') || eventType.toLowerCase().includes('processing');
+        const isNvPendingPickup = txType.includes('nv_pending_pickup') || txType.includes('nv-pending-pickup') || 
+                                 eventType.toLowerCase().includes('nv-pending-pickup');
+        const isCancelled = txType.includes('cancelled') || eventType.toLowerCase().includes('cancelled');
+        const isEdgeCase = logEntry.details?.isEdgeCase === true && 
+                          logEntry.details?.edgeCaseType === 'shipped_order_cancelled';
+        
+        // Get event label
+        const getEventLabel = () => {
+            if (isPendingConsult) return 'Pending Consult';
+            if (isPendingReview) return 'Pending Review';
+            if (isProcessing) return 'Processing';
+            if (isNvPendingPickup) return 'NV Pending Pickup';
+            if (isCancelled) return 'Cancelled';
             return txType.replace(/order[._]/g, '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+        };
+        
+        // Build status changes array based on documented flow
+        const changes: Array<{ label: string; before: number; after: number; color: string }> = [];
+        
+        // EDGE CASE: Shipped order cancelled - no stock restoration
+        if (isCancelled && isEdgeCase) {
+            return (
+                <div key={deductionIdx} className="text-xs text-gray-600 mb-3 border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                    <div className="font-mono font-semibold mb-1">{deduction.sku}</div>
+                    <div className="text-xs font-medium text-gray-500 mb-1.5">{getEventLabel()}</div>
+                    <div className="text-gray-400 text-xs italic">Edge case: Already shipped, no stock restoration</div>
+                </div>
+            );
         }
-        return eventType.replace(/order[._]/g, '').replace(/-/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+        
+        // PENDING CONSULT/REVIEW: Show pending changes, available changes, in_warehouse unchanged
+        if (isPendingConsult || isPendingReview) {
+            if (pendingConsultBefore !== pendingConsultAfter) {
+                changes.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
+            }
+            if (pendingReviewBefore !== pendingReviewAfter) {
+                changes.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
+            }
+            if (availableBefore !== availableAfter) {
+                changes.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
+            }
+            // Note: in_warehouse should be unchanged (not shown)
+            // Note: backorder may change if available was 0
+            if (backorderBefore !== backorderAfter) {
+                changes.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
+            }
+        }
+        
+        // PROCESSING: Show processing changes, available changes, in_warehouse unchanged
+        else if (isProcessing) {
+            if (pendingConsultBefore !== pendingConsultAfter) {
+                changes.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
+            }
+            if (pendingReviewBefore !== pendingReviewAfter) {
+                changes.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
+            }
+            if (processingBefore !== processingAfter) {
+                changes.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
+            }
+            if (availableBefore !== availableAfter) {
+                changes.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
+            }
+            // Note: in_warehouse should be unchanged (not shown)
+        }
+        
+        // NV PENDING PICKUP: Show in_warehouse changes, processing changes, available changes
+        else if (isNvPendingPickup) {
+            if (inWarehouseBefore !== inWarehouseAfter) {
+                changes.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
+            }
+            if (processingBefore !== processingAfter) {
+                changes.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
+            }
+            if (availableBefore !== availableAfter) {
+                changes.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
+            }
+        }
+        
+        // CANCELLED: Show status removal, in_warehouse restoration (if applicable), available changes
+        else if (isCancelled) {
+            // Show which status was removed
+            if (processingBefore !== processingAfter) {
+                changes.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
+            }
+            if (pendingConsultBefore !== pendingConsultAfter) {
+                changes.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
+            }
+            if (pendingReviewBefore !== pendingReviewAfter) {
+                changes.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
+            }
+            // Show in_warehouse restoration only if it actually changed
+            if (inWarehouseBefore !== inWarehouseAfter) {
+                changes.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
+            }
+            if (availableBefore !== availableAfter) {
+                changes.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
+            }
+            if (backorderBefore !== backorderAfter) {
+                changes.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
+            }
+        }
+        
+        // UNKNOWN/OTHER: Show all changes
+        else {
+            if (inWarehouseBefore !== inWarehouseAfter) {
+                changes.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
+            }
+            if (processingBefore !== processingAfter) {
+                changes.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
+            }
+            if (pendingConsultBefore !== pendingConsultAfter) {
+                changes.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
+            }
+            if (pendingReviewBefore !== pendingReviewAfter) {
+                changes.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
+            }
+            if (availableBefore !== availableAfter) {
+                changes.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
+            }
+            if (backorderBefore !== backorderAfter) {
+                changes.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
+            }
+        }
+        
+        return (
+            <div key={deductionIdx} className="text-xs text-gray-600 mb-3 border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                <div className="font-mono font-semibold mb-1">{deduction.sku}</div>
+                <div className="text-xs font-medium text-gray-500 mb-1.5">{getEventLabel()}</div>
+                {changes.length > 0 ? (
+                    <div className="mt-1 space-y-1">
+                        {changes.map((change, changeIdx) => (
+                            <div key={changeIdx} className="whitespace-nowrap">
+                                <span className="text-gray-500">{change.label}: </span>
+                                <span className={`font-medium ${change.color}`}>
+                                    {change.before} → {change.after}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="text-gray-400 text-xs italic">No changes</div>
+                )}
+            </div>
+        );
     };
     
     return (
         <div className="min-w-[200px]">
-            {deductions.map((deduction: any, deductionIdx: number) => {
-                const txType = deduction.transactionType || deduction.sourceEvent || eventType || '';
-                const isProcessingTransaction = txType.includes('processing') || txType === 'order_processing' || 
-                                              logEntry.webhook_event === 'order.processing' || 
-                                              logEntry.status === 'processing';
-                const isCancelledTransaction = txType.includes('cancelled') || txType === 'order_cancelled' ||
-                                              logEntry.webhook_event === 'order.cancelled' ||
-                                              logEntry.status === 'cancelled';
-                
-                let inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? deduction.previousStock ?? 0;
-                let inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
-                let processingBefore = deduction.processingBefore ?? 0;
-                let processingAfter = deduction.processingAfter ?? 0;
-                let pendingConsultBefore = deduction.pendingConsultBefore ?? 0;
-                let pendingConsultAfter = deduction.pendingConsultAfter ?? 0;
-                let pendingReviewBefore = deduction.pendingReviewBefore ?? 0;
-                let pendingReviewAfter = deduction.pendingReviewAfter ?? 0;
-                let backorderBefore = deduction.backorderBefore ?? 0;
-                let backorderAfter = deduction.backorderAfter ?? 0;
-                
-                if (isProcessingTransaction && processingBefore === 0 && processingAfter === 0) {
-                    const deductedQty = deduction.deductedQty || Math.abs(deduction.quantityChange || 0) || 0;
-                    if (deductedQty > 0) {
-                        processingAfter = deductedQty;
-                    }
-                }
-                
-                const effectiveInWarehouseBefore = inWarehouseBefore;
-                const effectiveInWarehouseAfter = isProcessingTransaction ? inWarehouseBefore : inWarehouseAfter;
-                const availableBefore = deduction.availableForPurchaseBefore ?? Math.max(0, effectiveInWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
-                const availableAfter = deduction.availableForPurchaseAfter ?? deduction.availableForPurchase ?? Math.max(0, effectiveInWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
-                
-                const changedStatuses: Array<{ label: string; before: number; after: number; color: string }> = [];
-                
-                const isEdgeCase = logEntry.details?.isEdgeCase === true;
-                
-                // For cancelled transactions: show status changes (processing/pending → 0, available changes)
-                // BUT do NOT show in_warehouse if it's the same (e.g., 10→10 is misleading)
-                // For edge case (shipped order cancelled): no changes shown
-                if (isCancelledTransaction) {
-                    if (isEdgeCase && logEntry.details?.edgeCaseType === 'shipped_order_cancelled') {
-                        // Edge case - no changes shown (already shipped, can't restore)
-                    } else {
-                        // Normal cancellation: show status changes, but NOT in_warehouse if unchanged
-                        // Only show in_warehouse if it actually changed (shouldn't happen for processing/pending cancellations)
-                        if (inWarehouseBefore !== inWarehouseAfter) {
-                            changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
-                        }
-                        // Always show available, processing, and pending changes for cancellations
-                        if (availableBefore !== availableAfter) {
-                            changedStatuses.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
-                        }
-                        if (processingBefore !== processingAfter) {
-                            changedStatuses.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
-                        }
-                        if (pendingConsultBefore !== pendingConsultAfter) {
-                            changedStatuses.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
-                        }
-                        if (pendingReviewBefore !== pendingReviewAfter) {
-                            changedStatuses.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
-                        }
-                        if (backorderBefore !== backorderAfter) {
-                            changedStatuses.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
-                        }
-                    }
-                } else if (inWarehouseBefore !== inWarehouseAfter && !isProcessingTransaction) {
-                    // Non-cancellation, non-processing transactions can show in_warehouse changes
-                    changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
-                }
-                
-                // For non-cancelled transactions, show all status changes
-                if (!isCancelledTransaction) {
-                    if (availableBefore !== availableAfter) {
-                        changedStatuses.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
-                    }
-                    if (processingBefore !== processingAfter) {
-                        changedStatuses.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
-                    }
-                    if (pendingConsultBefore !== pendingConsultAfter) {
-                        changedStatuses.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
-                    }
-                    if (pendingReviewBefore !== pendingReviewAfter) {
-                        changedStatuses.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
-                    }
-                    if (backorderBefore !== backorderAfter) {
-                        changedStatuses.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
-                    }
-                }
-                
-                return (
-                    <div key={deductionIdx} className="text-xs text-gray-600 mb-3 border-b border-gray-100 pb-2 last:border-0 last:pb-0">
-                        <div className="font-mono font-semibold mb-1">{deduction.sku}</div>
-                        <div className="text-xs font-medium text-gray-500 mb-1.5">
-                            {getTransactionEventLabel(deduction)}
-                        </div>
-                        {changedStatuses.length > 0 ? (
-                            <div className="mt-1 space-y-1">
-                                {changedStatuses.map((status, statusIdx) => (
-                                    <div key={statusIdx} className="whitespace-nowrap">
-                                        <span className="text-gray-500">{status.label}: </span>
-                                        <span className={`font-medium ${status.color}`}>
-                                            {status.before} → {status.after}
-                                        </span>
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <div className="text-gray-400 text-xs italic">No changes</div>
-                        )}
-                    </div>
-                );
-            })}
+            {deductions.map((deduction: any, deductionIdx: number) => renderDeduction(deduction, deductionIdx))}
         </div>
     );
 }
