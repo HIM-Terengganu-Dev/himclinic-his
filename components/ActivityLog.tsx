@@ -1050,24 +1050,41 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             return (
                                                                 <div className="min-w-[200px]">
                                                                     {deductions.map((deduction: any, deductionIdx: number) => {
-                                                                        // Get before and after values
-                                                                        const inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? deduction.previousStock ?? 0;
-                                                                        const inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
-                                                                        const processingBefore = deduction.processingBefore ?? 0;
-                                                                        const processingAfter = deduction.processingAfter ?? 0;
-                                                                        const pendingConsultBefore = deduction.pendingConsultBefore ?? 0;
-                                                                        const pendingConsultAfter = deduction.pendingConsultAfter ?? 0;
-                                                                        const pendingReviewBefore = deduction.pendingReviewBefore ?? 0;
-                                                                        const pendingReviewAfter = deduction.pendingReviewAfter ?? 0;
-                                                                        const backorderBefore = deduction.backorderBefore ?? 0;
-                                                                        const backorderAfter = deduction.backorderAfter ?? 0;
-                                                                        
                                                                         // Get transaction type to determine if in_warehouse changes should be shown
                                                                         // Check deduction first, then fall back to log entry's event type
                                                                         const txType = deduction.transactionType || deduction.sourceEvent || eventType || '';
                                                                         const isProcessingTransaction = txType.includes('processing') || txType === 'order_processing' || 
                                                                                                       logEntry.webhook_event === 'order.processing' || 
                                                                                                       logEntry.status === 'processing';
+                                                                        
+                                                                        // Get before and after values
+                                                                        // If deduction has the new fields, use them; otherwise try to calculate from webhook log details
+                                                                        let inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? deduction.previousStock ?? 0;
+                                                                        let inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
+                                                                        let processingBefore = deduction.processingBefore ?? 0;
+                                                                        let processingAfter = deduction.processingAfter ?? 0;
+                                                                        let pendingConsultBefore = deduction.pendingConsultBefore ?? 0;
+                                                                        let pendingConsultAfter = deduction.pendingConsultAfter ?? 0;
+                                                                        let pendingReviewBefore = deduction.pendingReviewBefore ?? 0;
+                                                                        let pendingReviewAfter = deduction.pendingReviewAfter ?? 0;
+                                                                        let backorderBefore = deduction.backorderBefore ?? 0;
+                                                                        let backorderAfter = deduction.backorderAfter ?? 0;
+                                                                        
+                                                                        // If this is a webhook log detail (missing new fields), try to infer values
+                                                                        // For processing transactions, we can infer from deductedQty
+                                                                        if (isProcessingTransaction && processingBefore === 0 && processingAfter === 0) {
+                                                                            // This is likely a webhook log detail - try to infer processing change
+                                                                            const deductedQty = deduction.deductedQty || Math.abs(deduction.quantityChange || 0) || 0;
+                                                                            if (deductedQty > 0) {
+                                                                                // For processing, we add to processing count
+                                                                                // We don't know the exact before value, but we can show the change
+                                                                                // Use a placeholder approach: show 0 → deductedQty if we can't determine before
+                                                                                // But better: check if we can get current state from other deductions
+                                                                                processingAfter = deductedQty;
+                                                                                // Note: processingBefore stays 0 if we can't determine it
+                                                                                // This will show "Processing: 0 → X" which is acceptable
+                                                                            }
+                                                                        }
                                                                         
                                                                         // Get available before and after (use API values if available, otherwise calculate)
                                                                         // For processing transactions, use in_warehouse_before for both (since in_warehouse doesn't change)
