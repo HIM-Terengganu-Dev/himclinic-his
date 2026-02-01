@@ -202,19 +202,31 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                 .filter((id, index, self) => self.indexOf(id) === index) // unique
                 .filter(id => id && !componentDeductionsCache[id]); // not already cached
             
-            if (orderIds.length === 0) return;
+            console.log(`[ActivityLog] fetchComponentDeductions: ${orderIds.length} orders to fetch, ${Object.keys(componentDeductionsCache).length} already cached`);
+            
+            if (orderIds.length === 0) {
+                console.log(`[ActivityLog] No new orders to fetch. Total logs: ${wcLogs.length}, Order logs: ${orderLogs.length}`);
+                return;
+            }
             
             const promises = orderIds.map(async (orderId) => {
                 try {
+                    console.log(`[ActivityLog] Fetching component deductions for Order #${orderId}...`);
                     const res = await fetchWithRole(`/api/orders/${orderId}/component-deductions`);
                     if (res.ok) {
                         const data = await res.json();
                         if (data.success && data.componentDeductions) {
+                            console.log(`[ActivityLog] ✅ Order #${orderId}: Got ${data.componentDeductions.length} deductions`);
                             return { orderId, deductions: data.componentDeductions };
+                        } else {
+                            console.log(`[ActivityLog] ⚠️ Order #${orderId}: API returned success=false or no componentDeductions`, data);
                         }
+                    } else {
+                        const errorText = await res.text();
+                        console.error(`[ActivityLog] ❌ Order #${orderId}: API error ${res.status}:`, errorText);
                     }
                 } catch (error) {
-                    console.error(`Failed to fetch component deductions for order ${orderId}:`, error);
+                    console.error(`[ActivityLog] ❌ Failed to fetch component deductions for order ${orderId}:`, error);
                 }
                 return null;
             });
@@ -227,13 +239,24 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                 }
             });
             
+            console.log(`[ActivityLog] Cache update: Adding ${Object.keys(newCache).length} orders to cache`);
+            
             if (Object.keys(newCache).length > 0) {
-                setComponentDeductionsCache(prev => ({ ...prev, ...newCache }));
+                setComponentDeductionsCache(prev => {
+                    const updated = { ...prev, ...newCache };
+                    console.log(`[ActivityLog] Cache updated. Total cached orders: ${Object.keys(updated).length}`);
+                    return updated;
+                });
+            } else {
+                console.log(`[ActivityLog] ⚠️ No deductions to cache. All API calls may have failed.`);
             }
         };
         
         if (wcLogs.length > 0 && activeTab === 'orders') {
+            console.log(`[ActivityLog] Triggering fetchComponentDeductions. wcLogs: ${wcLogs.length}, activeTab: ${activeTab}`);
             fetchComponentDeductions();
+        } else {
+            console.log(`[ActivityLog] Not fetching: wcLogs.length=${wcLogs.length}, activeTab=${activeTab}`);
         }
     }, [wcLogs, activeTab]);
 
@@ -1103,13 +1126,60 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 }
                                                                 // Debug: log when no deductions found
                                                                 if (dbDeductions.length > 0) {
+                                                                    // Detailed debugging for each deduction - simulate the exact matching logic
+                                                                    const debugDetails = dbDeductions.map((d: any) => {
+                                                                        const deductionTime = new Date(d.createdAt).getTime();
+                                                                        const timeDiff = Math.abs(deductionTime - logTime);
+                                                                        const txType = d.transactionType || d.sourceEvent || '';
+                                                                        
+                                                                        // Exact matching logic from the filter
+                                                                        const normalizeType = (t: string) => {
+                                                                            return t.toLowerCase()
+                                                                                .replace(/^order[._-]?/i, '')
+                                                                                .replace(/[_-]/g, '_')
+                                                                                .trim();
+                                                                        };
+                                                                        
+                                                                        const normalizedTxType = normalizeType(txType);
+                                                                        const normalizedExpected = normalizeType(expectedTransactionType);
+                                                                        let typeMatches = normalizedTxType === normalizedExpected;
+                                                                        
+                                                                        // Fallback matching
+                                                                        if (!typeMatches && eventType) {
+                                                                            const eventLower = eventType.toLowerCase();
+                                                                            const txLower = txType.toLowerCase();
+                                                                            if (eventLower.includes('nv-pending-pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+                                                                            if (eventLower.includes('nv_pending_pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+                                                                            if (eventLower.includes('cancelled') && txLower.includes('cancelled')) typeMatches = true;
+                                                                            if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
+                                                                        }
+                                                                        
+                                                                        const timeMatches = timeDiff < 60000;
+                                                                        const overallMatch = timeMatches && typeMatches;
+                                                                        
+                                                                        return {
+                                                                            sku: d.sku,
+                                                                            transactionType: txType,
+                                                                            sourceEvent: d.sourceEvent,
+                                                                            normalizedTxType,
+                                                                            normalizedExpected,
+                                                                            typeMatches,
+                                                                            createdAt: d.createdAt,
+                                                                            timeDiff: `${timeDiff}ms (${Math.round(timeDiff / 1000)}s)`,
+                                                                            timeMatches,
+                                                                            overallMatch,
+                                                                            whyNotMatching: !overallMatch ? (!timeMatches ? 'TIME' : !typeMatches ? 'TYPE' : 'UNKNOWN') : 'MATCHES'
+                                                                        };
+                                                                    });
+                                                                    
                                                                     console.log(`[ActivityLog] No deductions matched for Order #${orderId}`, {
                                                                         eventType,
                                                                         expectedTransactionType,
                                                                         dbDeductionsCount: dbDeductions.length,
-                                                                        dbDeductionTypes: dbDeductions.map((d: any) => d.transactionType || d.sourceEvent),
                                                                         logTime: new Date(logEntry.created_at).toISOString(),
-                                                                        deductionTimes: dbDeductions.map((d: any) => new Date(d.createdAt).toISOString())
+                                                                        webhookEvent: logEntry.webhook_event,
+                                                                        currentStatus: (logEntry as any).current_status,
+                                                                        details: debugDetails
                                                                     });
                                                                 } else if (orderId) {
                                                                     console.log(`[ActivityLog] No deductions in cache for Order #${orderId}. Cache may not be populated yet.`);
