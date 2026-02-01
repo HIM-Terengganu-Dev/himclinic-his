@@ -120,27 +120,23 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
         }
         
         // Time matching strategy:
-        // 1. nv-pending-pickup: Ignore time completely (NinjaVan timezone issues)
-        // 2. cancelled: Very lenient (24 hours) due to timezone issues
-        // 3. processing/pending: Keep strict (60 seconds) - these work fine, don't break them
-        // 4. Other events: Moderate window (5 minutes)
-        let timeMatches = true;
-        const deductionTime = new Date(deduction.createdAt).getTime();
-        const timeDiff = Math.abs(deductionTime - logTime);
+        // Since timezone issues affect all webhook events, match by type only for all order events
+        // This ensures we always find the correct transaction regardless of timezone differences
+        const isOrderEvent = eventType.toLowerCase().includes('processing') ||
+                            eventType.toLowerCase().includes('pending-consult') ||
+                            eventType.toLowerCase().includes('pending-review') ||
+                            eventType.toLowerCase().includes('nv-pending-pickup') ||
+                            eventType.toLowerCase().includes('cancelled');
         
-        if (isNvPendingPickup) {
-            // Ignore time for nv-pending-pickup
+        let timeMatches = true;
+        if (isOrderEvent) {
+            // For all order events: Ignore time matching (timezone issues are common)
+            // Match by order ID + transaction type only
             timeMatches = true;
-        } else if (eventType.toLowerCase().includes('cancelled')) {
-            // Cancelled: Very lenient (24 hours) to handle timezone issues
-            timeMatches = timeDiff < 86400000; // 24 hours
-        } else if (eventType.toLowerCase().includes('processing') || 
-                   eventType.toLowerCase().includes('pending-consult') || 
-                   eventType.toLowerCase().includes('pending-review')) {
-            // Processing/Pending: Keep strict matching (these work fine)
-            timeMatches = timeDiff < 60000; // 60 seconds
         } else {
-            // Other events: Moderate window
+            // For other events (manual operations, etc.): Use moderate time window
+            const deductionTime = new Date(deduction.createdAt).getTime();
+            const timeDiff = Math.abs(deductionTime - logTime);
             timeMatches = timeDiff < 300000; // 5 minutes
         }
         
@@ -235,8 +231,9 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
      */
     const renderDeduction = (deduction: any, deductionIdx: number) => {
         // Get all status values
-        const inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? deduction.previousStock ?? 0;
-        const inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
+        // Use only the new his_db schema fields - no fallback to old inventory_management fields
+        const inWarehouseBefore = deduction.inWarehouseBefore ?? 0;
+        const inWarehouseAfter = deduction.inWarehouseAfter ?? 0;
         const processingBefore = deduction.processingBefore ?? 0;
         const processingAfter = deduction.processingAfter ?? 0;
         const pendingConsultBefore = deduction.pendingConsultBefore ?? 0;
@@ -1329,98 +1326,6 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                         ) : (
                                                             <ComponentDeductionsCell logEntry={logEntry} activeTab={activeTab} />
                                                         )}
-                                                        {/* Show pending stock updates for pending-consult/pending-review orders */}
-                                                        {(() => {
-                                                            // Only show if not already showing component deductions or restorations
-                                                            const hasRestorations = logEntry.details?.componentRestorations && Array.isArray(logEntry.details.componentRestorations) && logEntry.details.componentRestorations.length > 0;
-                                                            const webhookDeductions = logEntry.details?.componentDeductions || [];
-                                                            const hasDeductions = webhookDeductions.length > 0;
-                                                            
-                                                            if (hasRestorations || hasDeductions) return null;
-                                                            
-                                                            if (logEntry.details?.pendingStockUpdates && Array.isArray(logEntry.details.pendingStockUpdates) && logEntry.details.pendingStockUpdates.length > 0) {
-                                                                return (
-                                                                    <div className="min-w-[200px] mt-2">
-                                                                        {logEntry.details.pendingStockUpdates.map((pending: any, pendingIdx: number) => {
-                                                                            // Calculate pending stock from OTHER orders at the time of this pending order
-                                                                            const currentOrderTime = new Date(logEntry.created_at).getTime();
-                                                                            let pendingFromOtherOrders = 0;
-                                                                            
-                                                                            // Track pending stock by order ID to handle removals correctly
-                                                                            const pendingByOrder = new Map<number, number>();
-                                                                            
-                                                                            // Use allWcLogs (without SKU filter) for pending stock calculation
-                                                                            const logsForPendingCalc = allWcLogs.length > 0 ? allWcLogs : wcLogs;
-                                                                            const sortedLogs = [...logsForPendingCalc].sort((a, b) => 
-                                                                                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-                                                                            );
-                                                                            
-                                                                            // Look through all webhook logs to calculate pending stock from other orders
-                                                                            sortedLogs.forEach((log: WcWebhookLogEntry) => {
-                                                                                const logTime = new Date(log.created_at).getTime();
-                                                                                if (logTime >= currentOrderTime) return; // Only look at logs before this order
-                                                                                
-                                                                                // Skip this order's own logs
-                                                                                if (log.entity_id === logEntry.entity_id) return;
-                                                                                
-                                                                                // Add pending stock from pending-consult/pending-review entries
-                                                                                // Check both status and webhook_event to ensure we catch all pending logs
-                                                                                const isPendingLog = (log.status === 'pending-consult' || log.status === 'pending-review') ||
-                                                                                                    (log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review');
-                                                                                
-                                                                                if (isPendingLog && log.details?.pendingStockUpdates) {
-                                                                                    const pendingUpdate = log.details.pendingStockUpdates.find((p: any) => p.sku === pending.sku);
-                                                                                    if (pendingUpdate) {
-                                                                                        pendingByOrder.set(log.entity_id, pendingUpdate.quantity);
-                                                                                    }
-                                                                                }
-                                                                                
-                                                                                // Remove pending stock when order is processed (pending tracking is removed)
-                                                                                if (log.webhook_event === 'order.processing' && pendingByOrder.has(log.entity_id)) {
-                                                                                    pendingByOrder.delete(log.entity_id);
-                                                                                }
-                                                                                
-                                                                                // Remove pending stock when order is cancelled from pending status
-                                                                                if (log.webhook_event === 'order.cancelled' && 
-                                                                                    (log.details?.previousStatus === 'pending-consult' || log.details?.previousStatus === 'pending-review') &&
-                                                                                    pendingByOrder.has(log.entity_id)) {
-                                                                                    pendingByOrder.delete(log.entity_id);
-                                                                                }
-                                                                            });
-                                                                            
-                                                                            // Sum up all remaining pending stock from other orders
-                                                                            pendingFromOtherOrders = Array.from(pendingByOrder.values()).reduce((sum, qty) => sum + qty, 0);
-                                                                            
-                                                                            // Total pending stock after this order (others + this order)
-                                                                            const totalPendingAfter = pendingFromOtherOrders + pending.quantity;
-                                                                            
-                                                                            // Display: WC stock before + pending from others → WC stock after + total pending (others + this order)
-                                                                            // Example: 83+4→82+5 (where +4 is pending from others, +5 is total pending after adding this order's +1)
-                                                                            const wcStockBefore = pending.wcStock + pending.quantity; // WC stock before deduction
-                                                                            const wcStockAfter = pending.wcStock; // WC stock after deduction
-                                                                            
-                                                                            return (
-                                                                                <div key={pendingIdx} className="text-xs text-gray-600 mb-2">
-                                                                                    <div className="font-mono">{pending.sku}</div>
-                                                                                    <div className="whitespace-nowrap">
-                                                                                        <span className="text-gray-500">:{wcStockBefore}</span>
-                                                                                        {pendingFromOtherOrders > 0 && (
-                                                                                            <span className="text-yellow-600 font-medium">+{pendingFromOtherOrders}</span>
-                                                                                        )}
-                                                                                        <span className="text-gray-500">→</span>
-                                                                                        <span className="text-red-600 font-medium">{wcStockAfter}</span>
-                                                                                        {totalPendingAfter > 0 && (
-                                                                                            <span className="text-yellow-600 font-medium">+{totalPendingAfter}</span>
-                                                                                        )}
-                                                                                    </div>
-                                                                                </div>
-                                                                            );
-                                                                        })}
-                                                                    </div>
-                                                                );
-                                                            }
-                                                            return <span className="text-gray-400 text-xs">—</span>;
-                                                        })()}
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         {logEntry.combo_updates && Array.isArray(logEntry.combo_updates) && logEntry.combo_updates.length > 0 ? (
