@@ -7,6 +7,230 @@ import { formatDateTimeWithSecondsGMT8 } from '@/lib/utils/date';
 import { fetchWithRole } from '@/lib/utils/fetchWithRole';
 import { Download, RefreshCw, Filter, Search, User, AlertCircle, AlertTriangle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight } from 'lucide-react';
 
+// Component to fetch and display component deductions for a single log entry
+function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookLogEntry; activeTab: string }) {
+    const [dbDeductions, setDbDeductions] = useState<any[]>([]);
+    const [isLoadingDeductions, setIsLoadingDeductions] = useState(false);
+    const orderId = logEntry.entity_id;
+    
+    // Fetch deductions on-demand for this log entry
+    useEffect(() => {
+        if (!orderId || activeTab !== 'orders') return;
+        
+        const fetchDeductions = async () => {
+            setIsLoadingDeductions(true);
+            try {
+                const res = await fetchWithRole(`/api/orders/${orderId}/component-deductions`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.success && data.componentDeductions) {
+                        setDbDeductions(data.componentDeductions);
+                    }
+                }
+            } catch (error) {
+                console.error(`[ActivityLog] Failed to fetch deductions for Order #${orderId}:`, error);
+            } finally {
+                setIsLoadingDeductions(false);
+            }
+        };
+        
+        fetchDeductions();
+    }, [orderId, activeTab]);
+    
+    if (isLoadingDeductions) {
+        return <span className="text-gray-400 text-xs">Loading...</span>;
+    }
+    
+    // Match deductions to this specific log entry by event type and timestamp
+    let eventType = '';
+    if (logEntry.webhook_event) {
+        eventType = logEntry.webhook_event.replace(/^order\./, ''); // Remove "order." prefix
+    } else {
+        eventType = (logEntry as any).current_status || logEntry.status || '';
+    }
+    const logTime = new Date(logEntry.created_at).getTime();
+    
+    // Map webhook event to transaction type
+    const mapEventToTransactionType = (event: string): string => {
+        if (!event) return '';
+        const lowerEvent = event.toLowerCase();
+        if (lowerEvent.includes('pending-consult') || lowerEvent === 'pending-consult') return 'order_pending_consult';
+        if (lowerEvent.includes('pending-review') || lowerEvent === 'pending-review') return 'order_pending_review';
+        if (lowerEvent.includes('processing') || lowerEvent === 'processing') return 'order_processing';
+        if (lowerEvent.includes('nv-pending-pickup') || lowerEvent === 'nv-pending-pickup' || lowerEvent.includes('nv_pending_pickup')) return 'order_nv_pending_pickup';
+        if (lowerEvent.includes('cancelled') || lowerEvent === 'cancelled') return 'order_cancelled';
+        return '';
+    };
+    
+    const expectedTransactionType = mapEventToTransactionType(eventType);
+    
+    // Find deductions that match this event (same event type and similar timestamp)
+    const matchingDeductions = dbDeductions.filter((deduction: any) => {
+        const deductionTime = new Date(deduction.createdAt).getTime();
+        const timeDiff = Math.abs(deductionTime - logTime);
+        const timeMatches = timeDiff < 60000; // 60 seconds
+        
+        const txType = deduction.transactionType || deduction.sourceEvent || '';
+        let typeMatches = false;
+        
+        if (expectedTransactionType && txType) {
+            const normalizeType = (t: string) => {
+                return t.toLowerCase()
+                    .replace(/^order[._-]?/i, '')
+                    .replace(/[_-]/g, '_')
+                    .trim();
+            };
+            
+            const normalizedTxType = normalizeType(txType);
+            const normalizedExpected = normalizeType(expectedTransactionType);
+            typeMatches = normalizedTxType === normalizedExpected;
+            
+            if (!typeMatches && eventType) {
+                const eventLower = eventType.toLowerCase();
+                const txLower = txType.toLowerCase();
+                if (eventLower.includes('nv-pending-pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+                if (eventLower.includes('nv_pending_pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+                if (eventLower.includes('cancelled') && txLower.includes('cancelled')) typeMatches = true;
+                if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
+            }
+        } else if (!expectedTransactionType && eventType) {
+            const eventLower = eventType.toLowerCase();
+            const txLower = txType.toLowerCase();
+            if (eventLower.includes('nv-pending-pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+            if (eventLower.includes('nv_pending_pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+            if (eventLower.includes('cancelled') && txLower.includes('cancelled')) typeMatches = true;
+            if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
+        }
+        
+        return timeMatches && typeMatches;
+    });
+    
+    // Fallback to webhook log data if database data not available
+    const webhookDeductions = logEntry.details?.componentDeductions || [];
+    
+    // If no matching deductions found, try loose matching
+    let deductions = matchingDeductions;
+    if (deductions.length === 0 && dbDeductions.length > 0) {
+        const looseMatches = dbDeductions.filter((deduction: any) => {
+            const deductionTime = new Date(deduction.createdAt).getTime();
+            const timeDiff = Math.abs(deductionTime - logTime);
+            return timeDiff < 300000; // 5 minutes
+        });
+        if (looseMatches.length > 0) {
+            deductions = looseMatches;
+        }
+    }
+    
+    // Final fallback to webhook log details
+    if (deductions.length === 0) {
+        deductions = webhookDeductions;
+    }
+    
+    if (deductions.length === 0) {
+        return <span className="text-gray-400 text-xs">—</span>;
+    }
+    
+    // Get transaction event label
+    const getTransactionEventLabel = (deduction: any) => {
+        const txType = deduction.transactionType || deduction.sourceEvent || eventType;
+        if (txType) {
+            if (txType.includes('pending_consult')) return 'Pending Consult';
+            if (txType.includes('pending_review')) return 'Pending Review';
+            if (txType.includes('processing')) return 'Processing';
+            if (txType.includes('nv_pending_pickup') || txType.includes('nv-pending-pickup')) return 'NV Pending Pickup';
+            if (txType.includes('cancelled')) return 'Cancelled';
+            return txType.replace(/order[._]/g, '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+        }
+        return eventType.replace(/order[._]/g, '').replace(/-/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+    };
+    
+    return (
+        <div className="min-w-[200px]">
+            {deductions.map((deduction: any, deductionIdx: number) => {
+                const txType = deduction.transactionType || deduction.sourceEvent || eventType || '';
+                const isProcessingTransaction = txType.includes('processing') || txType === 'order_processing' || 
+                                              logEntry.webhook_event === 'order.processing' || 
+                                              logEntry.status === 'processing';
+                const isCancelledTransaction = txType.includes('cancelled') || txType === 'order_cancelled' ||
+                                              logEntry.webhook_event === 'order.cancelled' ||
+                                              logEntry.status === 'cancelled';
+                
+                let inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? deduction.previousStock ?? 0;
+                let inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
+                let processingBefore = deduction.processingBefore ?? 0;
+                let processingAfter = deduction.processingAfter ?? 0;
+                let pendingConsultBefore = deduction.pendingConsultBefore ?? 0;
+                let pendingConsultAfter = deduction.pendingConsultAfter ?? 0;
+                let pendingReviewBefore = deduction.pendingReviewBefore ?? 0;
+                let pendingReviewAfter = deduction.pendingReviewAfter ?? 0;
+                let backorderBefore = deduction.backorderBefore ?? 0;
+                let backorderAfter = deduction.backorderAfter ?? 0;
+                
+                if (isProcessingTransaction && processingBefore === 0 && processingAfter === 0) {
+                    const deductedQty = deduction.deductedQty || Math.abs(deduction.quantityChange || 0) || 0;
+                    if (deductedQty > 0) {
+                        processingAfter = deductedQty;
+                    }
+                }
+                
+                const effectiveInWarehouseBefore = inWarehouseBefore;
+                const effectiveInWarehouseAfter = isProcessingTransaction ? inWarehouseBefore : inWarehouseAfter;
+                const availableBefore = deduction.availableForPurchaseBefore ?? Math.max(0, effectiveInWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+                const availableAfter = deduction.availableForPurchaseAfter ?? deduction.availableForPurchase ?? Math.max(0, effectiveInWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
+                
+                const changedStatuses: Array<{ label: string; before: number; after: number; color: string }> = [];
+                
+                const isEdgeCase = logEntry.details?.isEdgeCase === true;
+                if (isCancelledTransaction) {
+                    if (isEdgeCase && logEntry.details?.edgeCaseType === 'shipped_order_cancelled') {
+                        // Edge case - no changes shown
+                    }
+                } else if (inWarehouseBefore !== inWarehouseAfter && !isProcessingTransaction) {
+                    changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
+                }
+                if (availableBefore !== availableAfter) {
+                    changedStatuses.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
+                }
+                if (processingBefore !== processingAfter) {
+                    changedStatuses.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
+                }
+                if (pendingConsultBefore !== pendingConsultAfter) {
+                    changedStatuses.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
+                }
+                if (pendingReviewBefore !== pendingReviewAfter) {
+                    changedStatuses.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
+                }
+                if (backorderBefore !== backorderAfter) {
+                    changedStatuses.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
+                }
+                
+                return (
+                    <div key={deductionIdx} className="text-xs text-gray-600 mb-3 border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                        <div className="font-mono font-semibold mb-1">{deduction.sku}</div>
+                        <div className="text-xs font-medium text-gray-500 mb-1.5">
+                            {getTransactionEventLabel(deduction)}
+                        </div>
+                        {changedStatuses.length > 0 ? (
+                            <div className="mt-1 space-y-1">
+                                {changedStatuses.map((status, statusIdx) => (
+                                    <div key={statusIdx} className="whitespace-nowrap">
+                                        <span className="text-gray-500">{status.label}: </span>
+                                        <span className={`font-medium ${status.color}`}>
+                                            {status.before} → {status.after}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="text-gray-400 text-xs italic">No changes</div>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
 interface ActivityLogEntry {
     id: number;
     user_name: string;
@@ -60,7 +284,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [comboSkus, setComboSkus] = useState<Array<{ sku: string; name: string }>>([]);
     const [wcCurrentPage, setWcCurrentPage] = useState(1);
     const [wcTotalCount, setWcTotalCount] = useState(0);
-    const [componentDeductionsCache, setComponentDeductionsCache] = useState<Record<number, any[]>>({});
+    // Removed cache - fetch directly from API when needed
     const topScrollRef = useRef<HTMLDivElement>(null);
     const bottomScrollRef = useRef<HTMLDivElement>(null);
 
@@ -191,73 +415,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     
     // Fetch component deductions from database for all order events
     useEffect(() => {
-        const fetchComponentDeductions = async () => {
-            // Get all order logs (not just processing)
-            const orderLogs = wcLogs.filter(log => 
-                log.webhook_type === 'order' && log.entity_id
-            );
-            
-            const orderIds = orderLogs
-                .map(log => log.entity_id)
-                .filter((id, index, self) => self.indexOf(id) === index) // unique
-                .filter(id => id && !componentDeductionsCache[id]); // not already cached
-            
-            console.log(`[ActivityLog] fetchComponentDeductions: ${orderIds.length} orders to fetch, ${Object.keys(componentDeductionsCache).length} already cached`);
-            
-            if (orderIds.length === 0) {
-                console.log(`[ActivityLog] No new orders to fetch. Total logs: ${wcLogs.length}, Order logs: ${orderLogs.length}`);
-                return;
-            }
-            
-            const promises = orderIds.map(async (orderId) => {
-                try {
-                    console.log(`[ActivityLog] Fetching component deductions for Order #${orderId}...`);
-                    const res = await fetchWithRole(`/api/orders/${orderId}/component-deductions`);
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (data.success && data.componentDeductions) {
-                            console.log(`[ActivityLog] ✅ Order #${orderId}: Got ${data.componentDeductions.length} deductions`);
-                            return { orderId, deductions: data.componentDeductions };
-                        } else {
-                            console.log(`[ActivityLog] ⚠️ Order #${orderId}: API returned success=false or no componentDeductions`, data);
-                        }
-                    } else {
-                        const errorText = await res.text();
-                        console.error(`[ActivityLog] ❌ Order #${orderId}: API error ${res.status}:`, errorText);
-                    }
-                } catch (error) {
-                    console.error(`[ActivityLog] ❌ Failed to fetch component deductions for order ${orderId}:`, error);
-                }
-                return null;
-            });
-            
-            const results = await Promise.all(promises);
-            const newCache: Record<number, any[]> = {};
-            results.forEach(result => {
-                if (result) {
-                    newCache[result.orderId] = result.deductions;
-                }
-            });
-            
-            console.log(`[ActivityLog] Cache update: Adding ${Object.keys(newCache).length} orders to cache`);
-            
-            if (Object.keys(newCache).length > 0) {
-                setComponentDeductionsCache(prev => {
-                    const updated = { ...prev, ...newCache };
-                    console.log(`[ActivityLog] Cache updated. Total cached orders: ${Object.keys(updated).length}`);
-                    return updated;
-                });
-            } else {
-                console.log(`[ActivityLog] ⚠️ No deductions to cache. All API calls may have failed.`);
-            }
-        };
-        
-        if (wcLogs.length > 0 && activeTab === 'orders') {
-            console.log(`[ActivityLog] Triggering fetchComponentDeductions. wcLogs: ${wcLogs.length}, activeTab: ${activeTab}`);
-            fetchComponentDeductions();
-        } else {
-            console.log(`[ActivityLog] Not fetching: wcLogs.length=${wcLogs.length}, activeTab=${activeTab}`);
-        }
+        // Removed cache-based fetching - now fetch on-demand per log entry
     }, [wcLogs, activeTab]);
 
     // Sync scroll between top and bottom scrollbars
@@ -987,347 +1145,15 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     </div>
                                                                 )}
                                                             </div>
-                                                        ) : (() => {
-                                                            // Try to get component deductions from database (stock_transactions)
-                                                            const orderId = logEntry.entity_id;
-                                                            // Ensure orderId is a number for cache lookup (cache keys are numbers)
-                                                            const orderIdNum = typeof orderId === 'string' ? parseInt(orderId, 10) : orderId;
-                                                            const dbDeductions = componentDeductionsCache[orderIdNum] || componentDeductionsCache[orderId] || [];
-                                                            
-                                                            // Debug: Log cache access
-                                                            if (dbDeductions.length === 0 && orderId) {
-                                                                console.log(`[ActivityLog] No deductions in cache for Order #${orderId} (num: ${orderIdNum})`, {
-                                                                    cacheKeys: Object.keys(componentDeductionsCache),
-                                                                    cacheHasOrderId: orderIdNum in componentDeductionsCache,
-                                                                    cacheHasOrderIdString: orderId in componentDeductionsCache,
-                                                                    orderIdType: typeof orderId,
-                                                                    orderIdNumType: typeof orderIdNum
-                                                                });
-                                                            }
-                                                            
-                                                            // Match deductions to this specific log entry by event type and timestamp
-                                                            // Get the event type from logEntry - check current_status first, then webhook_event, then status
-                                                            // IMPORTANT: For cancelled and nv-pending-pickup, webhook_event is more reliable than current_status
-                                                            let eventType = '';
-                                                            if (logEntry.webhook_event) {
-                                                                // Use webhook_event as primary source (it's more reliable for matching)
-                                                                eventType = logEntry.webhook_event.replace(/^order\./, ''); // Remove "order." prefix
-                                                            } else {
-                                                                // Fallback to current_status or status
-                                                                eventType = (logEntry as any).current_status || logEntry.status || '';
-                                                            }
-                                                            const logTime = new Date(logEntry.created_at).getTime();
-                                                            
-                                                            // Debug: Log event type detection
-                                                            if (!eventType && orderId) {
-                                                                console.log(`[ActivityLog] No eventType for Order #${orderId}:`, {
-                                                                    webhook_event: logEntry.webhook_event,
-                                                                    current_status: (logEntry as any).current_status,
-                                                                    status: logEntry.status
-                                                                });
-                                                            }
-                                                            
-                                                            // Map webhook event to transaction type
-                                                            const mapEventToTransactionType = (event: string): string => {
-                                                                if (!event) return '';
-                                                                const lowerEvent = event.toLowerCase();
-                                                                if (lowerEvent.includes('pending-consult') || lowerEvent === 'pending-consult') return 'order_pending_consult';
-                                                                if (lowerEvent.includes('pending-review') || lowerEvent === 'pending-review') return 'order_pending_review';
-                                                                if (lowerEvent.includes('processing') || lowerEvent === 'processing') return 'order_processing';
-                                                                if (lowerEvent.includes('nv-pending-pickup') || lowerEvent === 'nv-pending-pickup' || lowerEvent.includes('nv_pending_pickup')) return 'order_nv_pending_pickup';
-                                                                if (lowerEvent.includes('cancelled') || lowerEvent === 'cancelled') return 'order_cancelled';
-                                                                return '';
-                                                            };
-                                                            
-                                                            const expectedTransactionType = mapEventToTransactionType(eventType);
-                                                            
-                                                            // Find deductions that match this event (same event type and similar timestamp)
-                                                            // IMPORTANT: Only show transactions that match the current log entry's event type
-                                                            const matchingDeductions = dbDeductions.filter((deduction: any) => {
-                                                                const deductionTime = new Date(deduction.createdAt).getTime();
-                                                                const timeDiff = Math.abs(deductionTime - logTime);
-                                                                // Match if within 60 seconds (increased from 30 to handle timing differences)
-                                                                const timeMatches = timeDiff < 60000;
-                                                                
-                                                                // More flexible transaction type matching
-                                                                const txType = deduction.transactionType || deduction.sourceEvent || '';
-                                                                let typeMatches = false;
-                                                                
-                                                                if (expectedTransactionType && txType) {
-                                                                    // Normalize both types for comparison (handle underscores, hyphens, prefixes, order prefix)
-                                                                    const normalizeType = (t: string) => {
-                                                                        return t.toLowerCase()
-                                                                            .replace(/^order[._-]?/i, '')
-                                                                            .replace(/[_-]/g, '_')
-                                                                            .trim();
-                                                                    };
-                                                                    
-                                                                    const normalizedTxType = normalizeType(txType);
-                                                                    const normalizedExpected = normalizeType(expectedTransactionType);
-                                                                    
-                                                                    // Exact match
-                                                                    typeMatches = normalizedTxType === normalizedExpected;
-                                                                    
-                                                                    // Also check if the event type is in the transaction type (for edge cases)
-                                                                    if (!typeMatches && eventType) {
-                                                                        const eventLower = eventType.toLowerCase();
-                                                                        const txLower = txType.toLowerCase();
-                                                                        // Check if event type keywords are present in transaction type
-                                                                        if (eventLower.includes('nv-pending-pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
-                                                                        if (eventLower.includes('nv_pending_pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
-                                                                        if (eventLower.includes('cancelled') && txLower.includes('cancelled')) typeMatches = true;
-                                                                        if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
-                                                                    }
-                                                                } else if (!expectedTransactionType && eventType) {
-                                                                    // Fallback: if we can't map the event type, try direct matching
-                                                                    const eventLower = eventType.toLowerCase();
-                                                                    const txLower = txType.toLowerCase();
-                                                                    // Check if event keywords match transaction type
-                                                                    if (eventLower.includes('nv-pending-pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
-                                                                    if (eventLower.includes('nv_pending_pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
-                                                                    if (eventLower.includes('cancelled') && txLower.includes('cancelled')) typeMatches = true;
-                                                                    if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
-                                                                }
-                                                                
-                                                                return timeMatches && typeMatches;
-                                                            });
-                                                            
-                                                            // Fallback to webhook log data if database data not available
-                                                            // IMPORTANT: Do NOT fall back to all dbDeductions - only show matching transactions
-                                                            const webhookDeductions = logEntry.details?.componentDeductions || [];
-                                                            
-                                                            // If no matching deductions found, try to find any deduction for this order (less strict matching)
-                                                            // This helps when timing is slightly off or event type mapping is imperfect
-                                                            let deductions = matchingDeductions;
-                                                            if (deductions.length === 0 && dbDeductions.length > 0) {
-                                                                // Try less strict matching: just match by order ID and approximate time
-                                                                const looseMatches = dbDeductions.filter((deduction: any) => {
-                                                                    const deductionTime = new Date(deduction.createdAt).getTime();
-                                                                    const timeDiff = Math.abs(deductionTime - logTime);
-                                                                    // Match if within 5 minutes (very loose for debugging)
-                                                                    return timeDiff < 300000;
-                                                                });
-                                                                
-                                                                if (looseMatches.length > 0) {
-                                                                    console.log(`[ActivityLog] Using loose match for Order #${orderId}, eventType: ${eventType}, found ${looseMatches.length} matches`);
-                                                                    deductions = looseMatches;
-                                                                }
-                                                            }
-                                                            
-                                                            // Final fallback to webhook log details
-                                                            if (deductions.length === 0) {
-                                                                deductions = webhookDeductions;
-                                                            }
-                                                            
-                                                            if (deductions.length === 0) {
-                                                                // If no deductions, check for pendingStockUpdates
-                                                                if (logEntry.details?.pendingStockUpdates && Array.isArray(logEntry.details.pendingStockUpdates) && logEntry.details.pendingStockUpdates.length > 0) {
-                                                                    return null; // Will be handled by next ternary
-                                                                }
-                                                                // Debug: log when no deductions found
-                                                                if (dbDeductions.length > 0) {
-                                                                    // Detailed debugging for each deduction - simulate the exact matching logic
-                                                                    const debugDetails = dbDeductions.map((d: any) => {
-                                                                        const deductionTime = new Date(d.createdAt).getTime();
-                                                                        const timeDiff = Math.abs(deductionTime - logTime);
-                                                                        const txType = d.transactionType || d.sourceEvent || '';
-                                                                        
-                                                                        // Exact matching logic from the filter
-                                                                        const normalizeType = (t: string) => {
-                                                                            return t.toLowerCase()
-                                                                                .replace(/^order[._-]?/i, '')
-                                                                                .replace(/[_-]/g, '_')
-                                                                                .trim();
-                                                                        };
-                                                                        
-                                                                        const normalizedTxType = normalizeType(txType);
-                                                                        const normalizedExpected = normalizeType(expectedTransactionType);
-                                                                        let typeMatches = normalizedTxType === normalizedExpected;
-                                                                        
-                                                                        // Fallback matching
-                                                                        if (!typeMatches && eventType) {
-                                                                            const eventLower = eventType.toLowerCase();
-                                                                            const txLower = txType.toLowerCase();
-                                                                            if (eventLower.includes('nv-pending-pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
-                                                                            if (eventLower.includes('nv_pending_pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
-                                                                            if (eventLower.includes('cancelled') && txLower.includes('cancelled')) typeMatches = true;
-                                                                            if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
-                                                                        }
-                                                                        
-                                                                        const timeMatches = timeDiff < 60000;
-                                                                        const overallMatch = timeMatches && typeMatches;
-                                                                        
-                                                                        return {
-                                                                            sku: d.sku,
-                                                                            transactionType: txType,
-                                                                            sourceEvent: d.sourceEvent,
-                                                                            normalizedTxType,
-                                                                            normalizedExpected,
-                                                                            typeMatches,
-                                                                            createdAt: d.createdAt,
-                                                                            timeDiff: `${timeDiff}ms (${Math.round(timeDiff / 1000)}s)`,
-                                                                            timeMatches,
-                                                                            overallMatch,
-                                                                            whyNotMatching: !overallMatch ? (!timeMatches ? 'TIME' : !typeMatches ? 'TYPE' : 'UNKNOWN') : 'MATCHES'
-                                                                        };
-                                                                    });
-                                                                    
-                                                                    console.log(`[ActivityLog] No deductions matched for Order #${orderId}`, {
-                                                                        eventType,
-                                                                        expectedTransactionType,
-                                                                        dbDeductionsCount: dbDeductions.length,
-                                                                        logTime: new Date(logEntry.created_at).toISOString(),
-                                                                        webhookEvent: logEntry.webhook_event,
-                                                                        currentStatus: (logEntry as any).current_status,
-                                                                        details: debugDetails
-                                                                    });
-                                                                } else if (orderId) {
-                                                                    console.log(`[ActivityLog] No deductions in cache for Order #${orderId}. Cache may not be populated yet.`);
-                                                                }
-                                                                return <span className="text-gray-400 text-xs">—</span>;
-                                                            }
-                                                            
-                                                            // Get transaction event label
-                                                            const getTransactionEventLabel = (deduction: any) => {
-                                                                const txType = deduction.transactionType || deduction.sourceEvent || eventType;
-                                                                if (txType) {
-                                                                    if (txType.includes('pending_consult')) return 'Pending Consult';
-                                                                    if (txType.includes('pending_review')) return 'Pending Review';
-                                                                    if (txType.includes('processing')) return 'Processing';
-                                                                    if (txType.includes('nv_pending_pickup') || txType.includes('nv-pending-pickup')) return 'NV Pending Pickup';
-                                                                    if (txType.includes('cancelled')) return 'Cancelled';
-                                                                    return txType.replace(/order[._]/g, '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
-                                                                }
-                                                                return eventType.replace(/order[._]/g, '').replace(/-/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
-                                                            };
-                                                            
-                                                            return (
-                                                                <div className="min-w-[200px]">
-                                                                    {deductions.map((deduction: any, deductionIdx: number) => {
-                                                                        // Get transaction type to determine if in_warehouse changes should be shown
-                                                                        // Check deduction first, then fall back to log entry's event type
-                                                                        const txType = deduction.transactionType || deduction.sourceEvent || eventType || '';
-                                                                        const isProcessingTransaction = txType.includes('processing') || txType === 'order_processing' || 
-                                                                                                      logEntry.webhook_event === 'order.processing' || 
-                                                                                                      logEntry.status === 'processing';
-                                                                        const isCancelledTransaction = txType.includes('cancelled') || txType === 'order_cancelled' ||
-                                                                                                      logEntry.webhook_event === 'order.cancelled' ||
-                                                                                                      logEntry.status === 'cancelled';
-                                                                        
-                                                                        // Get before and after values
-                                                                        // If deduction has the new fields, use them; otherwise try to calculate from webhook log details
-                                                                        let inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? deduction.previousStock ?? 0;
-                                                                        let inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
-                                                                        let processingBefore = deduction.processingBefore ?? 0;
-                                                                        let processingAfter = deduction.processingAfter ?? 0;
-                                                                        let pendingConsultBefore = deduction.pendingConsultBefore ?? 0;
-                                                                        let pendingConsultAfter = deduction.pendingConsultAfter ?? 0;
-                                                                        let pendingReviewBefore = deduction.pendingReviewBefore ?? 0;
-                                                                        let pendingReviewAfter = deduction.pendingReviewAfter ?? 0;
-                                                                        let backorderBefore = deduction.backorderBefore ?? 0;
-                                                                        let backorderAfter = deduction.backorderAfter ?? 0;
-                                                                        
-                                                                        // If this is a webhook log detail (missing new fields), try to infer values
-                                                                        // For processing transactions, we can infer from deductedQty
-                                                                        if (isProcessingTransaction && processingBefore === 0 && processingAfter === 0) {
-                                                                            // This is likely a webhook log detail - try to infer processing change
-                                                                            const deductedQty = deduction.deductedQty || Math.abs(deduction.quantityChange || 0) || 0;
-                                                                            if (deductedQty > 0) {
-                                                                                // For processing, we add to processing count
-                                                                                // We don't know the exact before value, but we can show the change
-                                                                                // Use a placeholder approach: show 0 → deductedQty if we can't determine before
-                                                                                // But better: check if we can get current state from other deductions
-                                                                                processingAfter = deductedQty;
-                                                                                // Note: processingBefore stays 0 if we can't determine it
-                                                                                // This will show "Processing: 0 → X" which is acceptable
-                                                                            }
-                                                                        }
-                                                                        
-                                                                        // Get available before and after (use API values if available, otherwise calculate)
-                                                                        // For processing transactions, use in_warehouse_before for both (since in_warehouse doesn't change)
-                                                                        const effectiveInWarehouseBefore = inWarehouseBefore;
-                                                                        const effectiveInWarehouseAfter = isProcessingTransaction ? inWarehouseBefore : inWarehouseAfter; // Processing doesn't change in_warehouse
-                                                                        const availableBefore = deduction.availableForPurchaseBefore ?? Math.max(0, effectiveInWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
-                                                                        const availableAfter = deduction.availableForPurchaseAfter ?? deduction.availableForPurchase ?? Math.max(0, effectiveInWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
-                                                                        
-                                                                        // Build list of changed statuses
-                                                                        const changedStatuses: Array<{ label: string; before: number; after: number; color: string }> = [];
-                                                                        
-                                                                        // For cancellation transactions:
-                                                                        // - If cancelled from processing: show Processing and Available changes (no in_warehouse change)
-                                                                        // - If cancelled from pending: show Pending Consult/Review and Available changes (no in_warehouse change)
-                                                                        // - If cancelled from nv-pending-pickup (shipped): EDGE CASE - no stock restoration, no in_warehouse change
-                                                                        //   (This is handled by logEdgeCaseCancellation and displayed with edge case warning badge)
-                                                                        // For processing transactions: should NOT change in_warehouse
-                                                                        // If they do, it's a data issue - don't display it
-                                                                        const isEdgeCase = logEntry.details?.isEdgeCase === true;
-                                                                        if (isCancelledTransaction) {
-                                                                            // For cancellations, check if it's an edge case (shipped order cancellation)
-                                                                            if (isEdgeCase && logEntry.details?.edgeCaseType === 'shipped_order_cancelled') {
-                                                                                // EDGE CASE: Shipped order cancelled - NO stock restoration, NO in_warehouse change
-                                                                                // The edge case warning badge will be displayed separately
-                                                                                // Don't show any in_warehouse changes
-                                                                            } else {
-                                                                                // For processing/pending cancellations: NEVER show in_warehouse (it doesn't change)
-                                                                                // Only show in_warehouse if it actually changed AND it's not a processing/pending cancellation
-                                                                                // Processing/pending cancellations should only show status changes (processing/pending → 0)
-                                                                                // Don't show in_warehouse even if values are the same (13→13) - it's misleading
-                                                                            }
-                                                                            // For processing/pending cancellations: show the status it was removed from (no in_warehouse change)
-                                                                        } else if (inWarehouseBefore !== inWarehouseAfter && !isProcessingTransaction) {
-                                                                            // Non-cancellation, non-processing transactions can show in_warehouse changes
-                                                                            changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
-                                                                        }
-                                                                        if (availableBefore !== availableAfter) {
-                                                                            changedStatuses.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
-                                                                        }
-                                                                        if (processingBefore !== processingAfter) {
-                                                                            changedStatuses.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
-                                                                        }
-                                                                        if (pendingConsultBefore !== pendingConsultAfter) {
-                                                                            changedStatuses.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
-                                                                        }
-                                                                        if (pendingReviewBefore !== pendingReviewAfter) {
-                                                                            changedStatuses.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
-                                                                        }
-                                                                        if (backorderBefore !== backorderAfter) {
-                                                                            changedStatuses.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
-                                                                        }
-                                                                        
-                                                                        return (
-                                                                            <div key={deductionIdx} className="text-xs text-gray-600 mb-3 border-b border-gray-100 pb-2 last:border-0 last:pb-0">
-                                                                                <div className="font-mono font-semibold mb-1">{deduction.sku}</div>
-                                                                                <div className="text-xs font-medium text-gray-500 mb-1.5">
-                                                                                    {getTransactionEventLabel(deduction)}
-                                                                                </div>
-                                                                                {changedStatuses.length > 0 ? (
-                                                                                    <div className="mt-1 space-y-1">
-                                                                                        {changedStatuses.map((status, statusIdx) => (
-                                                                                            <div key={statusIdx} className="whitespace-nowrap">
-                                                                                                <span className="text-gray-500">{status.label}: </span>
-                                                                                                <span className={`font-medium ${status.color}`}>
-                                                                                                    {status.before} → {status.after}
-                                                                                                </span>
-                                                                                            </div>
-                                                                                        ))}
-                                                                                    </div>
-                                                                                ) : (
-                                                                                    <div className="text-gray-400 text-xs italic">No changes</div>
-                                                                                )}
-                                                                            </div>
-                                                                        );
-                                                                    })}
-                                                                </div>
-                                                            );
-                                                        })()}
+                                                        ) : (
+                                                            <ComponentDeductionsCell logEntry={logEntry} activeTab={activeTab} />
+                                                        )}
                                                         {/* Show pending stock updates for pending-consult/pending-review orders */}
                                                         {(() => {
                                                             // Only show if not already showing component deductions or restorations
                                                             const hasRestorations = logEntry.details?.componentRestorations && Array.isArray(logEntry.details.componentRestorations) && logEntry.details.componentRestorations.length > 0;
-                                                            const orderId = logEntry.entity_id;
-                                                            const dbDeductions = componentDeductionsCache[orderId] || [];
                                                             const webhookDeductions = logEntry.details?.componentDeductions || [];
-                                                            const hasDeductions = (dbDeductions.length > 0 || webhookDeductions.length > 0);
+                                                            const hasDeductions = webhookDeductions.length > 0;
                                                             
                                                             if (hasRestorations || hasDeductions) return null;
                                                             
