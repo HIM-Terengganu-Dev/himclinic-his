@@ -971,7 +971,15 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             
                                                             // Match deductions to this specific log entry by event type and timestamp
                                                             // Get the event type from logEntry - check current_status first, then webhook_event, then status
-                                                            const eventType = (logEntry as any).current_status || logEntry.webhook_event || logEntry.status || '';
+                                                            // IMPORTANT: For cancelled and nv-pending-pickup, webhook_event is more reliable than current_status
+                                                            let eventType = '';
+                                                            if (logEntry.webhook_event) {
+                                                                // Use webhook_event as primary source (it's more reliable for matching)
+                                                                eventType = logEntry.webhook_event.replace(/^order\./, ''); // Remove "order." prefix
+                                                            } else {
+                                                                // Fallback to current_status or status
+                                                                eventType = (logEntry as any).current_status || logEntry.status || '';
+                                                            }
                                                             const logTime = new Date(logEntry.created_at).getTime();
                                                             
                                                             // Map webhook event to transaction type
@@ -1042,12 +1050,38 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             // Fallback to webhook log data if database data not available
                                                             // IMPORTANT: Do NOT fall back to all dbDeductions - only show matching transactions
                                                             const webhookDeductions = logEntry.details?.componentDeductions || [];
-                                                            const deductions = matchingDeductions.length > 0 ? matchingDeductions : webhookDeductions;
+                                                            
+                                                            // If no matching deductions found, try to find any deduction for this order (less strict matching)
+                                                            // This helps when timing is slightly off or event type mapping is imperfect
+                                                            let deductions = matchingDeductions;
+                                                            if (deductions.length === 0 && dbDeductions.length > 0) {
+                                                                // Try less strict matching: just match by order ID and approximate time
+                                                                const looseMatches = dbDeductions.filter((deduction: any) => {
+                                                                    const deductionTime = new Date(deduction.createdAt).getTime();
+                                                                    const timeDiff = Math.abs(deductionTime - logTime);
+                                                                    // Match if within 5 minutes (very loose for debugging)
+                                                                    return timeDiff < 300000;
+                                                                });
+                                                                
+                                                                if (looseMatches.length > 0) {
+                                                                    console.log(`[ActivityLog] Using loose match for Order #${orderId}, eventType: ${eventType}, found ${looseMatches.length} matches`);
+                                                                    deductions = looseMatches;
+                                                                }
+                                                            }
+                                                            
+                                                            // Final fallback to webhook log details
+                                                            if (deductions.length === 0) {
+                                                                deductions = webhookDeductions;
+                                                            }
                                                             
                                                             if (deductions.length === 0) {
                                                                 // If no deductions, check for pendingStockUpdates
                                                                 if (logEntry.details?.pendingStockUpdates && Array.isArray(logEntry.details.pendingStockUpdates) && logEntry.details.pendingStockUpdates.length > 0) {
                                                                     return null; // Will be handled by next ternary
+                                                                }
+                                                                // Debug: log when no deductions found
+                                                                if (dbDeductions.length > 0) {
+                                                                    console.log(`[ActivityLog] No deductions matched for Order #${orderId}, eventType: "${eventType}", expectedType: "${expectedTransactionType}", dbDeductions count: ${dbDeductions.length}`);
                                                                 }
                                                                 return <span className="text-gray-400 text-xs">—</span>;
                                                             }
