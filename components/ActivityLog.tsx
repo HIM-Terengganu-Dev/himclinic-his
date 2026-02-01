@@ -967,11 +967,19 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                         ) : (() => {
                                                             // Try to get component deductions from database (stock_transactions)
                                                             const orderId = logEntry.entity_id;
-                                                            const dbDeductions = componentDeductionsCache[orderId] || [];
+                                                            // Ensure orderId is a number for cache lookup (cache keys are numbers)
+                                                            const orderIdNum = typeof orderId === 'string' ? parseInt(orderId, 10) : orderId;
+                                                            const dbDeductions = componentDeductionsCache[orderIdNum] || componentDeductionsCache[orderId] || [];
                                                             
                                                             // Debug: Log cache access
                                                             if (dbDeductions.length === 0 && orderId) {
-                                                                console.log(`[ActivityLog] No deductions in cache for Order #${orderId}. Cache keys:`, Object.keys(componentDeductionsCache));
+                                                                console.log(`[ActivityLog] No deductions in cache for Order #${orderId} (num: ${orderIdNum})`, {
+                                                                    cacheKeys: Object.keys(componentDeductionsCache),
+                                                                    cacheHasOrderId: orderIdNum in componentDeductionsCache,
+                                                                    cacheHasOrderIdString: orderId in componentDeductionsCache,
+                                                                    orderIdType: typeof orderId,
+                                                                    orderIdNumType: typeof orderIdNum
+                                                                });
                                                             }
                                                             
                                                             // Match deductions to this specific log entry by event type and timestamp
