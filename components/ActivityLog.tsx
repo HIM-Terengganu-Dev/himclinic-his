@@ -963,25 +963,41 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             const expectedTransactionType = mapEventToTransactionType(eventType);
                                                             
                                                             // Find deductions that match this event (same event type and similar timestamp)
+                                                            // IMPORTANT: Only show transactions that match the current log entry's event type
                                                             const matchingDeductions = dbDeductions.filter((deduction: any) => {
                                                                 const deductionTime = new Date(deduction.createdAt).getTime();
                                                                 const timeDiff = Math.abs(deductionTime - logTime);
                                                                 // Match if within 5 seconds (to handle slight timing differences)
                                                                 const timeMatches = timeDiff < 5000;
                                                                 
-                                                                // Also check transaction type if available
+                                                                // Strict transaction type matching - must exactly match the expected type
                                                                 const txType = deduction.transactionType || deduction.sourceEvent || '';
-                                                                const typeMatches = !expectedTransactionType || !txType || 
-                                                                    txType === expectedTransactionType ||
-                                                                    txType.includes(expectedTransactionType.replace('order_', '')) ||
-                                                                    expectedTransactionType.includes(txType.replace('order_', ''));
+                                                                let typeMatches = false;
+                                                                
+                                                                if (expectedTransactionType && txType) {
+                                                                    // Normalize both types for comparison (handle underscores, hyphens, prefixes)
+                                                                    const normalizeType = (t: string) => {
+                                                                        return t.toLowerCase()
+                                                                            .replace(/^order[._-]?/, '')
+                                                                            .replace(/[_-]/g, '_');
+                                                                    };
+                                                                    
+                                                                    const normalizedTxType = normalizeType(txType);
+                                                                    const normalizedExpected = normalizeType(expectedTransactionType);
+                                                                    
+                                                                    typeMatches = normalizedTxType === normalizedExpected;
+                                                                } else if (!expectedTransactionType) {
+                                                                    // If no expected type, don't match (shouldn't happen, but be safe)
+                                                                    typeMatches = false;
+                                                                }
                                                                 
                                                                 return timeMatches && typeMatches;
                                                             });
                                                             
                                                             // Fallback to webhook log data if database data not available
+                                                            // IMPORTANT: Do NOT fall back to all dbDeductions - only show matching transactions
                                                             const webhookDeductions = logEntry.details?.componentDeductions || [];
-                                                            const deductions = matchingDeductions.length > 0 ? matchingDeductions : (dbDeductions.length > 0 ? dbDeductions : webhookDeductions);
+                                                            const deductions = matchingDeductions.length > 0 ? matchingDeductions : webhookDeductions;
                                                             
                                                             if (deductions.length === 0) {
                                                                 // If no deductions, check for pendingStockUpdates
