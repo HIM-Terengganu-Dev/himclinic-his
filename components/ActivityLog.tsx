@@ -969,6 +969,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             const orderId = logEntry.entity_id;
                                                             const dbDeductions = componentDeductionsCache[orderId] || [];
                                                             
+                                                            // Debug: Log cache access
+                                                            if (dbDeductions.length === 0 && orderId) {
+                                                                console.log(`[ActivityLog] No deductions in cache for Order #${orderId}. Cache keys:`, Object.keys(componentDeductionsCache));
+                                                            }
+                                                            
                                                             // Match deductions to this specific log entry by event type and timestamp
                                                             // Get the event type from logEntry - check current_status first, then webhook_event, then status
                                                             // IMPORTANT: For cancelled and nv-pending-pickup, webhook_event is more reliable than current_status
@@ -981,6 +986,15 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 eventType = (logEntry as any).current_status || logEntry.status || '';
                                                             }
                                                             const logTime = new Date(logEntry.created_at).getTime();
+                                                            
+                                                            // Debug: Log event type detection
+                                                            if (!eventType && orderId) {
+                                                                console.log(`[ActivityLog] No eventType for Order #${orderId}:`, {
+                                                                    webhook_event: logEntry.webhook_event,
+                                                                    current_status: (logEntry as any).current_status,
+                                                                    status: logEntry.status
+                                                                });
+                                                            }
                                                             
                                                             // Map webhook event to transaction type
                                                             const mapEventToTransactionType = (event: string): string => {
@@ -1081,7 +1095,16 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 }
                                                                 // Debug: log when no deductions found
                                                                 if (dbDeductions.length > 0) {
-                                                                    console.log(`[ActivityLog] No deductions matched for Order #${orderId}, eventType: "${eventType}", expectedType: "${expectedTransactionType}", dbDeductions count: ${dbDeductions.length}`);
+                                                                    console.log(`[ActivityLog] No deductions matched for Order #${orderId}`, {
+                                                                        eventType,
+                                                                        expectedTransactionType,
+                                                                        dbDeductionsCount: dbDeductions.length,
+                                                                        dbDeductionTypes: dbDeductions.map((d: any) => d.transactionType || d.sourceEvent),
+                                                                        logTime: new Date(logEntry.created_at).toISOString(),
+                                                                        deductionTimes: dbDeductions.map((d: any) => new Date(d.createdAt).toISOString())
+                                                                    });
+                                                                } else if (orderId) {
+                                                                    console.log(`[ActivityLog] No deductions in cache for Order #${orderId}. Cache may not be populated yet.`);
                                                                 }
                                                                 return <span className="text-gray-400 text-xs">—</span>;
                                                             }
