@@ -1051,7 +1051,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 <div className="min-w-[200px]">
                                                                     {deductions.map((deduction: any, deductionIdx: number) => {
                                                                         // Get before and after values
-                                                                        const inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? 0;
+                                                                        const inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? deduction.previousStock ?? 0;
                                                                         const inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
                                                                         const processingBefore = deduction.processingBefore ?? 0;
                                                                         const processingAfter = deduction.processingAfter ?? 0;
@@ -1063,8 +1063,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         const backorderAfter = deduction.backorderAfter ?? 0;
                                                                         
                                                                         // Get transaction type to determine if in_warehouse changes should be shown
-                                                                        const txType = deduction.transactionType || deduction.sourceEvent || '';
-                                                                        const isProcessingTransaction = txType.includes('processing') || txType === 'order_processing';
+                                                                        // Check deduction first, then fall back to log entry's event type
+                                                                        const txType = deduction.transactionType || deduction.sourceEvent || eventType || '';
+                                                                        const isProcessingTransaction = txType.includes('processing') || txType === 'order_processing' || 
+                                                                                                      logEntry.webhook_event === 'order.processing' || 
+                                                                                                      logEntry.status === 'processing';
                                                                         
                                                                         // Get available before and after (use API values if available, otherwise calculate)
                                                                         // For processing transactions, use in_warehouse_before for both (since in_warehouse doesn't change)
