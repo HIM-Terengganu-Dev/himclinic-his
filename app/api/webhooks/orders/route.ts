@@ -1729,6 +1729,20 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
     try {
         console.log(`📦 Processing nv-pending-pickup for Order #${orderId} - deducting from in_warehouse and current status`);
 
+        // IDEMPOTENCY PROTECTION: Check if this order was already processed for nv-pending-pickup
+        // Prevents double deduction if webhook fires multiple times
+        const previousNvPickupLog = await getWcWebhookLogByOrderId(orderId, 'order.nv-pending-pickup');
+        if (previousNvPickupLog && previousNvPickupLog.success) {
+            console.log(`⏭️ Order #${orderId} was already processed for nv-pending-pickup - skipping duplicate to prevent double stock deduction`);
+            const previousNvPickupTime = new Date(previousNvPickupLog.created_at).toISOString();
+            return NextResponse.json({
+                success: true,
+                message: `Order #${orderId} was already processed for nv-pending-pickup - skipping duplicate to prevent double stock deduction`,
+                previousNvPickupTime,
+                skipped: true
+            });
+        }
+
         // Get order's current status
         const currentStatus = await getOrderCurrentStatus(orderId);
         if (!currentStatus) {
