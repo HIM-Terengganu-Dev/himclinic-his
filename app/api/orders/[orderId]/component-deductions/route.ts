@@ -100,14 +100,37 @@ export async function GET(
         // This handles orders that go straight to processing without consultation/review
         
         // Get the first valid processing transaction (earliest timestamp)
-        const transactions = validProcessingTransactions.length > 0 
+        const processingTransactions = validProcessingTransactions.length > 0 
             ? [validProcessingTransactions.sort((a: any, b: any) => 
                 new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
             )[0]]
             : [];
 
+        // Get all other transaction types for this order
+        const nvPendingPickupTransactions = await getStockTransactions({
+            sourceType: 'order',
+            sourceId: orderId,
+            transactionType: 'order_nv_pending_pickup'
+        });
+
+        const cancelledTransactions = await getStockTransactions({
+            sourceType: 'order',
+            sourceId: orderId,
+            transactionType: 'order_cancelled'
+        });
+
+        // Combine all transactions, sorted by timestamp
+        const allTransactions = [
+            ...allPendingTransactions,
+            ...processingTransactions,
+            ...nvPendingPickupTransactions,
+            ...cancelledTransactions
+        ].sort((a: any, b: any) => 
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+
         // Format as component deductions with backorder
-        const componentDeductions = await Promise.all(transactions.map(async (tx: any) => {
+        const componentDeductions = await Promise.all(allTransactions.map(async (tx: any) => {
             const backorderBefore = await getBackorderAtTimestamp(tx.sku, tx.created_at);
             // For backorderAfter, we need to calculate it after the transaction
             // We'll use a slightly later timestamp to account for the transaction
@@ -123,6 +146,8 @@ export async function GET(
             
             return {
                 sku: tx.sku,
+                transactionType: tx.transaction_type,
+                sourceEvent: tx.source_event,
                 // New fields (all 6 statuses)
                 inWarehouseBefore: tx.in_warehouse_before ?? tx.stock_before ?? 0,
                 inWarehouseAfter,

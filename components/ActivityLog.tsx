@@ -188,14 +188,15 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         fetchLogs();
     }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab, wcCurrentPage]);
     
-    // Fetch component deductions from database for processing orders
+    // Fetch component deductions from database for all order events
     useEffect(() => {
         const fetchComponentDeductions = async () => {
-            const processingOrders = wcLogs.filter(log => 
-                (log.webhook_event === 'order.processing' || log.status === 'processing') && log.entity_id
+            // Get all order logs (not just processing)
+            const orderLogs = wcLogs.filter(log => 
+                log.webhook_type === 'order' && log.entity_id
             );
             
-            const orderIds = processingOrders
+            const orderIds = orderLogs
                 .map(log => log.entity_id)
                 .filter((id, index, self) => self.indexOf(id) === index) // unique
                 .filter(id => id && !componentDeductionsCache[id]); // not already cached
@@ -944,9 +945,43 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             const orderId = logEntry.entity_id;
                                                             const dbDeductions = componentDeductionsCache[orderId] || [];
                                                             
+                                                            // Match deductions to this specific log entry by event type and timestamp
+                                                            // Get the event type from logEntry
+                                                            const eventType = logEntry.webhook_event || logEntry.status || '';
+                                                            const logTime = new Date(logEntry.created_at).getTime();
+                                                            
+                                                            // Map webhook event to transaction type
+                                                            const mapEventToTransactionType = (event: string): string => {
+                                                                if (event.includes('pending-consult') || event === 'pending-consult') return 'order_pending_consult';
+                                                                if (event.includes('pending-review') || event === 'pending-review') return 'order_pending_review';
+                                                                if (event.includes('processing') || event === 'processing') return 'order_processing';
+                                                                if (event.includes('nv-pending-pickup') || event === 'nv-pending-pickup') return 'order_nv_pending_pickup';
+                                                                if (event.includes('cancelled') || event === 'cancelled') return 'order_cancelled';
+                                                                return '';
+                                                            };
+                                                            
+                                                            const expectedTransactionType = mapEventToTransactionType(eventType);
+                                                            
+                                                            // Find deductions that match this event (same event type and similar timestamp)
+                                                            const matchingDeductions = dbDeductions.filter((deduction: any) => {
+                                                                const deductionTime = new Date(deduction.createdAt).getTime();
+                                                                const timeDiff = Math.abs(deductionTime - logTime);
+                                                                // Match if within 5 seconds (to handle slight timing differences)
+                                                                const timeMatches = timeDiff < 5000;
+                                                                
+                                                                // Also check transaction type if available
+                                                                const txType = deduction.transactionType || deduction.sourceEvent || '';
+                                                                const typeMatches = !expectedTransactionType || !txType || 
+                                                                    txType === expectedTransactionType ||
+                                                                    txType.includes(expectedTransactionType.replace('order_', '')) ||
+                                                                    expectedTransactionType.includes(txType.replace('order_', ''));
+                                                                
+                                                                return timeMatches && typeMatches;
+                                                            });
+                                                            
                                                             // Fallback to webhook log data if database data not available
                                                             const webhookDeductions = logEntry.details?.componentDeductions || [];
-                                                            const deductions = dbDeductions.length > 0 ? dbDeductions : webhookDeductions;
+                                                            const deductions = matchingDeductions.length > 0 ? matchingDeductions : (dbDeductions.length > 0 ? dbDeductions : webhookDeductions);
                                                             
                                                             if (deductions.length === 0) {
                                                                 // If no deductions, check for pendingStockUpdates
@@ -956,59 +991,81 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 return <span className="text-gray-400 text-xs">—</span>;
                                                             }
                                                             
+                                                            // Get transaction event label
+                                                            const getTransactionEventLabel = (deduction: any) => {
+                                                                const txType = deduction.transactionType || deduction.sourceEvent || eventType;
+                                                                if (txType) {
+                                                                    if (txType.includes('pending_consult')) return 'Pending Consult';
+                                                                    if (txType.includes('pending_review')) return 'Pending Review';
+                                                                    if (txType.includes('processing')) return 'Processing';
+                                                                    if (txType.includes('nv_pending_pickup') || txType.includes('nv-pending-pickup')) return 'NV Pending Pickup';
+                                                                    if (txType.includes('cancelled')) return 'Cancelled';
+                                                                    return txType.replace(/order[._]/g, '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+                                                                }
+                                                                return eventType.replace(/order[._]/g, '').replace(/-/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+                                                            };
+                                                            
                                                             return (
                                                                 <div className="min-w-[200px]">
                                                                     {deductions.map((deduction: any, deductionIdx: number) => {
-                                                                        // Use database transaction data if available, otherwise use webhook log data
+                                                                        // Get before and after values
+                                                                        const inWarehouseBefore = deduction.inWarehouseBefore ?? deduction.stockBefore ?? 0;
                                                                         const inWarehouseAfter = deduction.inWarehouseAfter ?? deduction.stockAfter ?? deduction.newStock ?? 0;
-                                                                        const availableAfter = deduction.availableForPurchase ?? deduction.available ?? 0;
+                                                                        const processingBefore = deduction.processingBefore ?? 0;
                                                                         const processingAfter = deduction.processingAfter ?? 0;
+                                                                        const pendingConsultBefore = deduction.pendingConsultBefore ?? 0;
                                                                         const pendingConsultAfter = deduction.pendingConsultAfter ?? 0;
+                                                                        const pendingReviewBefore = deduction.pendingReviewBefore ?? 0;
                                                                         const pendingReviewAfter = deduction.pendingReviewAfter ?? 0;
+                                                                        const backorderBefore = deduction.backorderBefore ?? 0;
                                                                         const backorderAfter = deduction.backorderAfter ?? 0;
                                                                         
-                                                                        // Calculate available if not provided
-                                                                        const available = availableAfter > 0 ? availableAfter : Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
+                                                                        // Calculate available before and after
+                                                                        const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+                                                                        const availableAfter = deduction.availableForPurchase ?? Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
+                                                                        
+                                                                        // Build list of changed statuses
+                                                                        const changedStatuses: Array<{ label: string; before: number; after: number; color: string }> = [];
+                                                                        
+                                                                        if (inWarehouseBefore !== inWarehouseAfter) {
+                                                                            changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
+                                                                        }
+                                                                        if (availableBefore !== availableAfter) {
+                                                                            changedStatuses.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
+                                                                        }
+                                                                        if (processingBefore !== processingAfter) {
+                                                                            changedStatuses.push({ label: 'Processing', before: processingBefore, after: processingAfter, color: 'text-blue-600' });
+                                                                        }
+                                                                        if (pendingConsultBefore !== pendingConsultAfter) {
+                                                                            changedStatuses.push({ label: 'Pending Consult', before: pendingConsultBefore, after: pendingConsultAfter, color: 'text-yellow-600' });
+                                                                        }
+                                                                        if (pendingReviewBefore !== pendingReviewAfter) {
+                                                                            changedStatuses.push({ label: 'Pending Review', before: pendingReviewBefore, after: pendingReviewAfter, color: 'text-yellow-600' });
+                                                                        }
+                                                                        if (backorderBefore !== backorderAfter) {
+                                                                            changedStatuses.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
+                                                                        }
                                                                         
                                                                         return (
-                                                                            <div key={deductionIdx} className="text-xs text-gray-600 mb-3">
-                                                                                <div className="font-mono font-semibold mb-1.5">{deduction.sku}</div>
-                                                                                <div className="mt-1 space-y-1">
-                                                                                    <div className="whitespace-nowrap">
-                                                                                        <span className="text-gray-500">In Warehouse: </span>
-                                                                                        <span className="font-medium text-gray-900">{inWarehouseAfter}</span>
-                                                                                    </div>
-                                                                                    <div className="whitespace-nowrap">
-                                                                                        <span className="text-gray-500">Available: </span>
-                                                                                        <span className={`font-medium ${available > 0 ? 'text-green-600' : 'text-gray-600'}`}>
-                                                                                            {available}
-                                                                                        </span>
-                                                                                    </div>
-                                                                                    <div className="whitespace-nowrap">
-                                                                                        <span className="text-blue-600">Processing: </span>
-                                                                                        <span className={`font-medium ${processingAfter > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
-                                                                                            {processingAfter > 0 ? processingAfter : '-'}
-                                                                                        </span>
-                                                                                    </div>
-                                                                                    <div className="whitespace-nowrap">
-                                                                                        <span className="text-yellow-600">Pending Consult: </span>
-                                                                                        <span className={`font-medium ${pendingConsultAfter > 0 ? 'text-yellow-600' : 'text-gray-400'}`}>
-                                                                                            {pendingConsultAfter > 0 ? pendingConsultAfter : '-'}
-                                                                                        </span>
-                                                                                    </div>
-                                                                                    <div className="whitespace-nowrap">
-                                                                                        <span className="text-yellow-600">Pending Review: </span>
-                                                                                        <span className={`font-medium ${pendingReviewAfter > 0 ? 'text-yellow-600' : 'text-gray-400'}`}>
-                                                                                            {pendingReviewAfter > 0 ? pendingReviewAfter : '-'}
-                                                                                        </span>
-                                                                                    </div>
-                                                                                    <div className="whitespace-nowrap">
-                                                                                        <span className="text-orange-600">Backorder: </span>
-                                                                                        <span className={`font-medium ${backorderAfter > 0 ? 'text-orange-600' : 'text-gray-400'}`}>
-                                                                                            {backorderAfter > 0 ? backorderAfter : '-'}
-                                                                                        </span>
-                                                                                    </div>
+                                                                            <div key={deductionIdx} className="text-xs text-gray-600 mb-3 border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                                                                                <div className="font-mono font-semibold mb-1">{deduction.sku}</div>
+                                                                                <div className="text-xs font-medium text-gray-500 mb-1.5">
+                                                                                    {getTransactionEventLabel(deduction)}
                                                                                 </div>
+                                                                                {changedStatuses.length > 0 ? (
+                                                                                    <div className="mt-1 space-y-1">
+                                                                                        {changedStatuses.map((status, statusIdx) => (
+                                                                                            <div key={statusIdx} className="whitespace-nowrap">
+                                                                                                <span className="text-gray-500">{status.label}: </span>
+                                                                                                <span className={`font-medium ${status.color}`}>
+                                                                                                    {status.before} → {status.after}
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        ))}
+                                                                                    </div>
+                                                                                ) : (
+                                                                                    <div className="text-gray-400 text-xs italic">No changes</div>
+                                                                                )}
                                                                             </div>
                                                                         );
                                                                     })}
