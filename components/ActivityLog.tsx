@@ -993,28 +993,47 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             const matchingDeductions = dbDeductions.filter((deduction: any) => {
                                                                 const deductionTime = new Date(deduction.createdAt).getTime();
                                                                 const timeDiff = Math.abs(deductionTime - logTime);
-                                                                // Match if within 30 seconds (to handle timing differences between webhook and transaction creation)
-                                                                const timeMatches = timeDiff < 30000;
+                                                                // Match if within 60 seconds (increased from 30 to handle timing differences)
+                                                                const timeMatches = timeDiff < 60000;
                                                                 
-                                                                // Strict transaction type matching - must exactly match the expected type
+                                                                // More flexible transaction type matching
                                                                 const txType = deduction.transactionType || deduction.sourceEvent || '';
                                                                 let typeMatches = false;
                                                                 
                                                                 if (expectedTransactionType && txType) {
-                                                                    // Normalize both types for comparison (handle underscores, hyphens, prefixes)
+                                                                    // Normalize both types for comparison (handle underscores, hyphens, prefixes, order prefix)
                                                                     const normalizeType = (t: string) => {
                                                                         return t.toLowerCase()
-                                                                            .replace(/^order[._-]?/, '')
-                                                                            .replace(/[_-]/g, '_');
+                                                                            .replace(/^order[._-]?/i, '')
+                                                                            .replace(/[_-]/g, '_')
+                                                                            .trim();
                                                                     };
                                                                     
                                                                     const normalizedTxType = normalizeType(txType);
                                                                     const normalizedExpected = normalizeType(expectedTransactionType);
                                                                     
+                                                                    // Exact match
                                                                     typeMatches = normalizedTxType === normalizedExpected;
-                                                                } else if (!expectedTransactionType) {
-                                                                    // If no expected type, don't match (shouldn't happen, but be safe)
-                                                                    typeMatches = false;
+                                                                    
+                                                                    // Also check if the event type is in the transaction type (for edge cases)
+                                                                    if (!typeMatches && eventType) {
+                                                                        const eventLower = eventType.toLowerCase();
+                                                                        const txLower = txType.toLowerCase();
+                                                                        // Check if event type keywords are present in transaction type
+                                                                        if (eventLower.includes('nv-pending-pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+                                                                        if (eventLower.includes('nv_pending_pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+                                                                        if (eventLower.includes('cancelled') && txLower.includes('cancelled')) typeMatches = true;
+                                                                        if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
+                                                                    }
+                                                                } else if (!expectedTransactionType && eventType) {
+                                                                    // Fallback: if we can't map the event type, try direct matching
+                                                                    const eventLower = eventType.toLowerCase();
+                                                                    const txLower = txType.toLowerCase();
+                                                                    // Check if event keywords match transaction type
+                                                                    if (eventLower.includes('nv-pending-pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+                                                                    if (eventLower.includes('nv_pending_pickup') && txLower.includes('nv_pending_pickup')) typeMatches = true;
+                                                                    if (eventLower.includes('cancelled') && txLower.includes('cancelled')) typeMatches = true;
+                                                                    if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
                                                                 }
                                                                 
                                                                 return timeMatches && typeMatches;
@@ -1113,9 +1132,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                                 // EDGE CASE: Shipped order cancelled - NO stock restoration, NO in_warehouse change
                                                                                 // The edge case warning badge will be displayed separately
                                                                                 // Don't show any in_warehouse changes
-                                                                            } else if (inWarehouseBefore !== inWarehouseAfter) {
-                                                                                // Regular cancellation with in_warehouse restoration (shouldn't happen for processing/pending)
-                                                                                changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
+                                                                            } else {
+                                                                                // For processing/pending cancellations: NEVER show in_warehouse (it doesn't change)
+                                                                                // Only show in_warehouse if it actually changed AND it's not a processing/pending cancellation
+                                                                                // Processing/pending cancellations should only show status changes (processing/pending → 0)
+                                                                                // Don't show in_warehouse even if values are the same (13→13) - it's misleading
                                                                             }
                                                                             // For processing/pending cancellations: show the status it was removed from (no in_warehouse change)
                                                                         } else if (inWarehouseBefore !== inWarehouseAfter && !isProcessingTransaction) {
