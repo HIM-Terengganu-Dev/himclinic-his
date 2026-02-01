@@ -1062,14 +1062,23 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         const backorderBefore = deduction.backorderBefore ?? 0;
                                                                         const backorderAfter = deduction.backorderAfter ?? 0;
                                                                         
+                                                                        // Get transaction type to determine if in_warehouse changes should be shown
+                                                                        const txType = deduction.transactionType || deduction.sourceEvent || '';
+                                                                        const isProcessingTransaction = txType.includes('processing') || txType === 'order_processing';
+                                                                        
                                                                         // Get available before and after (use API values if available, otherwise calculate)
-                                                                        const availableBefore = deduction.availableForPurchaseBefore ?? Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
-                                                                        const availableAfter = deduction.availableForPurchaseAfter ?? deduction.availableForPurchase ?? Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
+                                                                        // For processing transactions, use in_warehouse_before for both (since in_warehouse doesn't change)
+                                                                        const effectiveInWarehouseBefore = inWarehouseBefore;
+                                                                        const effectiveInWarehouseAfter = isProcessingTransaction ? inWarehouseBefore : inWarehouseAfter; // Processing doesn't change in_warehouse
+                                                                        const availableBefore = deduction.availableForPurchaseBefore ?? Math.max(0, effectiveInWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+                                                                        const availableAfter = deduction.availableForPurchaseAfter ?? deduction.availableForPurchase ?? Math.max(0, effectiveInWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
                                                                         
                                                                         // Build list of changed statuses
                                                                         const changedStatuses: Array<{ label: string; before: number; after: number; color: string }> = [];
                                                                         
-                                                                        if (inWarehouseBefore !== inWarehouseAfter) {
+                                                                        // Processing transactions should NOT change in_warehouse
+                                                                        // If they do, it's a data issue - don't display it
+                                                                        if (inWarehouseBefore !== inWarehouseAfter && !isProcessingTransaction) {
                                                                             changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
                                                                         }
                                                                         if (availableBefore !== availableAfter) {
