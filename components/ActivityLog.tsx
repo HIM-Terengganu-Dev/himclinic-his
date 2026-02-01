@@ -160,27 +160,46 @@ function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookL
     // Fallback to webhook log data if database data not available
     const webhookDeductions = logEntry.details?.componentDeductions || [];
     
-    // If no matching deductions found, try loose matching (time-based only, no type check)
-    // Use a very large window (1 hour) to catch timezone issues
+    // No loose matching - we must match by transaction type exactly
+    // This ensures we don't accidentally match transactions from different events or orders
     let deductions = matchingDeductions;
-    if (deductions.length === 0 && dbDeductions.length > 0) {
-        const looseMatches = dbDeductions.filter((deduction: any) => {
-            const deductionTime = new Date(deduction.createdAt).getTime();
-            const timeDiff = Math.abs(deductionTime - logTime);
-            // Use 1 hour window to handle timezone conversion issues
-            return timeDiff < 3600000; // 1 hour
+    
+    // Additional guardrails to ensure we only show the correct transaction:
+    // 1. For processing events: Only show the FIRST processing transaction
+    // 2. For nv-pending-pickup: Only show transactions that came after the first processing transaction
+    if (eventType.toLowerCase().includes('processing') && deductions.length > 1) {
+        // Sort by timestamp and take only the first one
+        deductions = deductions.sort((a: any, b: any) => 
+            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        ).slice(0, 1);
+        console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple processing transactions found, showing only the first one`);
+    } else if (eventType.toLowerCase().includes('nv-pending-pickup') && deductions.length > 1) {
+        // For nv-pending-pickup, ensure we only show transactions that correspond to the first processing event
+        // Find the first processing transaction timestamp
+        const processingTransactions = dbDeductions.filter((d: any) => {
+            const txType = d.transactionType || d.sourceEvent || '';
+            return txType.toLowerCase().includes('processing');
         });
-        if (looseMatches.length > 0) {
-            console.log(`[ComponentDeductionsCell] Using loose match for Order #${orderId}, eventType: ${eventType}, found ${looseMatches.length} matches`, {
-                logTime: new Date(logEntry.created_at).toISOString(),
-                matches: looseMatches.map((d: any) => ({
-                    sku: d.sku,
-                    transactionType: d.transactionType,
-                    createdAt: d.createdAt,
-                    timeDiff: `${Math.abs(new Date(d.createdAt).getTime() - logTime)}ms`
-                }))
-            });
-            deductions = looseMatches;
+        
+        if (processingTransactions.length > 0) {
+            // Get the first processing transaction timestamp
+            const firstProcessingTime = processingTransactions
+                .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0]
+                .createdAt;
+            
+            // Only show nv-pending-pickup transactions that came after the first processing
+            deductions = deductions.filter((d: any) => 
+                new Date(d.createdAt).getTime() >= new Date(firstProcessingTime).getTime()
+            );
+            
+            // If still multiple, take the first one
+            if (deductions.length > 1) {
+                deductions = deductions.sort((a: any, b: any) => 
+                    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+                ).slice(0, 1);
+            }
+            
+            console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple nv-pending-pickup transactions found, filtered to show only those after first processing`);
         }
     }
     

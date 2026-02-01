@@ -1823,6 +1823,62 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                 const pendingConsultBefore = currentState.pendingConsult;
                 const pendingReviewBefore = currentState.pendingReview;
 
+                // GUARDRAIL: Verify this order actually has stock in the status we're trying to deduct from
+                // Get transactions for THIS order to see how much it contributed
+                let orderProcessingQty = 0;
+                let orderPendingConsultQty = 0;
+                let orderPendingReviewQty = 0;
+
+                if (currentStatus === 'processing' || !currentStatus) {
+                    // Get processing transactions for THIS order only
+                    const orderProcessingTxs = await getStockTransactions({
+                        sourceType: 'order',
+                        sourceId: orderId,
+                        transactionType: 'order_processing'
+                    });
+                    // Calculate total processing quantity for this order (sum of all processing transactions)
+                    orderProcessingQty = orderProcessingTxs.reduce((sum: number, tx: any) => {
+                        const qty = Math.abs(tx.quantity_change || 0);
+                        return sum + qty;
+                    }, 0);
+                    
+                    // Guardrail: Only deduct if this order actually has stock in processing
+                    if (orderProcessingQty < totalQty) {
+                        console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from processing, but order only has ${orderProcessingQty} in processing. Skipping deduction for ${sku}.`);
+                        continue; // Skip this SKU - order doesn't have enough in processing
+                    }
+                } else if (currentStatus === 'pending-consult') {
+                    const orderPendingTxs = await getStockTransactions({
+                        sourceType: 'order',
+                        sourceId: orderId,
+                        transactionType: 'order_pending_consult'
+                    });
+                    orderPendingConsultQty = orderPendingTxs.reduce((sum: number, tx: any) => {
+                        const qty = Math.abs(tx.quantity_change || 0);
+                        return sum + qty;
+                    }, 0);
+                    
+                    if (orderPendingConsultQty < totalQty) {
+                        console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from pending-consult, but order only has ${orderPendingConsultQty}. Skipping deduction for ${sku}.`);
+                        continue;
+                    }
+                } else if (currentStatus === 'pending-review') {
+                    const orderPendingTxs = await getStockTransactions({
+                        sourceType: 'order',
+                        sourceId: orderId,
+                        transactionType: 'order_pending_review'
+                    });
+                    orderPendingReviewQty = orderPendingTxs.reduce((sum: number, tx: any) => {
+                        const qty = Math.abs(tx.quantity_change || 0);
+                        return sum + qty;
+                    }, 0);
+                    
+                    if (orderPendingReviewQty < totalQty) {
+                        console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from pending-review, but order only has ${orderPendingReviewQty}. Skipping deduction for ${sku}.`);
+                        continue;
+                    }
+                }
+
                 // Determine what status to deduct from based on order's current status
                 let statusType = 'processing'; // Default
                 let statusBefore = processingBefore;
