@@ -1056,6 +1056,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         const isProcessingTransaction = txType.includes('processing') || txType === 'order_processing' || 
                                                                                                       logEntry.webhook_event === 'order.processing' || 
                                                                                                       logEntry.status === 'processing';
+                                                                        const isCancelledTransaction = txType.includes('cancelled') || txType === 'order_cancelled' ||
+                                                                                                      logEntry.webhook_event === 'order.cancelled' ||
+                                                                                                      logEntry.status === 'cancelled';
                                                                         
                                                                         // Get before and after values
                                                                         // If deduction has the new fields, use them; otherwise try to calculate from webhook log details
@@ -1096,9 +1099,22 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         // Build list of changed statuses
                                                                         const changedStatuses: Array<{ label: string; before: number; after: number; color: string }> = [];
                                                                         
-                                                                        // Processing transactions should NOT change in_warehouse
+                                                                        // For cancellation transactions:
+                                                                        // - If cancelled from processing: show Processing and Available changes (no in_warehouse change)
+                                                                        // - If cancelled from pending: show Pending Consult/Review and Available changes (no in_warehouse change)
+                                                                        // - If cancelled from nv-pending-pickup (shipped): show in_warehouse restoration
+                                                                        // For processing transactions: should NOT change in_warehouse
                                                                         // If they do, it's a data issue - don't display it
-                                                                        if (inWarehouseBefore !== inWarehouseAfter && !isProcessingTransaction) {
+                                                                        if (isCancelledTransaction) {
+                                                                            // For cancellations, only show in_warehouse if it actually changed (means it was shipped)
+                                                                            // Otherwise, show the status it was removed from (processing, pending-consult, pending-review)
+                                                                            if (inWarehouseBefore !== inWarehouseAfter) {
+                                                                                // This was a shipped order cancellation - show in_warehouse restoration
+                                                                                changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
+                                                                            }
+                                                                            // Don't show in_warehouse if it didn't change (processing/pending cancellations)
+                                                                        } else if (inWarehouseBefore !== inWarehouseAfter && !isProcessingTransaction) {
+                                                                            // Non-cancellation, non-processing transactions can show in_warehouse changes
                                                                             changedStatuses.push({ label: 'In Warehouse', before: inWarehouseBefore, after: inWarehouseAfter, color: 'text-gray-900' });
                                                                         }
                                                                         if (availableBefore !== availableAfter) {
