@@ -1020,9 +1020,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                         const backorderBefore = deduction.backorderBefore ?? 0;
                                                                         const backorderAfter = deduction.backorderAfter ?? 0;
                                                                         
-                                                                        // Calculate available before and after
-                                                                        const availableBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
-                                                                        const availableAfter = deduction.availableForPurchase ?? Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
+                                                                        // Get available before and after (use API values if available, otherwise calculate)
+                                                                        const availableBefore = deduction.availableForPurchaseBefore ?? Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+                                                                        const availableAfter = deduction.availableForPurchaseAfter ?? deduction.availableForPurchase ?? Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
                                                                         
                                                                         // Build list of changed statuses
                                                                         const changedStatuses: Array<{ label: string; before: number; after: number; color: string }> = [];

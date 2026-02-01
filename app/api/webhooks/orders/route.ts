@@ -7,6 +7,55 @@ import { deductComboSKU } from '@/lib/utils/inventory';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/**
+ * Filter line items to only include those with valid SKUs that exist in our database
+ * Returns: { validLineItems, skippedItems }
+ */
+async function filterValidLineItems(allLineItems: any[], orderId: number) {
+    if (!allLineItems || !Array.isArray(allLineItems) || allLineItems.length === 0) {
+        return { validLineItems: [], skippedItems: [] };
+    }
+
+    // Get SKU mappings from database (source of truth)
+    const allSingleSkus = await getAllSingleSkus();
+    const allCombos = await getAllComboSkus();
+    
+    // Create maps for quick lookup
+    const singleSkuMap = new Map(allSingleSkus.map((s: any) => [s.sku, s]));
+    const comboSkuMap = new Map(allCombos.map((c: any) => [c.sku, c]));
+
+    const validLineItems: any[] = [];
+    const skippedItems: any[] = [];
+    
+    for (const item of allLineItems) {
+        if (!item.sku || item.sku.trim() === '') {
+            console.warn(`⚠️ Order #${orderId} has line item without SKU: ${item.name || 'Unknown'} - SKIPPING`);
+            skippedItems.push(item);
+            continue;
+        }
+
+        const sku = item.sku.trim();
+        
+        // Check if SKU exists in our database (single or combo)
+        if (!singleSkuMap.has(sku) && !comboSkuMap.has(sku)) {
+            console.warn(`⚠️ Order #${orderId} has line item with SKU "${sku}" (${item.name || 'Unknown'}) not found in database - SKIPPING`);
+            skippedItems.push(item);
+            continue;
+        }
+
+        // Valid SKU - add to valid line items
+        validLineItems.push(item);
+    }
+
+    // Log skipped items if any
+    if (skippedItems.length > 0) {
+        console.log(`ℹ️ Order #${orderId}: Skipped ${skippedItems.length} untracked line item(s):`, 
+            skippedItems.map((item: any) => `${item.name || 'Unknown'} (SKU: ${item.sku || '(empty)'})`).join(', '));
+    }
+
+    return { validLineItems, skippedItems };
+}
+
 export async function POST(request: Request) {
     console.log("!!! WEBHOOK HIT !!! Method:", request.method);
     try {
@@ -202,10 +251,30 @@ export async function POST(request: Request) {
 
         // Get all line items from webhook payload
         // WooCommerce webhook includes line_items in the payload
-        const lineItems = payload.line_items;
-        if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+        const allLineItems = payload.line_items;
+        if (!allLineItems || !Array.isArray(allLineItems) || allLineItems.length === 0) {
             return NextResponse.json({ success: true, message: 'No line items in order' });
         }
+
+        // Filter line items to only include those with valid SKUs that exist in our database
+        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId);
+
+        // If no valid line items, don't process or log the order
+        if (validLineItems.length === 0) {
+            console.warn(`⚠️ Order #${orderId} has no valid line items (all SKUs are untracked or missing) - SKIPPING ORDER`);
+            return NextResponse.json({ 
+                success: true, 
+                message: 'Order skipped - no valid tracked SKUs',
+                skippedItems: skippedItems.map((item: any) => ({
+                    name: item.name,
+                    sku: item.sku || '(empty)',
+                    quantity: item.quantity
+                }))
+            });
+        }
+
+        // Use only valid line items for processing
+        const lineItems = validLineItems;
 
         // Get SKU mappings from database (source of truth)
         const allSingleSkus = await getAllSingleSkus();
@@ -223,12 +292,7 @@ export async function POST(request: Request) {
         const comboSkusInOrder: Array<{ sku: string; quantity: number }> = [];
 
         for (const item of lineItems) {
-            if (!item.sku) {
-                console.warn(`⚠️ Order #${orderId} has line item without SKU: ${item.name || 'Unknown'}`);
-                continue;
-            }
-
-            const sku = item.sku;
+            const sku = item.sku.trim();
             const quantity = item.quantity || 0;
 
             // Validate against database: Check if it's a single SKU
@@ -500,13 +564,13 @@ export async function POST(request: Request) {
                          'unknown';
         const userAgent = request.headers.get('user-agent') || 'unknown';
 
-        // Extract SKUs from line items for logging
-        const orderSkus = lineItems.map((item: any) => item.sku).filter(Boolean);
+        // Extract SKUs from valid line items for logging (only tracked SKUs)
+        const orderSkus = lineItems.map((item: any) => item.sku.trim()).filter(Boolean);
         
         // Get the first SKU for display purposes (if available)
         const firstSku = orderSkus.length > 0 ? orderSkus[0] : undefined;
         
-        // Calculate total quantity for display (sum of all line items)
+        // Calculate total quantity for display (sum of valid line items only)
         const totalQuantity = lineItems.reduce((sum: number, item: any) => sum + (item.quantity || 0), 0);
         
         // Log to WC Webhook Logs
@@ -530,10 +594,16 @@ export async function POST(request: Request) {
                     orderId, 
                     status,
                     lineItems: lineItems.map((item: any) => ({
-                        sku: item.sku,
+                        sku: item.sku.trim(),
                         name: item.name,
                         quantity: item.quantity
                     })),
+                    skippedLineItems: skippedItems.length > 0 ? skippedItems.map((item: any) => ({
+                        sku: item.sku || '(empty)',
+                        name: item.name,
+                        quantity: item.quantity,
+                        reason: !item.sku || item.sku.trim() === '' ? 'No SKU' : 'SKU not tracked'
+                    })) : undefined,
                     comboSkusOrdered: comboSkusInOrder,
                     componentDeductions: singleSkuUpdates.map(u => ({
                         sku: u.sku,
@@ -614,10 +684,29 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
         console.log(`📋 Processing ${previousStatus} cancellation for Order #${orderId} (payment was made, refund handled manually)`);
 
         // Get line items from webhook payload
-        const lineItems = payload.line_items;
-        if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+        const allLineItems = payload.line_items;
+        if (!allLineItems || !Array.isArray(allLineItems) || allLineItems.length === 0) {
             return NextResponse.json({ success: true, message: 'No line items in order' });
         }
+
+        // Filter line items to only include those with valid SKUs
+        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId);
+        
+        // If no valid line items, don't process or log
+        if (validLineItems.length === 0) {
+            console.warn(`⚠️ Order #${orderId} has no valid line items (all SKUs are untracked or missing) - SKIPPING ORDER`);
+            return NextResponse.json({ 
+                success: true, 
+                message: 'Order skipped - no valid tracked SKUs',
+                skippedItems: skippedItems.map((item: any) => ({
+                    name: item.name,
+                    sku: item.sku || '(empty)',
+                    quantity: item.quantity
+                }))
+            });
+        }
+
+        const lineItems = validLineItems;
 
         // Get SKU mappings from database
         const allSingleSkus = await getAllSingleSkus();
@@ -1095,10 +1184,29 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
         }
 
         // Get line items from webhook payload
-        const lineItems = payload.line_items;
-        if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+        const allLineItems = payload.line_items;
+        if (!allLineItems || !Array.isArray(allLineItems) || allLineItems.length === 0) {
             return NextResponse.json({ success: true, message: 'No line items in order' });
         }
+
+        // Filter line items to only include those with valid SKUs
+        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId);
+        
+        // If no valid line items, don't process or log
+        if (validLineItems.length === 0) {
+            console.warn(`⚠️ Order #${orderId} has no valid line items (all SKUs are untracked or missing) - SKIPPING ORDER`);
+            return NextResponse.json({ 
+                success: true, 
+                message: 'Order skipped - no valid tracked SKUs',
+                skippedItems: skippedItems.map((item: any) => ({
+                    name: item.name,
+                    sku: item.sku || '(empty)',
+                    quantity: item.quantity
+                }))
+            });
+        }
+
+        const lineItems = validLineItems;
 
         // Get SKU mappings from database
         const allSingleSkus = await getAllSingleSkus();
@@ -1479,10 +1587,29 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
         }
 
         // Get line items from webhook payload
-        const lineItems = payload.line_items;
-        if (!lineItems || !Array.isArray(lineItems) || lineItems.length === 0) {
+        const allLineItems = payload.line_items;
+        if (!allLineItems || !Array.isArray(allLineItems) || allLineItems.length === 0) {
             return NextResponse.json({ success: true, message: 'No line items in order' });
         }
+
+        // Filter line items to only include those with valid SKUs
+        const { validLineItems, skippedItems } = await filterValidLineItems(allLineItems, orderId);
+        
+        // If no valid line items, don't process or log
+        if (validLineItems.length === 0) {
+            console.warn(`⚠️ Order #${orderId} has no valid line items (all SKUs are untracked or missing) - SKIPPING ORDER`);
+            return NextResponse.json({ 
+                success: true, 
+                message: 'Order skipped - no valid tracked SKUs',
+                skippedItems: skippedItems.map((item: any) => ({
+                    name: item.name,
+                    sku: item.sku || '(empty)',
+                    quantity: item.quantity
+                }))
+            });
+        }
+
+        const lineItems = validLineItems;
 
         // Get SKU mappings from database
         const allSingleSkus = await getAllSingleSkus();

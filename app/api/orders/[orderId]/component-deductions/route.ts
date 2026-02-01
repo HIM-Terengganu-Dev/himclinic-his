@@ -137,29 +137,38 @@ export async function GET(
             const afterTimestamp = new Date(new Date(tx.created_at).getTime() + 1000).toISOString();
             const backorderAfter = await getBackorderAtTimestamp(tx.sku, afterTimestamp);
             
-            // Calculate available_for_purchase
+            // Calculate available_for_purchase (before and after)
+            const inWarehouseBefore = tx.in_warehouse_before ?? tx.stock_before ?? 0;
             const inWarehouseAfter = tx.in_warehouse_after ?? tx.stock_after ?? 0;
+            const processingBefore = tx.processing_before ?? 0;
             const processingAfter = tx.processing_after ?? 0;
+            const pendingConsultBefore = tx.pending_consult_before ?? 0;
             const pendingConsultAfter = tx.pending_consult_after ?? 0;
+            const pendingReviewBefore = tx.pending_review_before ?? 0;
             const pendingReviewAfter = tx.pending_review_after ?? 0;
-            const availableForPurchase = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
+            
+            // Calculate available_for_purchase: in_warehouse - pending_consult - pending_review - processing
+            const availableForPurchaseBefore = Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore);
+            const availableForPurchaseAfter = Math.max(0, inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter);
             
             return {
                 sku: tx.sku,
                 transactionType: tx.transaction_type,
                 sourceEvent: tx.source_event,
                 // New fields (all 6 statuses)
-                inWarehouseBefore: tx.in_warehouse_before ?? tx.stock_before ?? 0,
+                inWarehouseBefore,
                 inWarehouseAfter,
-                processingBefore: tx.processing_before ?? 0,
+                processingBefore,
                 processingAfter,
-                pendingConsultBefore: tx.pending_consult_before ?? 0,
+                pendingConsultBefore,
                 pendingConsultAfter,
-                pendingReviewBefore: tx.pending_review_before ?? 0,
+                pendingReviewBefore,
                 pendingReviewAfter,
                 backorderBefore,
                 backorderAfter,
-                availableForPurchase,
+                availableForPurchaseBefore,
+                availableForPurchaseAfter,
+                availableForPurchase: availableForPurchaseAfter, // Legacy field for backward compatibility
                 // Legacy fields (for backward compatibility)
                 stockBefore: tx.stock_before ?? inWarehouseAfter,
                 stockAfter: tx.stock_after ?? inWarehouseAfter,
