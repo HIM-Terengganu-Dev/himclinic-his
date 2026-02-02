@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/auth/middleware';
+import { requireAdminOrDev } from '@/lib/auth/middleware';
 import { query } from '@/lib/db/connection';
 import { updateSingleSku, deleteSingleSku } from '@/lib/db/queries';
 import { logActivity } from '@/lib/db/queries';
@@ -9,7 +9,7 @@ export async function PUT(
     { params }: { params: { id: string } }
 ) {
     try {
-        const session = await requireAuth();
+        const session = await requireAdminOrDev(req);
         if (!session) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
@@ -63,7 +63,7 @@ export async function DELETE(
     { params }: { params: { id: string } }
 ) {
     try {
-        const session = await requireAuth();
+        const session = await requireAdminOrDev(req);
         if (!session) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }

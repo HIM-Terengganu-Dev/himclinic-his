@@ -149,7 +149,14 @@ export default function Home() {
   const isDev = effectiveRole === 'dev';
   const actualRole = session?.user?.role; // Keep track of actual role for dev users
 
-  // No redirects needed - all authenticated users can access all tabs now
+  // Redirect non-admin/dev users away from SKU management tab
+  useEffect(() => {
+    if (status === 'authenticated' && effectiveRole !== 'admin' && effectiveRole !== 'dev' && session?.user?.role !== 'dev') {
+      if (activeTab === 'sku') {
+        setActiveTab('dashboard');
+      }
+    }
+  }, [status, effectiveRole, activeTab, session]);
 
   if (status === 'loading') {
     return (
@@ -362,18 +369,20 @@ export default function Home() {
                 {activeTab === 'return-refund' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-orange-600" />}
               </button>
 
-              {/* SKU Management tab - visible to all authenticated users */}
-              <button
-                onClick={() => setActiveTab('sku')}
-                className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'sku'
-                  ? 'text-purple-600 bg-purple-50/50'
-                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
-                  }`}
-              >
-                <Settings size={18} />
-                SKU Management
-                {activeTab === 'sku' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-600" />}
-              </button>
+              {/* SKU Management tab - only visible to admin and dev */}
+              {(isAdmin || isDev) && (
+                <button
+                  onClick={() => setActiveTab('sku')}
+                  className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'sku'
+                    ? 'text-purple-600 bg-purple-50/50'
+                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                    }`}
+                >
+                  <Settings size={18} />
+                  SKU Management
+                  {activeTab === 'sku' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-600" />}
+                </button>
+              )}
 
               <button
                 onClick={() => setActiveTab('activity')}
@@ -457,7 +466,7 @@ export default function Home() {
               <AdminAccess />
             )}
 
-            {activeTab === 'sku' && (
+            {activeTab === 'sku' && (isAdmin || isDev) && (
               <SkuManagement />
             )}
 
