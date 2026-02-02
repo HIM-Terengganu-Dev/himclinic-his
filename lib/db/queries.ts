@@ -92,9 +92,7 @@ export async function deleteUser(id: number) {
 export async function getAllSingleSkus() {
     const result = await query(
         `SELECT * FROM "his_db".single_skus 
-         WHERE LOWER(COALESCE(description, '')) != 'dummy sku'
-         AND sku NOT IN ('buku/SM', 'buku/BK')
-         AND COALESCE(hidden, false) = false
+         WHERE COALESCE(hidden, false) = false
          ORDER BY sku`
     );
     return result.rows;
@@ -136,9 +134,7 @@ export async function createSingleSku(data: {
 export async function getAllComboSkus() {
     const result = await query(
         `SELECT * FROM "his_db".combo_skus 
-         WHERE LOWER(COALESCE(description, '')) != 'dummy sku'
-         AND sku NOT IN ('buku/SM', 'buku/BK')
-         AND COALESCE(hidden, false) = false
+         WHERE COALESCE(hidden, false) = false
          ORDER BY sku`
     );
     return result.rows;
