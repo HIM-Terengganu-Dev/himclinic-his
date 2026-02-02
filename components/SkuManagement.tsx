@@ -248,9 +248,9 @@ export default function SkuManagement() {
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    {/* Creation Form */}
-                    <div className="lg:col-span-1 border-r border-gray-100 pr-8">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Creation Form */}
+                <div className="lg:col-span-1 lg:border-r lg:border-gray-100 lg:pr-8">
                         <h3 className="text-lg font-semibold text-gray-900 mb-4">
                             Create New {activeTab === 'single' ? 'Single' : 'Combo'} SKU
                         </h3>
@@ -345,28 +345,28 @@ export default function SkuManagement() {
                             </button>
                         </div>
 
-                        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                        <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
                             <table className="min-w-full divide-y divide-gray-200">
                                 <thead className="bg-gray-50">
                                     <tr>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SKU</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">WC ID</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">SKU</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Name</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">WC ID</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Status</th>
                                         {activeTab === 'combo' && (
-                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Components</th>
+                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Components</th>
                                         )}
-                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody className="bg-white divide-y divide-gray-200">
                                     {activeTab === 'single' ? (
                                         singleSkus.map((skuItem) => (
                                             <tr key={skuItem.id} className={skuItem.hidden ? 'opacity-50 bg-gray-50' : ''}>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{skuItem.sku}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.name}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.woocommerce_product_id || '—'}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap">
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{skuItem.sku}</td>
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.name}</td>
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.woocommerce_product_id || '—'}</td>
+                                                <td className="px-4 py-4 whitespace-nowrap">
                                                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
                                                         skuItem.hidden 
                                                             ? 'bg-gray-100 text-gray-600' 
@@ -375,7 +375,7 @@ export default function SkuManagement() {
                                                         {skuItem.hidden ? 'Hidden' : 'Visible'}
                                                     </span>
                                                 </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-medium">
                                                     <div className="flex justify-end gap-2">
                                                         <button
                                                             onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'single')}
@@ -398,10 +398,10 @@ export default function SkuManagement() {
                                     ) : (
                                         comboSkus.map((skuItem) => (
                                             <tr key={skuItem.id} className={skuItem.hidden ? 'opacity-50 bg-gray-50' : ''}>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{skuItem.sku}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.name}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.woocommerce_product_id || '—'}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap">
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{skuItem.sku}</td>
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.name}</td>
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.woocommerce_product_id || '—'}</td>
+                                                <td className="px-4 py-4 whitespace-nowrap">
                                                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
                                                         skuItem.hidden 
                                                             ? 'bg-gray-100 text-gray-600' 
@@ -410,7 +410,7 @@ export default function SkuManagement() {
                                                         {skuItem.hidden ? 'Hidden' : 'Visible'}
                                                     </span>
                                                 </td>
-                                                <td className="px-6 py-4 text-sm text-gray-500">
+                                                <td className="px-4 py-4 text-sm text-gray-500">
                                                     <div className="flex flex-col gap-1">
                                                         {skuItem.components.map((c, i) => (
                                                             <span key={i} className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
@@ -419,7 +419,7 @@ export default function SkuManagement() {
                                                         ))}
                                                     </div>
                                                 </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-medium">
                                                     <div className="flex justify-end gap-2">
                                                         <button
                                                             onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'combo')}
@@ -442,7 +442,7 @@ export default function SkuManagement() {
                                     )}
                                     {((activeTab === 'single' && singleSkus.length === 0) || (activeTab === 'combo' && comboSkus.length === 0)) && (
                                         <tr>
-                                            <td colSpan={activeTab === 'combo' ? 6 : 5} className="px-6 py-12 text-center text-gray-500">No SKUs found.</td>
+                                            <td colSpan={activeTab === 'combo' ? 6 : 5} className="px-4 py-12 text-center text-gray-500">No SKUs found.</td>
                                         </tr>
                                     )}
                                 </tbody>
