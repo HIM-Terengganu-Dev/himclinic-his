@@ -94,6 +94,7 @@ export async function getAllSingleSkus() {
         `SELECT * FROM "his_db".single_skus 
          WHERE LOWER(COALESCE(description, '')) != 'dummy sku'
          AND sku NOT IN ('buku/SM', 'buku/BK')
+         AND COALESCE(hidden, false) = false
          ORDER BY sku`
     );
     return result.rows;
@@ -137,6 +138,7 @@ export async function getAllComboSkus() {
         `SELECT * FROM "his_db".combo_skus 
          WHERE LOWER(COALESCE(description, '')) != 'dummy sku'
          AND sku NOT IN ('buku/SM', 'buku/BK')
+         AND COALESCE(hidden, false) = false
          ORDER BY sku`
     );
     return result.rows;
@@ -190,6 +192,107 @@ export async function createComboSku(data: {
      VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
         [data.sku, data.name, data.woocommerceProductId, JSON.stringify(data.components), data.description, data.createdBy]
+    );
+    return result.rows[0];
+}
+
+export async function updateSingleSku(id: number, updates: {
+    name?: string;
+    description?: string;
+    woocommerceProductId?: number;
+    hidden?: boolean;
+}) {
+    const fields: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (updates.name !== undefined) {
+        fields.push(`name = $${paramIndex++}`);
+        values.push(updates.name);
+    }
+    if (updates.description !== undefined) {
+        fields.push(`description = $${paramIndex++}`);
+        values.push(updates.description);
+    }
+    if (updates.woocommerceProductId !== undefined) {
+        fields.push(`woocommerce_product_id = $${paramIndex++}`);
+        values.push(updates.woocommerceProductId);
+    }
+    if (updates.hidden !== undefined) {
+        fields.push(`hidden = $${paramIndex++}`);
+        values.push(updates.hidden);
+    }
+
+    if (fields.length === 0) {
+        throw new Error('No fields to update');
+    }
+
+    fields.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(id);
+    const result = await query(
+        `UPDATE "his_db".single_skus SET ${fields.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+        values
+    );
+    return result.rows[0];
+}
+
+export async function updateComboSku(id: number, updates: {
+    name?: string;
+    description?: string;
+    woocommerceProductId?: number;
+    components?: any;
+    hidden?: boolean;
+}) {
+    const fields: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (updates.name !== undefined) {
+        fields.push(`name = $${paramIndex++}`);
+        values.push(updates.name);
+    }
+    if (updates.description !== undefined) {
+        fields.push(`description = $${paramIndex++}`);
+        values.push(updates.description);
+    }
+    if (updates.woocommerceProductId !== undefined) {
+        fields.push(`woocommerce_product_id = $${paramIndex++}`);
+        values.push(updates.woocommerceProductId);
+    }
+    if (updates.components !== undefined) {
+        fields.push(`components = $${paramIndex++}`);
+        values.push(JSON.stringify(updates.components));
+    }
+    if (updates.hidden !== undefined) {
+        fields.push(`hidden = $${paramIndex++}`);
+        values.push(updates.hidden);
+    }
+
+    if (fields.length === 0) {
+        throw new Error('No fields to update');
+    }
+
+    fields.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(id);
+    const result = await query(
+        `UPDATE "his_db".combo_skus SET ${fields.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+        values
+    );
+    return result.rows[0];
+}
+
+export async function deleteSingleSku(id: number) {
+    const result = await query(
+        'DELETE FROM "his_db".single_skus WHERE id = $1 RETURNING *',
+        [id]
+    );
+    return result.rows[0];
+}
+
+export async function deleteComboSku(id: number) {
+    const result = await query(
+        'DELETE FROM "his_db".combo_skus WHERE id = $1 RETURNING *',
+        [id]
     );
     return result.rows[0];
 }

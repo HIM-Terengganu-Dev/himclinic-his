@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
-import { Plus, Trash2, Box, Layers, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Box, Layers, RefreshCw, Eye, EyeOff, Edit2, Save, X } from 'lucide-react';
 import { fetchWithRole } from '@/lib/utils/fetchWithRole';
 
 interface SingleSku {
@@ -10,6 +10,8 @@ interface SingleSku {
     sku: string;
     name: string;
     woocommerce_product_id: number;
+    hidden?: boolean;
+    description?: string;
 }
 
 interface ComboSku {
@@ -18,6 +20,8 @@ interface ComboSku {
     name: string;
     woocommerce_product_id: number;
     components: { sku: string; quantity: number }[];
+    hidden?: boolean;
+    description?: string;
 }
 
 export default function SkuManagement() {
@@ -26,6 +30,9 @@ export default function SkuManagement() {
     const [singleSkus, setSingleSkus] = useState<SingleSku[]>([]);
     const [comboSkus, setComboSkus] = useState<ComboSku[]>([]);
     const [loading, setLoading] = useState(false);
+    const [editingId, setEditingId] = useState<number | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [success, setSuccess] = useState<string | null>(null);
 
     // Form States
     const [sku, setSku] = useState('');
@@ -80,13 +87,16 @@ export default function SkuManagement() {
             });
             const data = await res.json();
             if (data.success) {
-                alert('Single SKU Created Successfully!');
+                setSuccess('Single SKU created successfully!');
+                setError(null);
                 fetchSkus();
                 setSku('');
                 setName('');
                 setDescription('');
+                setTimeout(() => setSuccess(null), 3000);
             } else {
-                alert('Error: ' + data.error);
+                setError(data.error || 'Failed to create SKU');
+                setSuccess(null);
             }
         } catch (error) {
             console.error(error);
@@ -110,14 +120,17 @@ export default function SkuManagement() {
             });
             const data = await res.json();
             if (data.success) {
-                alert('Combo SKU Created Successfully!');
+                setSuccess('Combo SKU created successfully!');
+                setError(null);
                 fetchSkus();
                 setSku('');
                 setName('');
                 setDescription('');
                 setComponents([{ sku: '', quantity: 1 }]);
+                setTimeout(() => setSuccess(null), 3000);
             } else {
-                alert('Error: ' + data.error);
+                setError(data.error || 'Failed to create combo SKU');
+                setSuccess(null);
             }
         } catch (error) {
             console.error(error);
@@ -144,13 +157,78 @@ export default function SkuManagement() {
         setComponents(newComponents);
     };
 
+    const handleToggleHidden = async (id: number, currentHidden: boolean, type: 'single' | 'combo') => {
+        try {
+            const endpoint = type === 'single' ? `/api/skus/single/${id}` : `/api/skus/combo/${id}`;
+            const res = await fetchWithRole(endpoint, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hidden: !currentHidden })
+            });
+            const data = await res.json();
+            if (data.success) {
+                setSuccess(`SKU ${!currentHidden ? 'hidden' : 'shown'} successfully!`);
+                setError(null);
+                fetchSkus();
+                setTimeout(() => setSuccess(null), 3000);
+            } else {
+                setError(data.error || 'Failed to update SKU');
+                setSuccess(null);
+            }
+        } catch (err: any) {
+            console.error('Error toggling SKU visibility:', err);
+            setError('Failed to update SKU visibility');
+            setSuccess(null);
+        }
+    };
+
+    const handleDelete = async (id: number, type: 'single' | 'combo') => {
+        if (!confirm('Are you sure you want to delete this SKU? This action cannot be undone.')) {
+            return;
+        }
+
+        try {
+            const endpoint = type === 'single' ? `/api/skus/single/${id}` : `/api/skus/combo/${id}`;
+            const res = await fetchWithRole(endpoint, {
+                method: 'DELETE'
+            });
+            const data = await res.json();
+            if (data.success) {
+                setSuccess('SKU deleted successfully!');
+                setError(null);
+                fetchSkus();
+                setTimeout(() => setSuccess(null), 3000);
+            } else {
+                setError(data.error || 'Failed to delete SKU');
+                setSuccess(null);
+            }
+        } catch (err: any) {
+            console.error('Error deleting SKU:', err);
+            setError('Failed to delete SKU');
+            setSuccess(null);
+        }
+    };
+
     return (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <div className="flex justify-between items-center mb-6">
-                <div>
-                    <h2 className="text-xl font-bold text-gray-900">SKU Management</h2>
-                    <p className="text-sm text-gray-500 mt-1">Create and manage Single and Combo SKUs</p>
+        <div className="space-y-6">
+            {/* Success/Error Messages */}
+            {success && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+                    {success}
                 </div>
+            )}
+            {error && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                    {error}
+                </div>
+            )}
+            
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <div className="flex justify-between items-center mb-6">
+                    <div>
+                        <h2 className="text-xl font-bold text-gray-900">SKU Management</h2>
+                        <p className="text-sm text-gray-500 mt-1">Create and manage Single and Combo SKUs</p>
+                    </div>
                 <div className="flex bg-gray-100 rounded-lg p-1">
                     <button
                         onClick={() => setActiveTab('single')}
@@ -275,33 +353,89 @@ export default function SkuManagement() {
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SKU</th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">WC ID</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                                     {activeTab === 'combo' && (
                                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Components</th>
                                     )}
+                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
                                 {activeTab === 'single' ? (
-                                    singleSkus.map((sku) => (
-                                        <tr key={sku.id}>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{sku.sku}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{sku.name}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{sku.woocommerce_product_id}</td>
+                                    singleSkus.map((skuItem) => (
+                                        <tr key={skuItem.id} className={skuItem.hidden ? 'opacity-50 bg-gray-50' : ''}>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{skuItem.sku}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.name}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.woocommerce_product_id || '—'}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                                    skuItem.hidden 
+                                                        ? 'bg-gray-100 text-gray-600' 
+                                                        : 'bg-green-100 text-green-700'
+                                                }`}>
+                                                    {skuItem.hidden ? 'Hidden' : 'Visible'}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <div className="flex justify-end gap-2">
+                                                    <button
+                                                        onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'single')}
+                                                        className="text-blue-600 hover:text-blue-900"
+                                                        title={skuItem.hidden ? 'Show in dashboard' : 'Hide from dashboard'}
+                                                    >
+                                                        {skuItem.hidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDelete(skuItem.id, 'single')}
+                                                        className="text-red-600 hover:text-red-900"
+                                                        title="Delete SKU"
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </button>
+                                                </div>
+                                            </td>
                                         </tr>
                                     ))
                                 ) : (
-                                    comboSkus.map((sku) => (
-                                        <tr key={sku.id}>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{sku.sku}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{sku.name}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{sku.woocommerce_product_id}</td>
+                                    comboSkus.map((skuItem) => (
+                                        <tr key={skuItem.id} className={skuItem.hidden ? 'opacity-50 bg-gray-50' : ''}>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{skuItem.sku}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.name}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.woocommerce_product_id || '—'}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                                    skuItem.hidden 
+                                                        ? 'bg-gray-100 text-gray-600' 
+                                                        : 'bg-green-100 text-green-700'
+                                                }`}>
+                                                    {skuItem.hidden ? 'Hidden' : 'Visible'}
+                                                </span>
+                                            </td>
                                             <td className="px-6 py-4 text-sm text-gray-500">
                                                 <div className="flex flex-col gap-1">
-                                                    {sku.components.map((c, i) => (
+                                                    {skuItem.components.map((c, i) => (
                                                         <span key={i} className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
                                                             {c.quantity}x {c.sku}
                                                         </span>
                                                     ))}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <div className="flex justify-end gap-2">
+                                                    <button
+                                                        onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'combo')}
+                                                        className="text-blue-600 hover:text-blue-900"
+                                                        title={skuItem.hidden ? 'Show in dashboard' : 'Hide from dashboard'}
+                                                    >
+                                                        {skuItem.hidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDelete(skuItem.id, 'combo')}
+                                                        className="text-red-600 hover:text-red-900"
+                                                        title="Delete SKU"
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </button>
                                                 </div>
                                             </td>
                                         </tr>

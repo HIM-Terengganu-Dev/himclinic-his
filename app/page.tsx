@@ -149,14 +149,7 @@ export default function Home() {
   const isDev = effectiveRole === 'dev';
   const actualRole = session?.user?.role; // Keep track of actual role for dev users
 
-  // Redirect non-admin users away from return-refund tab (but allow procurement for all authenticated users)
-  useEffect(() => {
-    if (status === 'authenticated' && effectiveRole !== 'admin') {
-      if (activeTab === 'return-refund') {
-        setActiveTab('dashboard');
-      }
-    }
-  }, [status, effectiveRole, activeTab]);
+  // No redirects needed - all authenticated users can access all tabs now
 
   if (status === 'loading') {
     return (
@@ -356,35 +349,31 @@ export default function Home() {
                 {activeTab === 'procurement' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
 
-              {/* Return/Refund tab - only visible to admins */}
-              {isAdmin && (
-                <button
-                  onClick={() => setActiveTab('return-refund')}
-                  className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'return-refund'
-                    ? 'text-orange-600 bg-orange-50/50'
-                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
-                    }`}
-                >
-                  <ArrowLeftCircle size={18} />
-                  Refund/Return
-                  {activeTab === 'return-refund' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-orange-600" />}
-                </button>
-              )}
+              {/* Return/Refund tab - visible to all authenticated users */}
+              <button
+                onClick={() => setActiveTab('return-refund')}
+                className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'return-refund'
+                  ? 'text-orange-600 bg-orange-50/50'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+              >
+                <ArrowLeftCircle size={18} />
+                Refund/Return
+                {activeTab === 'return-refund' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-orange-600" />}
+              </button>
 
-              {/* SKU Management tab hidden from UI but backend code remains */}
-              {/* {isAdmin && (
-                <button
-                  onClick={() => setActiveTab('sku')}
-                  className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'sku'
-                    ? 'text-purple-600 bg-purple-50/50'
-                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
-                    }`}
-                >
-                  <Settings size={18} />
-                  SKU Management
-                  {activeTab === 'sku' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-600" />}
-                </button>
-              )} */}
+              {/* SKU Management tab - visible to all authenticated users */}
+              <button
+                onClick={() => setActiveTab('sku')}
+                className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'sku'
+                  ? 'text-purple-600 bg-purple-50/50'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+              >
+                <Settings size={18} />
+                SKU Management
+                {activeTab === 'sku' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-600" />}
+              </button>
 
               <button
                 onClick={() => setActiveTab('activity')}
@@ -456,7 +445,7 @@ export default function Home() {
               <ProcurementUpdate onStockUpdated={fetchInventory} />
             )}
 
-            {activeTab === 'return-refund' && isAdmin && (
+            {activeTab === 'return-refund' && (
               <ReturnRefund onStockUpdated={fetchInventory} />
             )}
 
@@ -468,7 +457,7 @@ export default function Home() {
               <AdminAccess />
             )}
 
-            {activeTab === 'sku' && isAdmin && (
+            {activeTab === 'sku' && (
               <SkuManagement />
             )}
 
