@@ -40,6 +40,28 @@ export async function requireDev() {
 }
 
 /**
+ * Require admin or dev role
+ * Allows both admin users and dev users (with or without role switching)
+ */
+export async function requireAdminOrDev(request?: Request) {
+    const session = await requireAuth();
+
+    if (!session) {
+        return null;
+    }
+
+    // Check effective role (handles role switching for dev users)
+    const effectiveRole = getEffectiveRole(session, request);
+    
+    // Allow admin or dev users
+    if (effectiveRole !== 'admin' && effectiveRole !== 'dev' && session.user.role !== 'dev') {
+        return null;
+    }
+
+    return session;
+}
+
+/**
  * Get the effective role for a request
  * If user is dev and has switched role in header, use that role
  * Otherwise, use the actual role from session

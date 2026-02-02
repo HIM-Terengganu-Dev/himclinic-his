@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdmin } from '@/lib/auth/middleware';
+import { requireAdminOrDev } from '@/lib/auth/middleware';
 import { getUserById, updateUser, deleteUser } from '@/lib/db/queries';
 import { logActivity } from '@/lib/db/queries';
 
@@ -8,7 +8,7 @@ export async function GET(
     { params }: { params: { id: string } }
 ) {
     try {
-        const session = await requireAdmin(req);
+        const session = await requireAdminOrDev(req);
         if (!session) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
@@ -35,7 +35,7 @@ export async function PUT(
     { params }: { params: { id: string } }
 ) {
     try {
-        const session = await requireAdmin(req);
+        const session = await requireAdminOrDev(req);
         if (!session) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
@@ -95,7 +95,7 @@ export async function DELETE(
     { params }: { params: { id: string } }
 ) {
     try {
-        const session = await requireAdmin(req);
+        const session = await requireAdminOrDev(req);
         if (!session) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
