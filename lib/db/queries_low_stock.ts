@@ -11,6 +11,7 @@ export async function getLowStockEmailSettings() {
 export async function updateLowStockEmailSettings(settings: {
     enabled?: boolean;
     recipientEmail?: string;
+    senderEmail?: string;
     emailSubject?: string;
     emailBody?: string;
 }) {
@@ -30,6 +31,10 @@ export async function updateLowStockEmailSettings(settings: {
         if (settings.recipientEmail !== undefined) {
             fields.push(`recipient_email = $${paramIndex++}`);
             values.push(settings.recipientEmail);
+        }
+        if (settings.senderEmail !== undefined) {
+            fields.push(`sender_email = $${paramIndex++}`);
+            values.push(settings.senderEmail);
         }
         if (settings.emailSubject !== undefined) {
             fields.push(`email_subject = $${paramIndex++}`);
@@ -53,12 +58,13 @@ export async function updateLowStockEmailSettings(settings: {
     } else {
         // Create new
         const result = await query(
-            `INSERT INTO "his_db".low_stock_email_settings (enabled, recipient_email, email_subject, email_body)
-             VALUES ($1, $2, $3, $4)
+            `INSERT INTO "his_db".low_stock_email_settings (enabled, recipient_email, sender_email, email_subject, email_body)
+             VALUES ($1, $2, $3, $4, $5)
              RETURNING *`,
             [
                 settings.enabled ?? false,
                 settings.recipientEmail || 'admin@example.com',
+                settings.senderEmail || process.env.RESEND_FROM_EMAIL || 'noreply@example.com',
                 settings.emailSubject || 'Low Stock Alert',
                 settings.emailBody || 'The following SKUs are running low on stock:'
             ]

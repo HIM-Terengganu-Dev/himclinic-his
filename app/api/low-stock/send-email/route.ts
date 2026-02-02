@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        from: process.env.RESEND_FROM_EMAIL || 'noreply@example.com',
+                        from: emailSettings.sender_email || process.env.RESEND_FROM_EMAIL || 'noreply@example.com',
                         to: emailSettings.recipientEmail,
                         subject: emailSettings.emailSubject || 'Low Stock Alert',
                         text: emailContent

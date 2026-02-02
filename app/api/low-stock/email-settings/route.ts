@@ -25,11 +25,12 @@ export async function PUT(req: NextRequest) {
         }
 
         const body = await req.json();
-        const { enabled, recipientEmail, emailSubject, emailBody } = body;
+        const { enabled, recipientEmail, senderEmail, emailSubject, emailBody } = body;
 
         const settings = await updateLowStockEmailSettings({
             enabled,
             recipientEmail,
+            senderEmail,
             emailSubject,
             emailBody
         });

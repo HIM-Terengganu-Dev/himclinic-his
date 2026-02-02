@@ -9,6 +9,7 @@ interface EmailSettings {
     id?: number;
     enabled: boolean;
     recipient_email: string;
+    sender_email?: string;
     email_subject: string;
     email_body: string;
     last_sent_at?: string;
@@ -27,6 +28,7 @@ export default function LowStockAlerts() {
     const [emailSettings, setEmailSettings] = useState<EmailSettings>({
         enabled: false,
         recipient_email: '',
+        sender_email: '',
         email_subject: 'Low Stock Alert',
         email_body: 'The following SKUs are running low on stock:\n\n'
     });
@@ -87,6 +89,7 @@ export default function LowStockAlerts() {
                 body: JSON.stringify({
                     enabled: emailSettings.enabled,
                     recipientEmail: emailSettings.recipient_email,
+                    senderEmail: emailSettings.sender_email,
                     emailSubject: emailSettings.email_subject,
                     emailBody: emailSettings.email_body
                 })
