@@ -102,13 +102,12 @@ export async function getSkusWithLowStock() {
         const stock = stockMap[sku.sku];
         if (stock) {
             const currentStock = stock.inWarehouse || 0;
+            // Alert triggers when stock <= threshold (inclusive)
             if (currentStock <= sku.low_stock_threshold) {
-                if (!sku.enough_stock_level || currentStock < sku.enough_stock_level) {
-                    lowStockSingle.push({
-                        ...sku,
-                        currentStock
-                    });
-                }
+                lowStockSingle.push({
+                    ...sku,
+                    currentStock
+                });
             }
         }
     }
@@ -117,13 +116,12 @@ export async function getSkusWithLowStock() {
         const stock = stockMap[sku.sku];
         if (stock) {
             const currentStock = stock.inWarehouse || 0;
+            // Alert triggers when stock <= threshold (inclusive)
             if (currentStock <= sku.low_stock_threshold) {
-                if (!sku.enough_stock_level || currentStock < sku.enough_stock_level) {
-                    lowStockCombo.push({
-                        ...sku,
-                        currentStock
-                    });
-                }
+                lowStockCombo.push({
+                    ...sku,
+                    currentStock
+                });
             }
         }
     }

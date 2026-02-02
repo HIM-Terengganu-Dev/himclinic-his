@@ -13,7 +13,6 @@ interface SingleSku {
     hidden?: boolean;
     description?: string;
     low_stock_threshold?: number | null;
-    enough_stock_level?: number | null;
     email_alerts_enabled?: boolean;
 }
 
@@ -26,7 +25,6 @@ interface ComboSku {
     hidden?: boolean;
     description?: string;
     low_stock_threshold?: number | null;
-    enough_stock_level?: number | null;
     email_alerts_enabled?: boolean;
 }
 
@@ -41,7 +39,6 @@ export default function SkuManagement() {
     const [editingId, setEditingId] = useState<number | null>(null);
     const [editingType, setEditingType] = useState<'single' | 'combo' | null>(null);
     const [editLowThreshold, setEditLowThreshold] = useState<string>('');
-    const [editEnoughLevel, setEditEnoughLevel] = useState<string>('');
     const [editEmailAlerts, setEditEmailAlerts] = useState<boolean>(false);
 
     // Form States
@@ -223,7 +220,6 @@ export default function SkuManagement() {
         setEditingId(skuItem.id);
         setEditingType(type);
         setEditLowThreshold(skuItem.low_stock_threshold?.toString() || '');
-        setEditEnoughLevel(skuItem.enough_stock_level?.toString() || '');
         setEditEmailAlerts(skuItem.email_alerts_enabled || false);
     };
 
@@ -231,7 +227,6 @@ export default function SkuManagement() {
         setEditingId(null);
         setEditingType(null);
         setEditLowThreshold('');
-        setEditEnoughLevel('');
         setEditEmailAlerts(false);
     };
 
@@ -248,7 +243,6 @@ export default function SkuManagement() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     lowStockThreshold: editLowThreshold === '' ? null : parseInt(editLowThreshold),
-                    enoughStockLevel: editEnoughLevel === '' ? null : parseInt(editEnoughLevel),
                     emailAlertsEnabled: editEmailAlerts
                 })
             });
@@ -417,8 +411,7 @@ export default function SkuManagement() {
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Name</th>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">WC ID</th>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Status</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Low Stock</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Enough Level</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Low Stock Threshold</th>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Email Alerts</th>
                                         {activeTab === 'combo' && (
                                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Components</th>
@@ -444,30 +437,24 @@ export default function SkuManagement() {
                                                 </td>
                                                 <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
                                                     {editingId === skuItem.id && editingType === 'single' ? (
-                                                        <input
-                                                            type="number"
-                                                            min="0"
-                                                            value={editLowThreshold}
-                                                            onChange={(e) => setEditLowThreshold(e.target.value)}
-                                                            className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
-                                                            placeholder="Threshold"
-                                                        />
+                                                        <div className="flex flex-col gap-1">
+                                                            <input
+                                                                type="number"
+                                                                min="0"
+                                                                value={editLowThreshold}
+                                                                onChange={(e) => setEditLowThreshold(e.target.value)}
+                                                                className="w-24 px-2 py-1 border border-gray-300 rounded text-sm"
+                                                                placeholder="e.g. 10"
+                                                            />
+                                                            <span className="text-xs text-gray-400">Alert when stock ≤ this value</span>
+                                                        </div>
                                                     ) : (
-                                                        <span>{skuItem.low_stock_threshold ?? '—'}</span>
-                                                    )}
-                                                </td>
-                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                    {editingId === skuItem.id && editingType === 'single' ? (
-                                                        <input
-                                                            type="number"
-                                                            min="0"
-                                                            value={editEnoughLevel}
-                                                            onChange={(e) => setEditEnoughLevel(e.target.value)}
-                                                            className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
-                                                            placeholder="Level"
-                                                        />
-                                                    ) : (
-                                                        <span>{skuItem.enough_stock_level ?? '—'}</span>
+                                                        <div className="flex flex-col">
+                                                            <span className="font-medium">{skuItem.low_stock_threshold ?? '—'}</span>
+                                                            {skuItem.low_stock_threshold !== null && (
+                                                                <span className="text-xs text-gray-400">Alert if ≤ {skuItem.low_stock_threshold}</span>
+                                                            )}
+                                                        </div>
                                                     )}
                                                 </td>
                                                 <td className="px-4 py-4 whitespace-nowrap">
@@ -557,30 +544,24 @@ export default function SkuManagement() {
                                                 </td>
                                                 <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
                                                     {editingId === skuItem.id && editingType === 'combo' ? (
-                                                        <input
-                                                            type="number"
-                                                            min="0"
-                                                            value={editLowThreshold}
-                                                            onChange={(e) => setEditLowThreshold(e.target.value)}
-                                                            className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
-                                                            placeholder="Threshold"
-                                                        />
+                                                        <div className="flex flex-col gap-1">
+                                                            <input
+                                                                type="number"
+                                                                min="0"
+                                                                value={editLowThreshold}
+                                                                onChange={(e) => setEditLowThreshold(e.target.value)}
+                                                                className="w-24 px-2 py-1 border border-gray-300 rounded text-sm"
+                                                                placeholder="e.g. 10"
+                                                            />
+                                                            <span className="text-xs text-gray-400">Alert when stock ≤ this value</span>
+                                                        </div>
                                                     ) : (
-                                                        <span>{skuItem.low_stock_threshold ?? '—'}</span>
-                                                    )}
-                                                </td>
-                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                    {editingId === skuItem.id && editingType === 'combo' ? (
-                                                        <input
-                                                            type="number"
-                                                            min="0"
-                                                            value={editEnoughLevel}
-                                                            onChange={(e) => setEditEnoughLevel(e.target.value)}
-                                                            className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
-                                                            placeholder="Level"
-                                                        />
-                                                    ) : (
-                                                        <span>{skuItem.enough_stock_level ?? '—'}</span>
+                                                        <div className="flex flex-col">
+                                                            <span className="font-medium">{skuItem.low_stock_threshold ?? '—'}</span>
+                                                            {skuItem.low_stock_threshold !== null && (
+                                                                <span className="text-xs text-gray-400">Alert if ≤ {skuItem.low_stock_threshold}</span>
+                                                            )}
+                                                        </div>
                                                     )}
                                                 </td>
                                                 <td className="px-4 py-4 whitespace-nowrap">
@@ -665,7 +646,7 @@ export default function SkuManagement() {
                                     )}
                                     {((activeTab === 'single' && singleSkus.length === 0) || (activeTab === 'combo' && comboSkus.length === 0)) && (
                                         <tr>
-                                            <td colSpan={activeTab === 'combo' ? 9 : 8} className="px-4 py-12 text-center text-gray-500">No SKUs found.</td>
+                                            <td colSpan={activeTab === 'combo' ? 8 : 7} className="px-4 py-12 text-center text-gray-500">No SKUs found.</td>
                                         </tr>
                                     )}
                                 </tbody>

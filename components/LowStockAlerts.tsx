@@ -20,7 +20,6 @@ interface LowStockSku {
     name: string;
     currentStock: number;
     low_stock_threshold: number;
-    enough_stock_level?: number;
 }
 
 export default function LowStockAlerts() {
@@ -259,9 +258,7 @@ export default function LowStockAlerts() {
                                         <div className="text-sm text-gray-600 mt-1">
                                             Current: <span className="font-medium text-orange-700">{sku.currentStock}</span> | 
                                             Threshold: <span className="font-medium">{sku.low_stock_threshold}</span>
-                                            {sku.enough_stock_level && (
-                                                <> | Target: <span className="font-medium">{sku.enough_stock_level}</span></>
-                                            )}
+                                            <span className="text-xs text-gray-500 ml-2">(Alert when ≤ {sku.low_stock_threshold})</span>
                                         </div>
                                     </div>
                                     <div className="text-orange-600">

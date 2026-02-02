@@ -198,7 +198,6 @@ export async function updateSingleSku(id: number, updates: {
     woocommerceProductId?: number;
     hidden?: boolean;
     lowStockThreshold?: number | null;
-    enoughStockLevel?: number | null;
     emailAlertsEnabled?: boolean;
 }) {
     const fields: string[] = [];
@@ -225,10 +224,6 @@ export async function updateSingleSku(id: number, updates: {
         fields.push(`low_stock_threshold = $${paramIndex++}`);
         values.push(updates.lowStockThreshold);
     }
-    if (updates.enoughStockLevel !== undefined) {
-        fields.push(`enough_stock_level = $${paramIndex++}`);
-        values.push(updates.enoughStockLevel);
-    }
     if (updates.emailAlertsEnabled !== undefined) {
         fields.push(`email_alerts_enabled = $${paramIndex++}`);
         values.push(updates.emailAlertsEnabled);
@@ -254,7 +249,6 @@ export async function updateComboSku(id: number, updates: {
     components?: any;
     hidden?: boolean;
     lowStockThreshold?: number | null;
-    enoughStockLevel?: number | null;
     emailAlertsEnabled?: boolean;
 }) {
     const fields: string[] = [];
@@ -284,10 +278,6 @@ export async function updateComboSku(id: number, updates: {
     if (updates.lowStockThreshold !== undefined) {
         fields.push(`low_stock_threshold = $${paramIndex++}`);
         values.push(updates.lowStockThreshold);
-    }
-    if (updates.enoughStockLevel !== undefined) {
-        fields.push(`enough_stock_level = $${paramIndex++}`);
-        values.push(updates.enoughStockLevel);
     }
     if (updates.emailAlertsEnabled !== undefined) {
         fields.push(`email_alerts_enabled = $${paramIndex++}`);
