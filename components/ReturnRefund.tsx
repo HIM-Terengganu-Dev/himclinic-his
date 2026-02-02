@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { ArrowLeftCircle, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { fetchWithRole } from '@/lib/utils/fetchWithRole';
 
 interface SingleSku {
   id: number;
@@ -35,13 +36,20 @@ export default function ReturnRefund({ onStockUpdated }: ReturnRefundProps) {
   const fetchSingleSkus = async () => {
     setLoadingSkus(true);
     try {
-      const res = await fetch('/api/skus/single');
+      const res = await fetchWithRole('/api/skus/single');
+      if (!res.ok) {
+        throw new Error(`Failed to fetch SKUs: ${res.status}`);
+      }
       const data = await res.json();
       if (data.skus) {
         setSingleSkus(data.skus);
+      } else if (data.error) {
+        console.error('API error:', data.error);
+        setError(data.error);
       }
     } catch (error) {
       console.error('Failed to fetch SKUs', error);
+      setError('Failed to load SKU list. Please refresh the page.');
     } finally {
       setLoadingSkus(false);
     }
@@ -64,7 +72,7 @@ export default function ReturnRefund({ onStockUpdated }: ReturnRefundProps) {
     setResult(null);
 
     try {
-      const response = await fetch('/api/refund-return', {
+      const response = await fetchWithRole('/api/refund-return', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

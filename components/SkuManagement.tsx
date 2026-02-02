@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
 import { Plus, Trash2, Box, Layers, RefreshCw } from 'lucide-react';
+import { fetchWithRole } from '@/lib/utils/fetchWithRole';
 
 interface SingleSku {
     id: number;
@@ -42,19 +43,23 @@ export default function SkuManagement() {
         setLoading(true);
         try {
             if (activeTab === 'single') {
-                const res = await fetch('/api/skus/single');
+                const res = await fetchWithRole('/api/skus/single');
+                if (!res.ok) throw new Error(`Failed to fetch single SKUs: ${res.status}`);
                 const data = await res.json();
                 if (data.skus) setSingleSkus(data.skus);
             } else {
-                const res = await fetch('/api/skus/combo');
+                const res = await fetchWithRole('/api/skus/combo');
+                if (!res.ok) throw new Error(`Failed to fetch combo SKUs: ${res.status}`);
                 const data = await res.json();
                 if (data.skus) setComboSkus(data.skus);
 
                 // Also fetch single SKUs for component selector if empty
                 if (singleSkus.length === 0) {
-                    const resSingle = await fetch('/api/skus/single');
-                    const dataSingle = await resSingle.json();
-                    if (dataSingle.skus) setSingleSkus(dataSingle.skus);
+                    const resSingle = await fetchWithRole('/api/skus/single');
+                    if (resSingle.ok) {
+                        const dataSingle = await resSingle.json();
+                        if (dataSingle.skus) setSingleSkus(dataSingle.skus);
+                    }
                 }
             }
         } catch (error) {
@@ -68,7 +73,7 @@ export default function SkuManagement() {
         e.preventDefault();
         setLoading(true);
         try {
-            const res = await fetch('/api/skus/single', {
+            const res = await fetchWithRole('/api/skus/single', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sku, name, description })
@@ -98,7 +103,7 @@ export default function SkuManagement() {
             // Filter out empty components
             const validComponents = components.filter(c => c.sku && c.quantity > 0);
 
-            const res = await fetch('/api/skus/combo', {
+            const res = await fetchWithRole('/api/skus/combo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sku, name, description, components: validComponents })
