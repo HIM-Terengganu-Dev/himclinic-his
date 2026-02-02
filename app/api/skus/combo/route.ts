@@ -5,7 +5,7 @@ import { logActivity } from '@/lib/db/queries';
 
 export async function GET(req: NextRequest) {
     try {
-        const session = await requireAdmin();
+        const session = await requireAdmin(req);
         if (!session) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
     try {
-        const session = await requireAdmin();
+        const session = await requireAdmin(req);
         if (!session) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }

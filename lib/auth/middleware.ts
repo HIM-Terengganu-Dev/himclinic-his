@@ -12,10 +12,17 @@ export async function requireAuth() {
     return session;
 }
 
-export async function requireAdmin() {
+export async function requireAdmin(request?: Request) {
     const session = await requireAuth();
 
-    if (!session || session.user.role !== 'admin') {
+    if (!session) {
+        return null;
+    }
+
+    // Check effective role (handles role switching for dev users)
+    const effectiveRole = getEffectiveRole(session, request);
+    
+    if (effectiveRole !== 'admin') {
         return null;
     }
 

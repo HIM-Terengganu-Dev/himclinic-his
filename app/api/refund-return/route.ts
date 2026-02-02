@@ -12,7 +12,7 @@ import { requireAdmin, forbiddenResponse } from '@/lib/auth/middleware';
 export async function POST(request: Request) {
   try {
     // 1. Admin Role Check - Only admins can process refunds/returns
-    const session = await requireAdmin();
+    const session = await requireAdmin(request);
     if (!session) {
       return forbiddenResponse();
     }
