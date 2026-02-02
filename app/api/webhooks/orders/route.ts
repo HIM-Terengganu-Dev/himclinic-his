@@ -1233,6 +1233,16 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
             console.error(`❌ Failed to log webhook for Order #${orderId}:`, logError.message);
         }
 
+        // Check for low stock alerts (async, don't block response)
+        const affectedSkus = [
+            ...restoredSingleSkus.map((s: any) => s.sku),
+            ...restoredComponentStocks.map((s: any) => s.sku)
+        ];
+        const uniqueAffectedSkus = Array.from(new Set(affectedSkus));
+        checkAndSendLowStockAlerts(uniqueAffectedSkus).catch(err => {
+            console.error('Error checking low stock alerts:', err);
+        });
+
         return NextResponse.json({
             success: true,
             message: `${statusLabel} cancellation processed. Removed from pending (no in_warehouse restoration).`,

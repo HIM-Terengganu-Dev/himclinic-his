@@ -192,6 +192,11 @@ export async function POST(request: Request) {
 
       // Note: Combo availability is calculated from transactions, no need to update WooCommerce
 
+      // Check for low stock alerts (async, don't block response)
+      checkAndSendLowStockAlerts([sku]).catch(err => {
+          console.error('Error checking low stock alerts:', err);
+      });
+
       return NextResponse.json({
         success: true,
         sku,
