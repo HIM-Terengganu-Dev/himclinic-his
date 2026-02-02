@@ -53,12 +53,15 @@ export async function requireAdminOrDev(request?: Request) {
     // Check effective role (handles role switching for dev users)
     const effectiveRole = getEffectiveRole(session, request);
     
-    // Allow admin or dev users
-    if (effectiveRole !== 'admin' && effectiveRole !== 'dev' && session.user.role !== 'dev') {
-        return null;
+    // Allow if:
+    // 1. Effective role is admin (user is admin, or dev user switched to admin)
+    // 2. Effective role is dev (user is dev, or dev user switched to dev)
+    // 3. Actual session role is dev (dev users can always access, even if they switched roles)
+    if (effectiveRole === 'admin' || effectiveRole === 'dev' || session.user.role === 'dev') {
+        return session;
     }
 
-    return session;
+    return null;
 }
 
 /**
