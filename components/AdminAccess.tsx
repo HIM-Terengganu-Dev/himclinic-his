@@ -6,14 +6,17 @@ import { Settings, Shield, Users, Database, Key } from 'lucide-react';
 
 export default function AdminAccess() {
   const { data: session } = useSession();
-  const isAdmin = session?.user?.role === 'admin';
+  const userRole = session?.user?.role;
+  const isAdmin = userRole === 'admin';
+  const isDev = userRole === 'dev';
+  const hasAccess = isAdmin || isDev;
 
-  if (!isAdmin) {
+  if (!hasAccess) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
         <Shield className="w-16 h-16 text-gray-400 mx-auto mb-4" />
         <h2 className="text-xl font-semibold text-gray-700 mb-2">Access Denied</h2>
-        <p className="text-gray-500">You need administrator privileges to access this section.</p>
+        <p className="text-gray-500">You need administrator or developer privileges to access this section.</p>
       </div>
     );
   }

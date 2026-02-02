@@ -399,7 +399,7 @@ export default function Home() {
                 {activeTab === 'activity' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
 
-              {isAdmin && (
+              {(isAdmin || isDev) && (
                 <button
                   onClick={() => setActiveTab('admin')}
                   className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'admin'
@@ -465,7 +465,7 @@ export default function Home() {
               <ActivityLog />
             )}
 
-            {activeTab === 'admin' && isAdmin && (
+            {activeTab === 'admin' && (isAdmin || isDev) && (
               <AdminAccess />
             )}
 
