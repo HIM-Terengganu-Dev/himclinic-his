@@ -6,6 +6,7 @@ import {
   createStockTransaction
 } from '@/lib/db/queries';
 import { requireAuth, forbiddenResponse } from '@/lib/auth/middleware';
+import { checkAndSendLowStockAlerts } from '@/lib/utils/lowStockAlerts';
 
 export async function POST(request: Request) {
   try {

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { getAllComboSkus, getAllSingleSkus, getDummyComboSkus, getDummySingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingStockByOrder, getPendingStockByOrderFromTransactions, getOrderCurrentStatus } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
+import { checkAndSendLowStockAlerts } from '@/lib/utils/lowStockAlerts';
 
 // Disable body parsing to get raw body for signature verification
 export const runtime = 'nodejs';
@@ -743,6 +744,12 @@ export async function POST(request: Request) {
             // Still return success because stock was deducted (business operation succeeded)
             // Stock changes are NOT rolled back - manual reconciliation is required
         }
+
+        // Check for low stock alerts (async, don't block response)
+        const affectedSkus = Object.keys(totalDeductions);
+        checkAndSendLowStockAlerts(affectedSkus).catch(err => {
+            console.error('Error checking low stock alerts:', err);
+        });
 
         return NextResponse.json({ 
             success: true, 
@@ -2033,6 +2040,12 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
             console.error(`❌ Failed to log webhook for Order #${orderId}:`, logError.message);
         }
 
+        // Check for low stock alerts (async, don't block response)
+        const affectedSkus = deductions.map((d: any) => d.sku);
+        checkAndSendLowStockAlerts(affectedSkus).catch(err => {
+            console.error('Error checking low stock alerts:', err);
+        });
+
         return NextResponse.json({
             success: true,
             message: 'nv-pending-pickup processed. Deducted from in_warehouse and current status.',
@@ -2656,6 +2669,17 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                 console.error('❌ Failed to log error to activity_logs as fallback:', fallbackError);
             }
         }
+
+        // Check for low stock alerts (async, don't block response)
+        // Note: After cancellation, stock is restored, so we check if any SKUs are still low
+        const allRestoredSkus = [
+            ...restoredUpdates.map((u: any) => u.sku),
+            ...wcSideRestorations.map((r: any) => r.sku)
+        ];
+        const uniqueRestoredSkus = Array.from(new Set(allRestoredSkus));
+        checkAndSendLowStockAlerts(uniqueRestoredSkus).catch(err => {
+            console.error('Error checking low stock alerts:', err);
+        });
 
         return NextResponse.json({
             success: true,

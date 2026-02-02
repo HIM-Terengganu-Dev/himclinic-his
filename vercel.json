@@ -1,8 +1,0 @@
-{
-  "crons": [
-    {
-      "path": "/api/low-stock/check",
-      "schedule": "0 */6 * * *"
-    }
-  ]
-}
