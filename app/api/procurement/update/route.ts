@@ -5,12 +5,12 @@ import {
   getCurrentStockState,
   createStockTransaction
 } from '@/lib/db/queries';
-import { requireAdmin, forbiddenResponse } from '@/lib/auth/middleware';
+import { requireAuth, forbiddenResponse } from '@/lib/auth/middleware';
 
 export async function POST(request: Request) {
   try {
-    // 1. Admin Role Check - Only admins can update stock
-    const session = await requireAdmin(request);
+    // 1. Authentication Check - All authenticated users can update stock
+    const session = await requireAuth();
     if (!session) {
       return forbiddenResponse();
     }

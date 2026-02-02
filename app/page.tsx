@@ -149,10 +149,10 @@ export default function Home() {
   const isDev = effectiveRole === 'dev';
   const actualRole = session?.user?.role; // Keep track of actual role for dev users
 
-  // Redirect non-admin users away from stock update tabs
+  // Redirect non-admin users away from return-refund tab (but allow procurement for all authenticated users)
   useEffect(() => {
     if (status === 'authenticated' && effectiveRole !== 'admin') {
-      if (activeTab === 'procurement' || activeTab === 'return-refund') {
+      if (activeTab === 'return-refund') {
         setActiveTab('dashboard');
       }
     }
@@ -343,33 +343,32 @@ export default function Home() {
                 {activeTab === 'dashboard' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
 
-              {/* Stock update tabs - only visible to admins */}
-              {isAdmin && (
-                <>
-                  <button
-                    onClick={() => setActiveTab('procurement')}
-                    className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'procurement'
-                      ? 'text-blue-600 bg-blue-50/50'
-                      : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
-                      }`}
-                  >
-                    <TrendingUp size={18} />
-                    Procurement Stock Update
-                    {activeTab === 'procurement' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
-                  </button>
+              {/* Procurement tab - visible to all authenticated users */}
+              <button
+                onClick={() => setActiveTab('procurement')}
+                className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'procurement'
+                  ? 'text-blue-600 bg-blue-50/50'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+              >
+                <TrendingUp size={18} />
+                Procurement Stock Update
+                {activeTab === 'procurement' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
+              </button>
 
-                  <button
-                    onClick={() => setActiveTab('return-refund')}
-                    className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'return-refund'
-                      ? 'text-orange-600 bg-orange-50/50'
-                      : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
-                      }`}
-                  >
-                    <ArrowLeftCircle size={18} />
-                    Refund/Return
-                    {activeTab === 'return-refund' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-orange-600" />}
-                  </button>
-                </>
+              {/* Return/Refund tab - only visible to admins */}
+              {isAdmin && (
+                <button
+                  onClick={() => setActiveTab('return-refund')}
+                  className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'return-refund'
+                    ? 'text-orange-600 bg-orange-50/50'
+                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                    }`}
+                >
+                  <ArrowLeftCircle size={18} />
+                  Refund/Return
+                  {activeTab === 'return-refund' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-orange-600" />}
+                </button>
               )}
 
               {/* SKU Management tab hidden from UI but backend code remains */}
@@ -453,7 +452,7 @@ export default function Home() {
               </div>
             )}
 
-            {activeTab === 'procurement' && isAdmin && (
+            {activeTab === 'procurement' && (
               <ProcurementUpdate onStockUpdated={fetchInventory} />
             )}
 
