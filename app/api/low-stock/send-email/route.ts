@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Resend } from 'resend';
 
-// This will use Resend or similar email service
-// For now, we'll create a placeholder that can be implemented with Resend API
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function POST(req: NextRequest) {
     try {
@@ -19,55 +19,50 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Email settings not configured' }, { status: 400 });
         }
 
+        if (!process.env.RESEND_API_KEY) {
+            return NextResponse.json({ error: 'RESEND_API_KEY not configured' }, { status: 500 });
+        }
+
         // Format email body with SKU details
+        // The email body template is stored in database (emailSettings.emailBody)
+        // We'll replace placeholders or append SKU details
         let emailContent = emailSettings.emailBody || 'The following SKUs are running low on stock:\n\n';
         
-        lowStockSkus.forEach((sku: any) => {
-            emailContent += `- ${sku.sku} (${sku.name}): Current stock: ${sku.currentStock}, Threshold: ${sku.low_stock_threshold}\n`;
+        // Append SKU details to the email body
+        const skuList = lowStockSkus.map((sku: any) => 
+            `- ${sku.sku} (${sku.name}): Current stock: ${sku.currentStock}, Threshold: ${sku.low_stock_threshold}`
+        ).join('\n');
+        
+        emailContent += skuList;
+
+        // Use Resend SDK to send email
+        const senderEmail = emailSettings.sender_email || process.env.RESEND_FROM_EMAIL || 'noreply@example.com';
+        const recipientEmail = Array.isArray(emailSettings.recipientEmail) 
+            ? emailSettings.recipientEmail 
+            : [emailSettings.recipientEmail];
+        const emailSubject = emailSettings.emailSubject || 'Low Stock Alert';
+
+        const { data, error } = await resend.emails.send({
+            from: senderEmail,
+            to: recipientEmail,
+            subject: emailSubject,
+            text: emailContent,
         });
 
-        // TODO: Implement actual email sending using Resend or similar
-        // For now, we'll log it
-        console.log('📧 Low Stock Alert Email:', {
-            to: emailSettings.recipientEmail,
-            subject: emailSettings.emailSubject,
-            body: emailContent
-        });
-
-        // If RESEND_API_KEY is set, use Resend to send email
-        if (process.env.RESEND_API_KEY) {
-            try {
-                const resendResponse = await fetch('https://api.resend.com/emails', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        from: emailSettings.sender_email || process.env.RESEND_FROM_EMAIL || 'noreply@example.com',
-                        to: emailSettings.recipientEmail,
-                        subject: emailSettings.emailSubject || 'Low Stock Alert',
-                        text: emailContent
-                    })
-                });
-
-                if (!resendResponse.ok) {
-                    const errorData = await resendResponse.json();
-                    throw new Error(`Resend API error: ${JSON.stringify(errorData)}`);
-                }
-
-                const result = await resendResponse.json();
-                console.log('✅ Email sent via Resend:', result);
-            } catch (emailError: any) {
-                console.error('❌ Failed to send email via Resend:', emailError);
-                // Don't fail the request, just log the error
-            }
+        if (error) {
+            console.error('❌ Failed to send email via Resend:', error);
+            return NextResponse.json({ 
+                error: 'Failed to send email', 
+                details: error 
+            }, { status: 500 });
         }
+
+        console.log('✅ Email sent via Resend:', data);
 
         return NextResponse.json({ 
             success: true, 
             message: 'Email sent successfully',
-            emailSent: !!process.env.RESEND_API_KEY
+            emailId: data?.id
         });
     } catch (error: any) {
         console.error('Error sending low stock email:', error);
