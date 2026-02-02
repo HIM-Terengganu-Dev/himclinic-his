@@ -197,6 +197,9 @@ export async function updateSingleSku(id: number, updates: {
     description?: string;
     woocommerceProductId?: number;
     hidden?: boolean;
+    lowStockThreshold?: number | null;
+    enoughStockLevel?: number | null;
+    emailAlertsEnabled?: boolean;
 }) {
     const fields: string[] = [];
     const values: any[] = [];
@@ -218,6 +221,18 @@ export async function updateSingleSku(id: number, updates: {
         fields.push(`hidden = $${paramIndex++}`);
         values.push(updates.hidden);
     }
+    if (updates.lowStockThreshold !== undefined) {
+        fields.push(`low_stock_threshold = $${paramIndex++}`);
+        values.push(updates.lowStockThreshold);
+    }
+    if (updates.enoughStockLevel !== undefined) {
+        fields.push(`enough_stock_level = $${paramIndex++}`);
+        values.push(updates.enoughStockLevel);
+    }
+    if (updates.emailAlertsEnabled !== undefined) {
+        fields.push(`email_alerts_enabled = $${paramIndex++}`);
+        values.push(updates.emailAlertsEnabled);
+    }
 
     if (fields.length === 0) {
         throw new Error('No fields to update');
@@ -238,6 +253,9 @@ export async function updateComboSku(id: number, updates: {
     woocommerceProductId?: number;
     components?: any;
     hidden?: boolean;
+    lowStockThreshold?: number | null;
+    enoughStockLevel?: number | null;
+    emailAlertsEnabled?: boolean;
 }) {
     const fields: string[] = [];
     const values: any[] = [];
@@ -262,6 +280,18 @@ export async function updateComboSku(id: number, updates: {
     if (updates.hidden !== undefined) {
         fields.push(`hidden = $${paramIndex++}`);
         values.push(updates.hidden);
+    }
+    if (updates.lowStockThreshold !== undefined) {
+        fields.push(`low_stock_threshold = $${paramIndex++}`);
+        values.push(updates.lowStockThreshold);
+    }
+    if (updates.enoughStockLevel !== undefined) {
+        fields.push(`enough_stock_level = $${paramIndex++}`);
+        values.push(updates.enoughStockLevel);
+    }
+    if (updates.emailAlertsEnabled !== undefined) {
+        fields.push(`email_alerts_enabled = $${paramIndex++}`);
+        values.push(updates.emailAlertsEnabled);
     }
 
     if (fields.length === 0) {
@@ -1795,3 +1825,6 @@ export async function getAllCurrentStock(): Promise<Record<string, {
     
     return stockMap;
 }
+
+// Export low stock functions
+export * from './queries_low_stock';

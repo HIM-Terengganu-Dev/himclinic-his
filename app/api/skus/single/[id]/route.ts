@@ -20,7 +20,7 @@ export async function PUT(
         }
 
         const body = await req.json();
-        const { name, description, woocommerceProductId, hidden } = body;
+        const { name, description, woocommerceProductId, hidden, lowStockThreshold, enoughStockLevel, emailAlertsEnabled } = body;
 
         // Get SKU before update for logging
         const skuResult = await query('SELECT * FROM "his_db".single_skus WHERE id = $1', [id]);
@@ -34,7 +34,10 @@ export async function PUT(
             name,
             description,
             woocommerceProductId,
-            hidden
+            hidden,
+            lowStockThreshold: lowStockThreshold !== undefined ? (lowStockThreshold === '' ? null : parseInt(lowStockThreshold)) : undefined,
+            enoughStockLevel: enoughStockLevel !== undefined ? (enoughStockLevel === '' ? null : parseInt(enoughStockLevel)) : undefined,
+            emailAlertsEnabled
         });
 
         // Log activity

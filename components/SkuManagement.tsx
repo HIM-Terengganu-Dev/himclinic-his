@@ -12,6 +12,9 @@ interface SingleSku {
     woocommerce_product_id: number;
     hidden?: boolean;
     description?: string;
+    low_stock_threshold?: number | null;
+    enough_stock_level?: number | null;
+    email_alerts_enabled?: boolean;
 }
 
 interface ComboSku {
@@ -22,6 +25,9 @@ interface ComboSku {
     components: { sku: string; quantity: number }[];
     hidden?: boolean;
     description?: string;
+    low_stock_threshold?: number | null;
+    enough_stock_level?: number | null;
+    email_alerts_enabled?: boolean;
 }
 
 export default function SkuManagement() {
