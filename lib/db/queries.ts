@@ -33,6 +33,58 @@ export async function updateLastLogin(id: number) {
     );
 }
 
+export async function getAllUsers() {
+    const result = await query(
+        'SELECT id, email, name, role, last_login, created_at FROM "his_db".users ORDER BY created_at DESC'
+    );
+    return result.rows;
+}
+
+export async function getUserById(id: number) {
+    const result = await query(
+        'SELECT * FROM "his_db".users WHERE id = $1',
+        [id]
+    );
+    return result.rows[0];
+}
+
+export async function updateUser(id: number, updates: {
+    name?: string;
+    role?: string;
+}) {
+    const fields: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (updates.name !== undefined) {
+        fields.push(`name = $${paramIndex++}`);
+        values.push(updates.name);
+    }
+    if (updates.role !== undefined) {
+        fields.push(`role = $${paramIndex++}`);
+        values.push(updates.role);
+    }
+
+    if (fields.length === 0) {
+        throw new Error('No fields to update');
+    }
+
+    values.push(id);
+    const result = await query(
+        `UPDATE "his_db".users SET ${fields.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+        values
+    );
+    return result.rows[0];
+}
+
+export async function deleteUser(id: number) {
+    const result = await query(
+        'DELETE FROM "his_db".users WHERE id = $1 RETURNING *',
+        [id]
+    );
+    return result.rows[0];
+}
+
 /**
  * SKU OPERATIONS
  */
