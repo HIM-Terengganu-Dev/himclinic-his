@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
-import { Plus, Trash2, Box, Layers, RefreshCw, Eye, EyeOff } from 'lucide-react';
+import { Plus, Trash2, Box, Layers, RefreshCw, Eye, EyeOff, Edit2, Save, X, Bell, BellOff } from 'lucide-react';
 import { fetchWithRole } from '@/lib/utils/fetchWithRole';
 
 interface SingleSku {
@@ -38,6 +38,11 @@ export default function SkuManagement() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
+    const [editingId, setEditingId] = useState<number | null>(null);
+    const [editingType, setEditingType] = useState<'single' | 'combo' | null>(null);
+    const [editLowThreshold, setEditLowThreshold] = useState<string>('');
+    const [editEnoughLevel, setEditEnoughLevel] = useState<string>('');
+    const [editEmailAlerts, setEditEmailAlerts] = useState<boolean>(false);
 
     // Form States
     const [sku, setSku] = useState('');
@@ -214,6 +219,59 @@ export default function SkuManagement() {
         }
     };
 
+    const handleEditThresholds = (skuItem: SingleSku | ComboSku, type: 'single' | 'combo') => {
+        setEditingId(skuItem.id);
+        setEditingType(type);
+        setEditLowThreshold(skuItem.low_stock_threshold?.toString() || '');
+        setEditEnoughLevel(skuItem.enough_stock_level?.toString() || '');
+        setEditEmailAlerts(skuItem.email_alerts_enabled || false);
+    };
+
+    const handleCancelEdit = () => {
+        setEditingId(null);
+        setEditingType(null);
+        setEditLowThreshold('');
+        setEditEnoughLevel('');
+        setEditEmailAlerts(false);
+    };
+
+    const handleSaveThresholds = async () => {
+        if (!editingId || !editingType) return;
+
+        setLoading(true);
+        setError(null);
+        setSuccess(null);
+        try {
+            const endpoint = editingType === 'single' ? `/api/skus/single/${editingId}` : `/api/skus/combo/${editingId}`;
+            const res = await fetchWithRole(endpoint, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    lowStockThreshold: editLowThreshold === '' ? null : parseInt(editLowThreshold),
+                    enoughStockLevel: editEnoughLevel === '' ? null : parseInt(editEnoughLevel),
+                    emailAlertsEnabled: editEmailAlerts
+                })
+            });
+            const data = await res.json();
+            if (data.success) {
+                setSuccess('Stock thresholds updated successfully!');
+                setError(null);
+                fetchSkus();
+                handleCancelEdit();
+                setTimeout(() => setSuccess(null), 3000);
+            } else {
+                setError(data.error || 'Failed to update thresholds');
+                setSuccess(null);
+            }
+        } catch (err: any) {
+            console.error('Error updating thresholds:', err);
+            setError('Failed to update thresholds');
+            setSuccess(null);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     return (
         <div className="space-y-6">
             {/* Success/Error Messages */}
@@ -359,6 +417,9 @@ export default function SkuManagement() {
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Name</th>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">WC ID</th>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Status</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Low Stock</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Enough Level</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Email Alerts</th>
                                         {activeTab === 'combo' && (
                                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Components</th>
                                         )}
@@ -381,22 +442,100 @@ export default function SkuManagement() {
                                                         {skuItem.hidden ? 'Hidden' : 'Visible'}
                                                     </span>
                                                 </td>
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                    {editingId === skuItem.id && editingType === 'single' ? (
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            value={editLowThreshold}
+                                                            onChange={(e) => setEditLowThreshold(e.target.value)}
+                                                            className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
+                                                            placeholder="Threshold"
+                                                        />
+                                                    ) : (
+                                                        <span>{skuItem.low_stock_threshold ?? '—'}</span>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                    {editingId === skuItem.id && editingType === 'single' ? (
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            value={editEnoughLevel}
+                                                            onChange={(e) => setEditEnoughLevel(e.target.value)}
+                                                            className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
+                                                            placeholder="Level"
+                                                        />
+                                                    ) : (
+                                                        <span>{skuItem.enough_stock_level ?? '—'}</span>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-4 whitespace-nowrap">
+                                                    {editingId === skuItem.id && editingType === 'single' ? (
+                                                        <label className="relative inline-flex items-center cursor-pointer">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={editEmailAlerts}
+                                                                onChange={(e) => setEditEmailAlerts(e.target.checked)}
+                                                                className="sr-only peer"
+                                                            />
+                                                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                                                        </label>
+                                                    ) : (
+                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                                            skuItem.email_alerts_enabled 
+                                                                ? 'bg-blue-100 text-blue-700' 
+                                                                : 'bg-gray-100 text-gray-600'
+                                                        }`}>
+                                                            {skuItem.email_alerts_enabled ? 'Enabled' : 'Disabled'}
+                                                        </span>
+                                                    )}
+                                                </td>
                                                 <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-medium">
                                                     <div className="flex justify-end gap-2">
-                                                        <button
-                                                            onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'single')}
-                                                            className="text-blue-600 hover:text-blue-900"
-                                                            title={skuItem.hidden ? 'Show in dashboard' : 'Hide from dashboard'}
-                                                        >
-                                                            {skuItem.hidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-                                                        </button>
-                                                        <button
-                                                            onClick={() => handleDelete(skuItem.id, 'single')}
-                                                            className="text-red-600 hover:text-red-900"
-                                                            title="Delete SKU"
-                                                        >
-                                                            <Trash2 className="w-4 h-4" />
-                                                        </button>
+                                                        {editingId === skuItem.id && editingType === 'single' ? (
+                                                            <>
+                                                                <button
+                                                                    onClick={handleSaveThresholds}
+                                                                    disabled={loading}
+                                                                    className="text-green-600 hover:text-green-900"
+                                                                    title="Save"
+                                                                >
+                                                                    <Save className="w-4 h-4" />
+                                                                </button>
+                                                                <button
+                                                                    onClick={handleCancelEdit}
+                                                                    className="text-gray-600 hover:text-gray-900"
+                                                                    title="Cancel"
+                                                                >
+                                                                    <X className="w-4 h-4" />
+                                                                </button>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <button
+                                                                    onClick={() => handleEditThresholds(skuItem, 'single')}
+                                                                    className="text-purple-600 hover:text-purple-900"
+                                                                    title="Edit stock thresholds"
+                                                                >
+                                                                    <Edit2 className="w-4 h-4" />
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'single')}
+                                                                    className="text-blue-600 hover:text-blue-900"
+                                                                    title={skuItem.hidden ? 'Show in dashboard' : 'Hide from dashboard'}
+                                                                >
+                                                                    {skuItem.hidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleDelete(skuItem.id, 'single')}
+                                                                    className="text-red-600 hover:text-red-900"
+                                                                    title="Delete SKU"
+                                                                >
+                                                                    <Trash2 className="w-4 h-4" />
+                                                                </button>
+                                                            </>
+                                                        )}
                                                     </div>
                                                 </td>
                                             </tr>
@@ -416,6 +555,55 @@ export default function SkuManagement() {
                                                         {skuItem.hidden ? 'Hidden' : 'Visible'}
                                                     </span>
                                                 </td>
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                    {editingId === skuItem.id && editingType === 'combo' ? (
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            value={editLowThreshold}
+                                                            onChange={(e) => setEditLowThreshold(e.target.value)}
+                                                            className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
+                                                            placeholder="Threshold"
+                                                        />
+                                                    ) : (
+                                                        <span>{skuItem.low_stock_threshold ?? '—'}</span>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                    {editingId === skuItem.id && editingType === 'combo' ? (
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            value={editEnoughLevel}
+                                                            onChange={(e) => setEditEnoughLevel(e.target.value)}
+                                                            className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
+                                                            placeholder="Level"
+                                                        />
+                                                    ) : (
+                                                        <span>{skuItem.enough_stock_level ?? '—'}</span>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-4 whitespace-nowrap">
+                                                    {editingId === skuItem.id && editingType === 'combo' ? (
+                                                        <label className="relative inline-flex items-center cursor-pointer">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={editEmailAlerts}
+                                                                onChange={(e) => setEditEmailAlerts(e.target.checked)}
+                                                                className="sr-only peer"
+                                                            />
+                                                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                                                        </label>
+                                                    ) : (
+                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                                            skuItem.email_alerts_enabled 
+                                                                ? 'bg-blue-100 text-blue-700' 
+                                                                : 'bg-gray-100 text-gray-600'
+                                                        }`}>
+                                                            {skuItem.email_alerts_enabled ? 'Enabled' : 'Disabled'}
+                                                        </span>
+                                                    )}
+                                                </td>
                                                 <td className="px-4 py-4 text-sm text-gray-500">
                                                     <div className="flex flex-col gap-1">
                                                         {skuItem.components.map((c, i) => (
@@ -427,20 +615,49 @@ export default function SkuManagement() {
                                                 </td>
                                                 <td className="px-4 py-4 whitespace-nowrap text-right text-sm font-medium">
                                                     <div className="flex justify-end gap-2">
-                                                        <button
-                                                            onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'combo')}
-                                                            className="text-blue-600 hover:text-blue-900"
-                                                            title={skuItem.hidden ? 'Show in dashboard' : 'Hide from dashboard'}
-                                                        >
-                                                            {skuItem.hidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-                                                        </button>
-                                                        <button
-                                                            onClick={() => handleDelete(skuItem.id, 'combo')}
-                                                            className="text-red-600 hover:text-red-900"
-                                                            title="Delete SKU"
-                                                        >
-                                                            <Trash2 className="w-4 h-4" />
-                                                        </button>
+                                                        {editingId === skuItem.id && editingType === 'combo' ? (
+                                                            <>
+                                                                <button
+                                                                    onClick={handleSaveThresholds}
+                                                                    disabled={loading}
+                                                                    className="text-green-600 hover:text-green-900"
+                                                                    title="Save"
+                                                                >
+                                                                    <Save className="w-4 h-4" />
+                                                                </button>
+                                                                <button
+                                                                    onClick={handleCancelEdit}
+                                                                    className="text-gray-600 hover:text-gray-900"
+                                                                    title="Cancel"
+                                                                >
+                                                                    <X className="w-4 h-4" />
+                                                                </button>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <button
+                                                                    onClick={() => handleEditThresholds(skuItem, 'combo')}
+                                                                    className="text-purple-600 hover:text-purple-900"
+                                                                    title="Edit stock thresholds"
+                                                                >
+                                                                    <Edit2 className="w-4 h-4" />
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'combo')}
+                                                                    className="text-blue-600 hover:text-blue-900"
+                                                                    title={skuItem.hidden ? 'Show in dashboard' : 'Hide from dashboard'}
+                                                                >
+                                                                    {skuItem.hidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleDelete(skuItem.id, 'combo')}
+                                                                    className="text-red-600 hover:text-red-900"
+                                                                    title="Delete SKU"
+                                                                >
+                                                                    <Trash2 className="w-4 h-4" />
+                                                                </button>
+                                                            </>
+                                                        )}
                                                     </div>
                                                 </td>
                                             </tr>
@@ -448,7 +665,7 @@ export default function SkuManagement() {
                                     )}
                                     {((activeTab === 'single' && singleSkus.length === 0) || (activeTab === 'combo' && comboSkus.length === 0)) && (
                                         <tr>
-                                            <td colSpan={activeTab === 'combo' ? 6 : 5} className="px-4 py-12 text-center text-gray-500">No SKUs found.</td>
+                                            <td colSpan={activeTab === 'combo' ? 9 : 8} className="px-4 py-12 text-center text-gray-500">No SKUs found.</td>
                                         </tr>
                                     )}
                                 </tbody>
