@@ -32,9 +32,13 @@ export async function checkAndSendLowStockAlerts(affectedSkus: string[] = []) {
         }
 
         // Send email via internal API call
-        const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL 
-            ? `https://${process.env.VERCEL_URL}` 
-            : 'http://localhost:3000';
+        // Use VERCEL_URL if available, otherwise try NEXT_PUBLIC_APP_URL, fallback to localhost
+        let baseUrl = 'http://localhost:3000';
+        if (process.env.VERCEL_URL) {
+            baseUrl = `https://${process.env.VERCEL_URL}`;
+        } else if (process.env.NEXT_PUBLIC_APP_URL) {
+            baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+        }
         
         try {
             const emailResponse = await fetch(`${baseUrl}/api/low-stock/send-email`, {
