@@ -7,7 +7,6 @@ import InventoryDashboard from '@/components/InventoryDashboard';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
 import ReturnRefund from '@/components/ReturnRefund';
 import ActivityLog from '@/components/ActivityLog';
-import SkuManagement from '@/components/SkuManagement';
 import AdminAccess from '@/components/AdminAccess';
 import LoginPage from '@/components/LoginPage';
 import TestEnvironment from '@/components/TestEnvironment';
@@ -15,7 +14,7 @@ import { InventoryStock, ComboAvailability } from '@/types/inventory';
 
 export default function Home() {
   const { data: session, status } = useSession();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'return-refund' | 'activity' | 'admin' | 'sku' | 'test'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'return-refund' | 'activity' | 'admin' | 'test'>('dashboard');
   const [switchedRole, setSwitchedRole] = useState<string | null>(null);
   const [showRoleMenu, setShowRoleMenu] = useState(false);
   const roleMenuRef = useRef<HTMLDivElement>(null);
@@ -149,14 +148,7 @@ export default function Home() {
   const isDev = effectiveRole === 'dev';
   const actualRole = session?.user?.role; // Keep track of actual role for dev users
 
-  // Redirect non-admin/dev users away from SKU management tab
-  useEffect(() => {
-    if (status === 'authenticated' && effectiveRole !== 'admin' && effectiveRole !== 'dev' && session?.user?.role !== 'dev') {
-      if (activeTab === 'sku') {
-        setActiveTab('dashboard');
-      }
-    }
-  }, [status, effectiveRole, activeTab, session]);
+  // No redirects needed - SKU management is now in Admin Access tab
 
   if (status === 'loading') {
     return (
@@ -369,20 +361,6 @@ export default function Home() {
                 {activeTab === 'return-refund' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-orange-600" />}
               </button>
 
-              {/* SKU Management tab - only visible to admin and dev */}
-              {(isAdmin || isDev) && (
-                <button
-                  onClick={() => setActiveTab('sku')}
-                  className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'sku'
-                    ? 'text-purple-600 bg-purple-50/50'
-                    : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
-                    }`}
-                >
-                  <Settings size={18} />
-                  SKU Management
-                  {activeTab === 'sku' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-600" />}
-                </button>
-              )}
 
               <button
                 onClick={() => setActiveTab('activity')}
@@ -466,9 +444,6 @@ export default function Home() {
               <AdminAccess />
             )}
 
-            {activeTab === 'sku' && (isAdmin || isDev) && (
-              <SkuManagement />
-            )}
 
             {activeTab === 'test' && isDev && (
               <TestEnvironment />

@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Settings, Shield, Users, Database, Key } from 'lucide-react';
+import { Settings, Shield, Users, Database, Key, Box, Layers } from 'lucide-react';
 import UserManagement from './UserManagement';
+import SkuManagement from './SkuManagement';
 
 export default function AdminAccess() {
   const { data: session } = useSession();
@@ -22,6 +23,8 @@ export default function AdminAccess() {
     );
   }
 
+  const [activeSection, setActiveSection] = useState<'users' | 'skus'>('users');
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
@@ -35,7 +38,35 @@ export default function AdminAccess() {
           </div>
         </div>
 
-        <UserManagement />
+        {/* Section Tabs */}
+        <div className="flex bg-gray-100 rounded-lg p-1 mb-6">
+          <button
+            onClick={() => setActiveSection('users')}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all ${
+              activeSection === 'users' 
+                ? 'bg-white shadow-sm text-purple-600' 
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <Users size={16} />
+            User Management
+          </button>
+          <button
+            onClick={() => setActiveSection('skus')}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all ${
+              activeSection === 'skus' 
+                ? 'bg-white shadow-sm text-purple-600' 
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <Box size={16} />
+            SKU Management
+          </button>
+        </div>
+
+        {/* Section Content */}
+        {activeSection === 'users' && <UserManagement />}
+        {activeSection === 'skus' && <SkuManagement />}
       </div>
     </div>
   );
