@@ -162,6 +162,19 @@ export default function LowStockAlerts() {
                             </label>
                         </div>
 
+                        {/* Sender Email */}
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Sender Email</label>
+                            <input
+                                type="email"
+                                value={emailSettings.sender_email || ''}
+                                onChange={(e) => setEmailSettings({ ...emailSettings, sender_email: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                placeholder="noreply@yourdomain.com"
+                            />
+                            <p className="text-xs text-gray-500 mt-1">Email address that sends the alerts. Must be verified in Resend.</p>
+                        </div>
+
                         {/* Recipient Email */}
                         <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">Recipient Email</label>
@@ -173,6 +186,7 @@ export default function LowStockAlerts() {
                                 placeholder="admin@example.com"
                                 required
                             />
+                            <p className="text-xs text-gray-500 mt-1">Email address that receives the low stock alerts.</p>
                         </div>
 
                         {/* Email Subject */}
