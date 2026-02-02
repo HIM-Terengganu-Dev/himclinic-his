@@ -8,36 +8,18 @@ import { fetchWithRole } from '@/lib/utils/fetchWithRole';
 import { Download, RefreshCw, Filter, Search, User, AlertCircle, AlertTriangle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight } from 'lucide-react';
 
 // Component to fetch and display component deductions for a single log entry
-function ComponentDeductionsCell({ logEntry, activeTab }: { logEntry: WcWebhookLogEntry; activeTab: string }) {
-    const [dbDeductions, setDbDeductions] = useState<any[]>([]);
-    const [isLoadingDeductions, setIsLoadingDeductions] = useState(false);
+function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoadingCache }: { 
+    logEntry: WcWebhookLogEntry; 
+    activeTab: string;
+    cachedDeductions?: any[];
+    isLoadingCache?: boolean;
+}) {
     const orderId = logEntry.entity_id;
     
-    // Fetch deductions on-demand for this log entry
-    useEffect(() => {
-        if (!orderId || activeTab !== 'orders') return;
-        
-        const fetchDeductions = async () => {
-            setIsLoadingDeductions(true);
-            try {
-                const res = await fetchWithRole(`/api/orders/${orderId}/component-deductions`);
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.success && data.componentDeductions) {
-                        setDbDeductions(data.componentDeductions);
-                    }
-                }
-            } catch (error) {
-                console.error(`[ActivityLog] Failed to fetch deductions for Order #${orderId}:`, error);
-            } finally {
-                setIsLoadingDeductions(false);
-            }
-        };
-        
-        fetchDeductions();
-    }, [orderId, activeTab]);
+    // Use cached deductions if available, otherwise show loading
+    const dbDeductions = cachedDeductions || [];
     
-    if (isLoadingDeductions) {
+    if (isLoadingCache) {
         return <span className="text-gray-400 text-xs">Loading...</span>;
     }
     
@@ -481,7 +463,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [comboSkus, setComboSkus] = useState<Array<{ sku: string; name: string }>>([]);
     const [wcCurrentPage, setWcCurrentPage] = useState(1);
     const [wcTotalCount, setWcTotalCount] = useState(0);
-    // Removed cache - fetch directly from API when needed
+    // Cache for component deductions: orderId -> deductions array
+    const [componentDeductionsCache, setComponentDeductionsCache] = useState<Record<number, any[]>>({});
+    const [isLoadingDeductionsCache, setIsLoadingDeductionsCache] = useState(false);
     const topScrollRef = useRef<HTMLDivElement>(null);
     const bottomScrollRef = useRef<HTMLDivElement>(null);
 
@@ -610,9 +594,53 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         fetchLogs();
     }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab, wcCurrentPage]);
     
-    // Fetch component deductions from database for all order events
+    // Fetch component deductions from database for all order events (batch fetch for performance)
     useEffect(() => {
-        // Removed cache-based fetching - now fetch on-demand per log entry
+        if (activeTab !== 'orders' || wcLogs.length === 0) {
+            setComponentDeductionsCache({});
+            return;
+        }
+        
+        // Collect all unique order IDs from webhook logs
+        const orderIds = new Set<number>();
+        wcLogs.forEach((log: WcWebhookLogEntry) => {
+            if (log.webhook_type === 'order' && log.entity_id) {
+                orderIds.add(log.entity_id);
+            }
+        });
+        
+        const uniqueOrderIds = Array.from(orderIds);
+        if (uniqueOrderIds.length === 0) {
+            setComponentDeductionsCache({});
+            return;
+        }
+        
+        // Batch fetch all component deductions in parallel
+        setIsLoadingDeductionsCache(true);
+        Promise.all(
+            uniqueOrderIds.map(async (orderId: number) => {
+                try {
+                    const res = await fetchWithRole(`/api/orders/${orderId}/component-deductions`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.success && data.componentDeductions) {
+                            return { orderId, deductions: data.componentDeductions };
+                        }
+                    }
+                } catch (error) {
+                    console.error(`[ActivityLog] Failed to fetch deductions for Order #${orderId}:`, error);
+                }
+                return { orderId, deductions: [] };
+            })
+        ).then((results) => {
+            const cache: Record<number, any[]> = {};
+            results.forEach(({ orderId, deductions }) => {
+                cache[orderId] = deductions;
+            });
+            setComponentDeductionsCache(cache);
+        }).finally(() => {
+            setIsLoadingDeductionsCache(false);
+        });
     }, [wcLogs, activeTab]);
 
     // Sync scroll between top and bottom scrollbars
@@ -1343,7 +1371,12 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 )}
                                                             </div>
                                                         ) : (
-                                                            <ComponentDeductionsCell logEntry={logEntry} activeTab={activeTab} />
+                                                            <ComponentDeductionsCell 
+                                                                logEntry={logEntry} 
+                                                                activeTab={activeTab}
+                                                                cachedDeductions={componentDeductionsCache[logEntry.entity_id]}
+                                                                isLoadingCache={isLoadingDeductionsCache}
+                                                            />
                                                         )}
                                                     </td>
                                                     <td className="px-6 py-4">
