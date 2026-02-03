@@ -719,11 +719,13 @@ export async function getWcWebhookLogs(filters: {
         // 3. componentDeductions array in details JSONB (for processing orders)
         // 4. componentRestorations array in details JSONB (for cancelled orders)
         // 5. pendingStockUpdates array in details JSONB (for pending-consult/pending-review orders)
+        // 6. stock_transactions table (for nv-pending-pickup and other events where component SKUs are in transactions)
         const skuParam = pIdx++;
         const affectedSkusParam = pIdx++;
         const componentDeductionsParam = pIdx++;
         const componentRestorationsParam = pIdx++;
         const pendingStockUpdatesParam = pIdx++;
+        const stockTxParam = pIdx++;
         
         whereClause += ` AND (
             entity_sku = $${skuParam} OR
@@ -742,6 +744,21 @@ export async function getWcWebhookLogs(filters: {
                 SELECT 1 
                 FROM jsonb_array_elements(details->'pendingStockUpdates') AS pending
                 WHERE pending->>'sku' = $${pendingStockUpdatesParam}
+            )) OR
+            -- Check stock_transactions for component SKUs (for nv-pending-pickup, cancelled, etc.)
+            (webhook_type = 'order' AND EXISTS (
+                SELECT 1 
+                FROM "his_db".stock_transactions st
+                WHERE st.source_type = 'order'
+                AND st.source_id = wc_webhook_logs.entity_id
+                AND st.sku = $${stockTxParam}
+                AND (
+                    st.transaction_type = 'order_nv_pending_pickup' OR
+                    st.transaction_type = 'order_cancelled' OR
+                    st.transaction_type = 'order_processing' OR
+                    st.transaction_type = 'order_pending_consult' OR
+                    st.transaction_type = 'order_pending_review'
+                )
             ))
         )`;
         params.push(filters.entitySku);
@@ -749,6 +766,7 @@ export async function getWcWebhookLogs(filters: {
         params.push(filters.entitySku); // For componentDeductions check
         params.push(filters.entitySku); // For componentRestorations check
         params.push(filters.entitySku); // For pendingStockUpdates check
+        params.push(filters.entitySku); // For stock_transactions check
     }
 
     if (filters.dateFrom) {
