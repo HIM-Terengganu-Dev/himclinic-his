@@ -147,14 +147,16 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
     let deductions = matchingDeductions;
     
     // Additional guardrails to ensure we only show the correct transaction:
-    // 1. For processing events: Only show the FIRST processing transaction
+    // 1. For processing events: Show all component deductions (for combo SKUs)
     // 2. For nv-pending-pickup: Only show transactions that came after the first processing transaction
     if (eventType.toLowerCase().includes('processing') && deductions.length > 1) {
-        // Sort by timestamp and take only the first one
+        // For combo SKUs, we want to show ALL component deductions, not just the first one
+        // They should all have the same timestamp (created at the same time for the same order)
         deductions = deductions.sort((a: any, b: any) => 
             new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-        ).slice(0, 1);
-        console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple processing transactions found, showing only the first one`);
+        );
+        // Don't slice - keep all component deductions
+        console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple processing transactions found (${deductions.length}), showing all component deductions`);
     } else if (eventType.toLowerCase().includes('nv-pending-pickup') && deductions.length > 1) {
         // For nv-pending-pickup, ensure we only show transactions that correspond to the first processing event
         // Find the first processing transaction timestamp
