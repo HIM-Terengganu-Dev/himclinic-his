@@ -2116,11 +2116,6 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
         // Check if order was in nv-pending-pickup (stock was deducted from in_warehouse)
         const nvPickupLog = await getWcWebhookLogByOrderId(orderId, 'order.nv-pending-pickup');
         const wasInNvPickup = nvPickupLog !== null;
-        
-        // EDGE CASE: Order cancelled after nv-pending-pickup (shipped)
-        // This is unexpected - shipped orders should be refunded, not cancelled
-        // We'll handle it but log it as a special case
-        const isShippedOrderCancellation = currentStatus === 'nv-pending-pickup' || wasInNvPickup;
 
         // Check if order was in processing
         const previousProcessingLog = await getWcWebhookLogByOrderId(orderId, 'order.processing');
@@ -2145,19 +2140,13 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             }
         }
 
-        // EDGE CASE: If order was in nv-pending-pickup (shipped), do NOT restore stock
-        // Shipped orders should be refunded, not cancelled. Stock is already out of warehouse.
-        if (isShippedOrderCancellation) {
-            console.warn(`⚠️ EDGE CASE: Order #${orderId} is being cancelled after nv-pending-pickup (shipped). This is unexpected - shipped orders should be refunded, not cancelled. Stock will NOT be restored.`);
-            // Log as edge case but don't restore stock
-            return await logEdgeCaseCancellation(orderId, payload, request, currentStatus, isTestEnvironment);
-        }
+        // If order was in nv-pending-pickup, restore in_warehouse (stock was deducted)
+        // Also restore the status it was deducted from (processing/pending)
+        const shouldRestoreInWarehouse = wasInNvPickup; // Restore if order was in nv-pending-pickup
         
-        // NEW BEHAVIOR: Only restore to in_warehouse if order was in processing (not shipped)
-        // If order was only in processing, just remove from processing (no in_warehouse restoration)
-        const shouldRestoreInWarehouse = false; // Never restore from processing cancellation
-        
-        if (wasInProcessing) {
+        if (wasInNvPickup) {
+            console.log(`✅ Order #${orderId} was in nv-pending-pickup - will restore in_warehouse and status`);
+        } else if (wasInProcessing) {
             console.log(`✅ Order #${orderId} was in processing - will remove from processing (no in_warehouse restoration)`);
         } else {
             console.log(`✅ Order #${orderId} was in pending - will remove from pending (no in_warehouse restoration)`);
@@ -2297,27 +2286,38 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     
                     // Determine which status has the quantity for this order
                     // Priority: nv-pending-pickup > processing > pending-consult > pending-review
-                    if (nvPickupTx.length > 0 && isShippedOrderCancellation) {
-                        // EDGE CASE: Order was in nv-pending-pickup (shipped) and now cancelled
-                        // Check what status the nv-pending-pickup transaction deducted from
+                    if (nvPickupTx.length > 0 && wasInNvPickup) {
+                        // Order was in nv-pending-pickup and now cancelled
+                        // Restore in_warehouse and the status it was deducted from
                         const nvTx = nvPickupTx[0];
-                        // nv-pending-pickup deducts from the status it came from (processing, pending-consult, or pending-review)
-                        // We need to restore that status back
-                        if (nvTx.processing_before > nvTx.processing_after) {
-                            // It was deducted from processing - restore processing
+                        const details = typeof nvTx.details === 'string' ? JSON.parse(nvTx.details) : (nvTx.details || {});
+                        const deductedFromStatus = details.deductedFromStatus || 'processing';
+                        
+                        // Restore in_warehouse (always deducted in nv-pending-pickup)
+                        // This is already set above via shouldRestoreInWarehouse
+                        
+                        // Restore the status it was deducted from
+                        if (deductedFromStatus === 'processing') {
                             const qtyDeducted = nvTx.processing_before - nvTx.processing_after;
-                            processingAfter = processingBefore + qtyDeducted;
-                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to processing for ${sku} (cancelled from nv-pending-pickup)`);
-                        } else if (nvTx.pending_consult_before > nvTx.pending_consult_after) {
-                            // It was deducted from pending-consult - restore pending-consult
+                            if (qtyDeducted > 0) {
+                                processingAfter = processingBefore + qtyDeducted;
+                                console.log(`🔄 Restoring ${qtyDeducted} to processing and ${totalQty} to in_warehouse for ${sku} (cancelled from nv-pending-pickup)`);
+                            }
+                        } else if (deductedFromStatus === 'pending-consult') {
                             const qtyDeducted = nvTx.pending_consult_before - nvTx.pending_consult_after;
-                            pendingConsultAfter = pendingConsultBefore + qtyDeducted;
-                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to pending-consult for ${sku} (cancelled from nv-pending-pickup)`);
-                        } else if (nvTx.pending_review_before > nvTx.pending_review_after) {
-                            // It was deducted from pending-review - restore pending-review
+                            if (qtyDeducted > 0) {
+                                pendingConsultAfter = pendingConsultBefore + qtyDeducted;
+                                console.log(`🔄 Restoring ${qtyDeducted} to pending-consult and ${totalQty} to in_warehouse for ${sku} (cancelled from nv-pending-pickup)`);
+                            }
+                        } else if (deductedFromStatus === 'pending-review') {
                             const qtyDeducted = nvTx.pending_review_before - nvTx.pending_review_after;
-                            pendingReviewAfter = pendingReviewBefore + qtyDeducted;
-                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to pending-review for ${sku} (cancelled from nv-pending-pickup)`);
+                            if (qtyDeducted > 0) {
+                                pendingReviewAfter = pendingReviewBefore + qtyDeducted;
+                                console.log(`🔄 Restoring ${qtyDeducted} to pending-review and ${totalQty} to in_warehouse for ${sku} (cancelled from nv-pending-pickup)`);
+                            }
+                        } else if (deductedFromStatus === 'none') {
+                            // Direct nv-pending-pickup - only restore in_warehouse, no status restoration
+                            console.log(`🔄 Restoring ${totalQty} to in_warehouse for ${sku} (cancelled from direct nv-pending-pickup, no status restoration)`);
                         }
                     } else if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
                         const qtyInProcessing = processingTx[0].processing_after - processingTx[0].processing_before;
@@ -2403,7 +2403,7 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     // Get current stock state from database (source of truth)
                     const currentState = await getCurrentStockState(sku);
                     
-                    // NEW BEHAVIOR: Only restore to in_warehouse if order was in nv-pending-pickup
+                    // Restore to in_warehouse if order was in nv-pending-pickup
                     const inWarehouseBefore = currentState.inWarehouse;
                     const inWarehouseAfter = shouldRestoreInWarehouse 
                         ? inWarehouseBefore + restoreQty  // Restore to in_warehouse
@@ -2448,27 +2448,38 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     
                     // Determine which status has the quantity for this order
                     // Priority: nv-pending-pickup > processing > pending-consult > pending-review
-                    if (nvPickupTx.length > 0 && isShippedOrderCancellation) {
-                        // EDGE CASE: Order was in nv-pending-pickup (shipped) and now cancelled
-                        // Check what status the nv-pending-pickup transaction deducted from
+                    if (nvPickupTx.length > 0 && wasInNvPickup) {
+                        // Order was in nv-pending-pickup and now cancelled
+                        // Restore in_warehouse and the status it was deducted from
                         const nvTx = nvPickupTx[0];
-                        // nv-pending-pickup deducts from the status it came from (processing, pending-consult, or pending-review)
-                        // We need to restore that status back
-                        if (nvTx.processing_before > nvTx.processing_after) {
-                            // It was deducted from processing - restore processing
+                        const details = typeof nvTx.details === 'string' ? JSON.parse(nvTx.details) : (nvTx.details || {});
+                        const deductedFromStatus = details.deductedFromStatus || 'processing';
+                        
+                        // Restore in_warehouse (always deducted in nv-pending-pickup)
+                        // This is already set above via shouldRestoreInWarehouse
+                        
+                        // Restore the status it was deducted from
+                        if (deductedFromStatus === 'processing') {
                             const qtyDeducted = nvTx.processing_before - nvTx.processing_after;
-                            processingAfter = processingBefore + qtyDeducted;
-                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to processing for ${sku} (cancelled from nv-pending-pickup)`);
-                        } else if (nvTx.pending_consult_before > nvTx.pending_consult_after) {
-                            // It was deducted from pending-consult - restore pending-consult
+                            if (qtyDeducted > 0) {
+                                processingAfter = processingBefore + qtyDeducted;
+                                console.log(`🔄 Restoring ${qtyDeducted} to processing and ${restoreQty} to in_warehouse for ${sku} (cancelled from nv-pending-pickup)`);
+                            }
+                        } else if (deductedFromStatus === 'pending-consult') {
                             const qtyDeducted = nvTx.pending_consult_before - nvTx.pending_consult_after;
-                            pendingConsultAfter = pendingConsultBefore + qtyDeducted;
-                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to pending-consult for ${sku} (cancelled from nv-pending-pickup)`);
-                        } else if (nvTx.pending_review_before > nvTx.pending_review_after) {
-                            // It was deducted from pending-review - restore pending-review
+                            if (qtyDeducted > 0) {
+                                pendingConsultAfter = pendingConsultBefore + qtyDeducted;
+                                console.log(`🔄 Restoring ${qtyDeducted} to pending-consult and ${restoreQty} to in_warehouse for ${sku} (cancelled from nv-pending-pickup)`);
+                            }
+                        } else if (deductedFromStatus === 'pending-review') {
                             const qtyDeducted = nvTx.pending_review_before - nvTx.pending_review_after;
-                            pendingReviewAfter = pendingReviewBefore + qtyDeducted;
-                            console.log(`🔄 EDGE CASE: Restoring ${qtyDeducted} to pending-review for ${sku} (cancelled from nv-pending-pickup)`);
+                            if (qtyDeducted > 0) {
+                                pendingReviewAfter = pendingReviewBefore + qtyDeducted;
+                                console.log(`🔄 Restoring ${qtyDeducted} to pending-review and ${restoreQty} to in_warehouse for ${sku} (cancelled from nv-pending-pickup)`);
+                            }
+                        } else if (deductedFromStatus === 'none') {
+                            // Direct nv-pending-pickup - only restore in_warehouse, no status restoration
+                            console.log(`🔄 Restoring ${restoreQty} to in_warehouse for ${sku} (cancelled from direct nv-pending-pickup, no status restoration)`);
                         }
                     } else if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
                         const qtyInProcessing = processingTx[0].processing_after - processingTx[0].processing_before;
@@ -2666,12 +2677,10 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         }))
                     ],
                     comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
-                    isEdgeCase: isShippedOrderCancellation, // Flag for UI to display special warning
-                    edgeCaseType: isShippedOrderCancellation ? 'shipped_order_cancelled' : null,
-                    note: isShippedOrderCancellation
-                        ? `⚠️ EDGE CASE: Order cancelled after nv-pending-pickup (shipped). This is unexpected - shipped orders should be refunded, not cancelled. Stock restored to in_warehouse.`
-                        : shouldRestoreInWarehouse
-                        ? `Order cancelled from ${currentStatus || 'nv-pending-pickup'}. Restored to in_warehouse and removed from ${currentStatus || 'processing'} status.`
+                    isEdgeCase: false, // No longer an edge case - normal cancellation handling
+                    edgeCaseType: null,
+                    note: shouldRestoreInWarehouse
+                        ? `Order cancelled from ${currentStatus || 'nv-pending-pickup'}. Restored to in_warehouse and status.`
                         : `Order cancelled from ${currentStatus || 'processing'}. Removed from ${currentStatus || 'processing'} status (no in_warehouse restoration).`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
