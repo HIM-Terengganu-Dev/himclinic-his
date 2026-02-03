@@ -1860,7 +1860,9 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                 let orderPendingConsultQty = 0;
                 let orderPendingReviewQty = 0;
 
-                if (currentStatus === 'processing' || !currentStatus) {
+                // For nv-pending-pickup, we want to deduct from processing (the previous status)
+                // So check processing guardrail even if currentStatus is 'nv-pending-pickup'
+                if (currentStatus === 'processing' || !currentStatus || currentStatus === 'nv-pending-pickup') {
                     // Get processing transactions for THIS order only
                     const orderProcessingTxs = await getStockTransactions({
                         sourceType: 'order',
