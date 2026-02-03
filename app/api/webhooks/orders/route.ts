@@ -1856,95 +1856,105 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
 
                 // GUARDRAIL: Verify this order actually has stock in the status we're trying to deduct from
                 // Get transactions for THIS order to see how much it contributed
+                // For nv-pending-pickup, we need to check ALL possible statuses (processing, pending-consult, pending-review)
+                // because the order might have gone directly from pending to nv-pending-pickup
                 let orderProcessingQty = 0;
                 let orderPendingConsultQty = 0;
                 let orderPendingReviewQty = 0;
                 let hasStatusStock = false; // Track if order has stock in any status
+                let actualStatusType: 'processing' | 'pending-consult' | 'pending-review' | 'none' = 'none'; // Track which status has stock
 
-                // For nv-pending-pickup, we want to deduct from processing (the previous status)
-                // So check processing guardrail even if currentStatus is 'nv-pending-pickup'
-                if (currentStatus === 'processing' || !currentStatus || currentStatus === 'nv-pending-pickup') {
-                    // Get processing transactions for THIS order only
-                    const orderProcessingTxs = await getStockTransactions({
-                        sourceType: 'order',
-                        sourceId: orderId,
-                        transactionType: 'order_processing'
-                    });
-                    // Calculate total processing quantity for this order
-                    // Use processing_after - processing_before instead of quantity_change
-                    // because quantity_change is 0 for status transitions
-                    orderProcessingQty = orderProcessingTxs.reduce((sum: number, tx: any) => {
-                        const qty = (tx.processing_after || 0) - (tx.processing_before || 0);
-                        return sum + Math.abs(qty);
-                    }, 0);
-                    
-                    hasStatusStock = orderProcessingQty > 0;
-                    
-                    // Guardrail: Only enforce if order has stock in processing
-                    // If order has no processing stock, we'll still deduct from in_warehouse (direct order)
-                    if (hasStatusStock && orderProcessingQty < totalQty) {
+                // Always check processing transactions (for orders that went through processing)
+                const orderProcessingTxs = await getStockTransactions({
+                    sku,
+                    sourceType: 'order',
+                    sourceId: orderId,
+                    transactionType: 'order_processing'
+                });
+                orderProcessingQty = orderProcessingTxs.reduce((sum: number, tx: any) => {
+                    const qty = (tx.processing_after || 0) - (tx.processing_before || 0);
+                    return sum + Math.abs(qty);
+                }, 0);
+
+                // Check pending-consult transactions (for orders that went from pending-consult to nv-pending-pickup)
+                const orderPendingConsultTxs = await getStockTransactions({
+                    sku,
+                    sourceType: 'order',
+                    sourceId: orderId,
+                    transactionType: 'order_pending_consult'
+                });
+                orderPendingConsultQty = orderPendingConsultTxs.reduce((sum: number, tx: any) => {
+                    const qty = (tx.pending_consult_after || 0) - (tx.pending_consult_before || 0);
+                    return sum + Math.abs(qty);
+                }, 0);
+
+                // Check pending-review transactions (for orders that went from pending-review to nv-pending-pickup)
+                const orderPendingReviewTxs = await getStockTransactions({
+                    sku,
+                    sourceType: 'order',
+                    sourceId: orderId,
+                    transactionType: 'order_pending_review'
+                });
+                orderPendingReviewQty = orderPendingReviewTxs.reduce((sum: number, tx: any) => {
+                    const qty = (tx.pending_review_after || 0) - (tx.pending_review_before || 0);
+                    return sum + Math.abs(qty);
+                }, 0);
+
+                // Determine which status has stock (priority: processing > pending-consult > pending-review)
+                if (orderProcessingQty > 0) {
+                    hasStatusStock = true;
+                    actualStatusType = 'processing';
+                    // Guardrail: Check if order has enough in processing
+                    if (orderProcessingQty < totalQty) {
                         console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from processing, but order only has ${orderProcessingQty} in processing. Skipping deduction for ${sku}.`);
                         continue; // Skip this SKU - order doesn't have enough in processing
                     }
-                } else if (currentStatus === 'pending-consult') {
-                    const orderPendingTxs = await getStockTransactions({
-                        sourceType: 'order',
-                        sourceId: orderId,
-                        transactionType: 'order_pending_consult'
-                    });
-                    // Use pending_consult_after - pending_consult_before instead of quantity_change
-                    orderPendingConsultQty = orderPendingTxs.reduce((sum: number, tx: any) => {
-                        const qty = (tx.pending_consult_after || 0) - (tx.pending_consult_before || 0);
-                        return sum + Math.abs(qty);
-                    }, 0);
-                    
-                    hasStatusStock = orderPendingConsultQty > 0;
-                    
-                    if (hasStatusStock && orderPendingConsultQty < totalQty) {
+                } else if (orderPendingConsultQty > 0) {
+                    hasStatusStock = true;
+                    actualStatusType = 'pending-consult';
+                    // Guardrail: Check if order has enough in pending-consult
+                    if (orderPendingConsultQty < totalQty) {
                         console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from pending-consult, but order only has ${orderPendingConsultQty}. Skipping deduction for ${sku}.`);
                         continue;
                     }
-                } else if (currentStatus === 'pending-review') {
-                    const orderPendingTxs = await getStockTransactions({
-                        sourceType: 'order',
-                        sourceId: orderId,
-                        transactionType: 'order_pending_review'
-                    });
-                    // Use pending_review_after - pending_review_before instead of quantity_change
-                    orderPendingReviewQty = orderPendingTxs.reduce((sum: number, tx: any) => {
-                        const qty = (tx.pending_review_after || 0) - (tx.pending_review_before || 0);
-                        return sum + Math.abs(qty);
-                    }, 0);
-                    
-                    hasStatusStock = orderPendingReviewQty > 0;
-                    
-                    if (hasStatusStock && orderPendingReviewQty < totalQty) {
+                } else if (orderPendingReviewQty > 0) {
+                    hasStatusStock = true;
+                    actualStatusType = 'pending-review';
+                    // Guardrail: Check if order has enough in pending-review
+                    if (orderPendingReviewQty < totalQty) {
                         console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from pending-review, but order only has ${orderPendingReviewQty}. Skipping deduction for ${sku}.`);
                         continue;
                     }
+                } else {
+                    // No stock in any status - direct nv-pending-pickup (deduct from in_warehouse only)
+                    hasStatusStock = false;
+                    actualStatusType = 'none';
                 }
 
-                // Determine what status to deduct from based on order's current status
-                // If order has no stock in any status (direct nv-pending-pickup), skip status deduction
-                let statusType = 'processing'; // Default
-                let statusBefore = processingBefore;
-                let statusAfter = processingBefore;
+                // Determine what status to deduct from based on where the stock actually is
+                // Use actualStatusType which was determined by checking all possible statuses
+                let statusType = actualStatusType;
+                let statusBefore = 0;
+                let statusAfter = 0;
 
                 if (hasStatusStock) {
                     // Order has stock in a status - deduct from that status
-                    if (currentStatus === 'pending-consult') {
+                    if (actualStatusType === 'pending-consult') {
                         statusType = 'pending-consult';
                         statusBefore = pendingConsultBefore;
                         statusAfter = Math.max(0, pendingConsultBefore - totalQty);
-                    } else if (currentStatus === 'pending-review') {
+                        console.log(`📦 Order #${orderId} ${sku}: Deducting from pending-consult and in_warehouse (${totalQty} units)`);
+                    } else if (actualStatusType === 'pending-review') {
                         statusType = 'pending-review';
                         statusBefore = pendingReviewBefore;
                         statusAfter = Math.max(0, pendingReviewBefore - totalQty);
+                        console.log(`📦 Order #${orderId} ${sku}: Deducting from pending-review and in_warehouse (${totalQty} units)`);
                     } else {
                         // Default to processing
                         statusType = 'processing';
                         statusBefore = processingBefore;
                         statusAfter = Math.max(0, processingBefore - totalQty);
+                        console.log(`📦 Order #${orderId} ${sku}: Deducting from processing and in_warehouse (${totalQty} units)`);
                     }
                 } else {
                     // Order has no stock in any status - direct nv-pending-pickup
