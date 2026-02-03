@@ -1859,6 +1859,7 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                 let orderProcessingQty = 0;
                 let orderPendingConsultQty = 0;
                 let orderPendingReviewQty = 0;
+                let hasStatusStock = false; // Track if order has stock in any status
 
                 // For nv-pending-pickup, we want to deduct from processing (the previous status)
                 // So check processing guardrail even if currentStatus is 'nv-pending-pickup'
@@ -1877,8 +1878,11 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                         return sum + Math.abs(qty);
                     }, 0);
                     
-                    // Guardrail: Only deduct if this order actually has stock in processing
-                    if (orderProcessingQty < totalQty) {
+                    hasStatusStock = orderProcessingQty > 0;
+                    
+                    // Guardrail: Only enforce if order has stock in processing
+                    // If order has no processing stock, we'll still deduct from in_warehouse (direct order)
+                    if (hasStatusStock && orderProcessingQty < totalQty) {
                         console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from processing, but order only has ${orderProcessingQty} in processing. Skipping deduction for ${sku}.`);
                         continue; // Skip this SKU - order doesn't have enough in processing
                     }
@@ -1894,7 +1898,9 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                         return sum + Math.abs(qty);
                     }, 0);
                     
-                    if (orderPendingConsultQty < totalQty) {
+                    hasStatusStock = orderPendingConsultQty > 0;
+                    
+                    if (hasStatusStock && orderPendingConsultQty < totalQty) {
                         console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from pending-consult, but order only has ${orderPendingConsultQty}. Skipping deduction for ${sku}.`);
                         continue;
                     }
@@ -1910,30 +1916,43 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                         return sum + Math.abs(qty);
                     }, 0);
                     
-                    if (orderPendingReviewQty < totalQty) {
+                    hasStatusStock = orderPendingReviewQty > 0;
+                    
+                    if (hasStatusStock && orderPendingReviewQty < totalQty) {
                         console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from pending-review, but order only has ${orderPendingReviewQty}. Skipping deduction for ${sku}.`);
                         continue;
                     }
                 }
 
                 // Determine what status to deduct from based on order's current status
+                // If order has no stock in any status (direct nv-pending-pickup), skip status deduction
                 let statusType = 'processing'; // Default
                 let statusBefore = processingBefore;
                 let statusAfter = processingBefore;
 
-                if (currentStatus === 'pending-consult') {
-                    statusType = 'pending-consult';
-                    statusBefore = pendingConsultBefore;
-                    statusAfter = Math.max(0, pendingConsultBefore - totalQty);
-                } else if (currentStatus === 'pending-review') {
-                    statusType = 'pending-review';
-                    statusBefore = pendingReviewBefore;
-                    statusAfter = Math.max(0, pendingReviewBefore - totalQty);
+                if (hasStatusStock) {
+                    // Order has stock in a status - deduct from that status
+                    if (currentStatus === 'pending-consult') {
+                        statusType = 'pending-consult';
+                        statusBefore = pendingConsultBefore;
+                        statusAfter = Math.max(0, pendingConsultBefore - totalQty);
+                    } else if (currentStatus === 'pending-review') {
+                        statusType = 'pending-review';
+                        statusBefore = pendingReviewBefore;
+                        statusAfter = Math.max(0, pendingReviewBefore - totalQty);
+                    } else {
+                        // Default to processing
+                        statusType = 'processing';
+                        statusBefore = processingBefore;
+                        statusAfter = Math.max(0, processingBefore - totalQty);
+                    }
                 } else {
-                    // Default to processing
-                    statusType = 'processing';
-                    statusBefore = processingBefore;
-                    statusAfter = Math.max(0, processingBefore - totalQty);
+                    // Order has no stock in any status - direct nv-pending-pickup
+                    // Don't deduct from status, only from in_warehouse
+                    statusType = 'none'; // No status deduction
+                    statusBefore = 0;
+                    statusAfter = 0;
+                    console.log(`📦 Order #${orderId} ${sku}: Direct nv-pending-pickup (no prior status) - deducting ${totalQty} from in_warehouse only`);
                 }
 
                 // Deduct from in_warehouse (physical stock)
@@ -1950,6 +1969,12 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                     pendingConsultAfter = statusAfter;
                 } else if (statusType === 'pending-review') {
                     pendingReviewAfter = statusAfter;
+                } else if (statusType === 'none') {
+                    // No status change - direct deduction from in_warehouse
+                    // Keep status counts unchanged
+                } else if (statusType === 'none') {
+                    // No status change - direct deduction from in_warehouse
+                    // Keep status counts unchanged
                 }
 
                 // Calculate available_for_purchase
