@@ -99,11 +99,11 @@ export async function GET(
         // If earliestPendingTime is null (no pending events), allProcessingTransactions are valid
         // This handles orders that go straight to processing without consultation/review
         
-        // Get the first valid processing transaction (earliest timestamp)
+        // Get all valid processing transactions (for combo SKUs, there will be multiple - one per component)
         const processingTransactions = validProcessingTransactions.length > 0 
-            ? [validProcessingTransactions.sort((a: any, b: any) => 
+            ? validProcessingTransactions.sort((a: any, b: any) => 
                 new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-            )[0]]
+            )
             : [];
 
         // Get all other transaction types for this order
