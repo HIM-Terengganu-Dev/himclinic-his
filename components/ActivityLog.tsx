@@ -874,6 +874,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                         <option value="processing">Processing</option>
                                         <option value="pending-consult">Pending Consultation</option>
                                         <option value="pending-review">Pending Review</option>
+                                        <option value="nv-pending-pickup">NV Pending Pickup</option>
                                         <option value="cancelled">Cancelled</option>
                                     </select>
                                     <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
