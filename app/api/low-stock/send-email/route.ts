@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 export async function POST(req: NextRequest) {
     try {
         const authHeader = req.headers.get('authorization');
@@ -22,6 +20,9 @@ export async function POST(req: NextRequest) {
         if (!process.env.RESEND_API_KEY) {
             return NextResponse.json({ error: 'RESEND_API_KEY not configured' }, { status: 500 });
         }
+
+        // Initialize Resend only when the API route is called, not at module load time
+        const resend = new Resend(process.env.RESEND_API_KEY);
 
         // Format email body with SKU details
         // The email body template is stored in database (emailSettings.emailBody)
