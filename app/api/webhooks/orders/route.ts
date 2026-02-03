@@ -1867,10 +1867,12 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                         sourceId: orderId,
                         transactionType: 'order_processing'
                     });
-                    // Calculate total processing quantity for this order (sum of all processing transactions)
+                    // Calculate total processing quantity for this order
+                    // Use processing_after - processing_before instead of quantity_change
+                    // because quantity_change is 0 for status transitions
                     orderProcessingQty = orderProcessingTxs.reduce((sum: number, tx: any) => {
-                        const qty = Math.abs(tx.quantity_change || 0);
-                        return sum + qty;
+                        const qty = (tx.processing_after || 0) - (tx.processing_before || 0);
+                        return sum + Math.abs(qty);
                     }, 0);
                     
                     // Guardrail: Only deduct if this order actually has stock in processing
@@ -1884,9 +1886,10 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                         sourceId: orderId,
                         transactionType: 'order_pending_consult'
                     });
+                    // Use pending_consult_after - pending_consult_before instead of quantity_change
                     orderPendingConsultQty = orderPendingTxs.reduce((sum: number, tx: any) => {
-                        const qty = Math.abs(tx.quantity_change || 0);
-                        return sum + qty;
+                        const qty = (tx.pending_consult_after || 0) - (tx.pending_consult_before || 0);
+                        return sum + Math.abs(qty);
                     }, 0);
                     
                     if (orderPendingConsultQty < totalQty) {
@@ -1899,9 +1902,10 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                         sourceId: orderId,
                         transactionType: 'order_pending_review'
                     });
+                    // Use pending_review_after - pending_review_before instead of quantity_change
                     orderPendingReviewQty = orderPendingTxs.reduce((sum: number, tx: any) => {
-                        const qty = Math.abs(tx.quantity_change || 0);
-                        return sum + qty;
+                        const qty = (tx.pending_review_after || 0) - (tx.pending_review_before || 0);
+                        return sum + Math.abs(qty);
                     }, 0);
                     
                     if (orderPendingReviewQty < totalQty) {

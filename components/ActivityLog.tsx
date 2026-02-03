@@ -174,14 +174,10 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                 new Date(d.createdAt).getTime() >= new Date(firstProcessingTime).getTime()
             );
             
-            // If still multiple, take the first one
-            if (deductions.length > 1) {
-                deductions = deductions.sort((a: any, b: any) => 
-                    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-                ).slice(0, 1);
-            }
-            
-            console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple nv-pending-pickup transactions found, filtered to show only those after first processing`);
+            // For combo SKUs, we want to show ALL component deductions, not just the first one
+            // So we don't slice here - we keep all matching deductions
+            // They should all have the same timestamp (created at the same time for the same order)
+            console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple nv-pending-pickup transactions found (${deductions.length}), showing all component deductions`);
         }
     }
     
