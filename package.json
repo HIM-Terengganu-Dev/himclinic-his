@@ -6,9 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-    "verify": "node verify-installation.js",
-    "postinstall": "node verify-installation.js"
+    "lint": "next lint"
   },
   "dependencies": {
     "@types/pg": "^8.15.6",
