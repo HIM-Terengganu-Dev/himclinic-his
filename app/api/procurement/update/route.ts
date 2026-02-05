@@ -7,6 +7,7 @@ import {
 } from '@/lib/db/queries';
 import { requireAuth, forbiddenResponse } from '@/lib/auth/middleware';
 import { checkAndSendLowStockAlerts } from '@/lib/utils/lowStockAlerts';
+import { syncStockToWooCommerce } from '@/lib/services/woocommerce';
 
 export async function POST(request: Request) {
   try {
@@ -190,7 +191,10 @@ export async function POST(request: Request) {
         );
       }
 
-      // Note: Combo availability is calculated from transactions, no need to update WooCommerce
+      // Sync stock to WooCommerce (async, don't block response)
+      syncStockToWooCommerce(sku).catch(err => {
+          console.error('Error syncing stock to WooCommerce:', err);
+      });
 
       // Check for low stock alerts (async, don't block response)
       checkAndSendLowStockAlerts([sku]).catch(err => {

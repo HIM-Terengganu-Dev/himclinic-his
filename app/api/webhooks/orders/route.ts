@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { getAllComboSkus, getAllSingleSkus, getDummyComboSkus, getDummySingleSkus, logWcWebhook, getWcWebhookLogByOrderId, createStockTransaction, getCurrentStockState, getStockTransactions, removePendingStockByOrder, getPendingStockByOrderFromTransactions, getOrderCurrentStatus } from '@/lib/db/queries';
 import { deductComboSKU } from '@/lib/utils/inventory';
 import { checkAndSendLowStockAlerts } from '@/lib/utils/lowStockAlerts';
+import { syncStockToWooCommerce } from '@/lib/services/woocommerce';
 
 // Disable body parsing to get raw body for signature verification
 export const runtime = 'nodejs';
@@ -600,6 +601,13 @@ export async function POST(request: Request) {
                         }
                     });
                     
+                    // Sync stock to WooCommerce (async, don't block response)
+                    if (singleSku) {
+                        syncStockToWooCommerce(sku).catch(err => {
+                            console.error(`Error syncing ${sku} to WooCommerce:`, err);
+                        });
+                    }
+                    
                     singleSkuUpdates.push({
                         sku,
                         previousStock: inWarehouseBefore,
@@ -925,6 +933,11 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                         }
                     });
                     
+                    // Sync stock to WooCommerce (async, don't block response)
+                    syncStockToWooCommerce(sku).catch(err => {
+                        console.error(`Error syncing ${sku} to WooCommerce:`, err);
+                    });
+                    
                     restoredSingleSkus.push({
                         sku,
                         previousStock: inWarehouseBefore,
@@ -1047,6 +1060,11 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                             previousStatus: previousStatus,
                             availableForPurchase: availableAfter
                         }
+                    });
+                    
+                    // Sync stock to WooCommerce (async, don't block response)
+                    syncStockToWooCommerce(sku).catch(err => {
+                        console.error(`Error syncing ${sku} to WooCommerce:`, err);
                     });
                     
                     restoredComponentStocks.push({
@@ -1344,6 +1362,11 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                             }
                         });
                         
+                        // Sync stock to WooCommerce (async, don't block response)
+                        syncStockToWooCommerce(sku).catch(err => {
+                            console.error(`Error syncing ${sku} to WooCommerce:`, err);
+                        });
+                        
                         console.log(`✅ Created correction transaction for ${sku} to reverse ${processingQty} from processing (misfire correction)`);
                     }
                     
@@ -1585,6 +1608,11 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                                         orderId,
                                         availableForPurchase: availableAfter
                                     }
+                                });
+                                
+                                // Sync stock to WooCommerce (async, don't block response)
+                                syncStockToWooCommerce(comp.sku).catch(err => {
+                                    console.error(`Error syncing ${comp.sku} to WooCommerce:`, err);
                                 });
                                 
                                 pendingStockUpdates.push({
@@ -2028,6 +2056,11 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                     }
                 });
 
+                // Sync stock to WooCommerce (async, don't block response)
+                syncStockToWooCommerce(sku).catch(err => {
+                    console.error(`Error syncing ${sku} to WooCommerce:`, err);
+                });
+
                 deductions.push({
                     sku,
                     inWarehouseBefore,
@@ -2383,6 +2416,10 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         }
                     });
 
+                    // Sync stock to WooCommerce (async, don't block response)
+                    syncStockToWooCommerce(sku).catch(err => {
+                        console.error(`Error syncing ${sku} to WooCommerce:`, err);
+                    });
 
                     restoredUpdates.push({
                         sku,
@@ -2544,6 +2581,10 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                         }
                     });
                     
+                    // Sync stock to WooCommerce (async, don't block response)
+                    syncStockToWooCommerce(sku).catch(err => {
+                        console.error(`Error syncing ${sku} to WooCommerce:`, err);
+                    });
                     
                     wcSideRestorations.push({
                         sku,
