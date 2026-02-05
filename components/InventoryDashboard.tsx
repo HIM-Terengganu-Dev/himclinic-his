@@ -7,6 +7,7 @@ interface SingleSkuInfo {
   sku: string;
   name: string;
   id?: number;
+  low_stock_threshold?: number | null;
 }
 
 interface InventoryDashboardProps {
@@ -95,8 +96,13 @@ export default function InventoryDashboard({
                     const pendingReview = pendingReviewStock[sku.sku] ?? 0;
                     const backOrder = Math.abs(backOrderStock[sku.sku] || 0); // Display as positive
                     
-                    const isLowStock = availableForPurchase < 5 && availableForPurchase > 0;
+                    // Use threshold from SKU Management (admin configurable)
+                    // Red = No stock (available for purchase = 0)
+                    // Yellow = Low stock (available for purchase > 0 && <= threshold)
+                    // Green = Normal stock (available for purchase > threshold)
+                    const threshold = sku.low_stock_threshold ?? null;
                     const isOutOfStock = availableForPurchase === 0;
+                    const isLowStock = !isOutOfStock && threshold !== null && availableForPurchase <= threshold;
                     const hasBackOrder = backOrder > 0;
 
                     return (
@@ -198,8 +204,13 @@ export default function InventoryDashboard({
               <tbody className="bg-white divide-y divide-gray-200">
                 {comboAvailability.length > 0 ? (
                   comboAvailability.map((combo) => {
-                    const isLowStock = combo.maxAvailable < 5 && combo.maxAvailable > 0;
+                    // Use threshold from SKU Management (admin configurable)
+                    // Red = No stock (maxAvailable = 0)
+                    // Yellow = Low stock (maxAvailable > 0 && <= threshold)
+                    // Green = Normal stock (maxAvailable > threshold)
+                    const threshold = combo.low_stock_threshold ?? null;
                     const isOutOfStock = combo.maxAvailable === 0;
+                    const isLowStock = !isOutOfStock && threshold !== null && combo.maxAvailable <= threshold;
 
                     return (
                       <tr 

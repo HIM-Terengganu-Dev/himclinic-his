@@ -89,11 +89,12 @@ export async function GET(request: NextRequest) {
     // Calculate combo availability using available_for_purchase (logical: only available stock can be used for new orders)
     const comboAvailability = calculateAllComboAvailability(availableForPurchaseStock, allComboSkus);
 
-    // Return SKU list for frontend display
+    // Return SKU list for frontend display (include low_stock_threshold for dashboard color coding)
     const singleSkuList = allSingleSkus.map((sku: any) => ({
       sku: sku.sku,
       name: sku.name,
-      id: sku.woocommerce_product_id
+      id: sku.woocommerce_product_id,
+      low_stock_threshold: sku.low_stock_threshold ?? null
     }));
 
     return NextResponse.json({

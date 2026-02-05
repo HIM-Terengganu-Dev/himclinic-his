@@ -131,6 +131,7 @@ export function calculateAllComboAvailability(
       name: combo.name,
       maxAvailable,
       limitingComponent,
+      low_stock_threshold: combo.low_stock_threshold ?? null,
     };
   });
 }

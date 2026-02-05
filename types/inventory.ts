@@ -27,6 +27,7 @@ export interface ComboAvailability {
   name: string;
   maxAvailable: number;
   limitingComponent: string;
+  low_stock_threshold?: number | null;
 }
 
 // WooCommerce Product type
