@@ -369,7 +369,7 @@ User Action / WooCommerce Event
 ## 📝 Version History
 
 - **Current Version:** 1.0.0
-- **Last Updated:** 2024
+- **Last Updated:** February 2026
 - **Features:** Real-time sync, email alerts, combo SKU management
 
 ---
