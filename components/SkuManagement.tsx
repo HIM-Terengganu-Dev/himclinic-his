@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { Plus, Trash2, Box, Layers, RefreshCw, Eye, EyeOff, Edit2, Save, X, Bell, BellOff } from 'lucide-react';
 import { fetchWithRole } from '@/lib/utils/fetchWithRole';
@@ -40,6 +40,10 @@ export default function SkuManagement() {
     const [editingType, setEditingType] = useState<'single' | 'combo' | null>(null);
     const [editLowThreshold, setEditLowThreshold] = useState<string>('');
     const [editEmailAlerts, setEditEmailAlerts] = useState<boolean>(false);
+    
+    // Refs for scroll synchronization
+    const topScrollRef = useRef<HTMLDivElement>(null);
+    const bottomScrollRef = useRef<HTMLDivElement>(null);
 
     // Form States
     const [sku, setSku] = useState('');
@@ -82,6 +86,54 @@ export default function SkuManagement() {
     useEffect(() => {
         fetchSkus();
     }, [activeTab]);
+
+    // Sync scroll between top and bottom scrollbars
+    useEffect(() => {
+        const topScroll = topScrollRef.current;
+        const bottomScroll = bottomScrollRef.current;
+        
+        if (!topScroll || !bottomScroll) return;
+
+        // Function to sync table width to top scrollbar
+        const syncWidth = () => {
+            const table = bottomScroll.querySelector('table');
+            if (table) {
+                const tableWidth = table.scrollWidth;
+                const topScrollContent = topScroll.querySelector('div');
+                if (topScrollContent) {
+                    topScrollContent.style.minWidth = `${tableWidth}px`;
+                }
+            }
+        };
+
+        // Initial sync and on resize
+        syncWidth();
+        const resizeObserver = new ResizeObserver(syncWidth);
+        if (bottomScroll) {
+            resizeObserver.observe(bottomScroll);
+        }
+
+        const handleTopScroll = () => {
+            if (bottomScroll) {
+                bottomScroll.scrollLeft = topScroll.scrollLeft;
+            }
+        };
+
+        const handleBottomScroll = () => {
+            if (topScroll) {
+                topScroll.scrollLeft = bottomScroll.scrollLeft;
+            }
+        };
+
+        topScroll.addEventListener('scroll', handleTopScroll);
+        bottomScroll.addEventListener('scroll', handleBottomScroll);
+
+        return () => {
+            resizeObserver.disconnect();
+            topScroll.removeEventListener('scroll', handleTopScroll);
+            bottomScroll.removeEventListener('scroll', handleBottomScroll);
+        };
+    }, [singleSkus.length, comboSkus.length, activeTab]);
 
     const handleCreateSingle = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -403,9 +455,24 @@ export default function SkuManagement() {
                             </button>
                         </div>
 
-                        <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
-                            <table className="min-w-full divide-y divide-gray-200">
-                                <thead className="bg-gray-50">
+                        <div className="relative">
+                            {/* Top horizontal scrollbar (above header) */}
+                            <div 
+                                ref={topScrollRef}
+                                className="overflow-x-auto overflow-y-hidden mb-0 border-b border-gray-200 rounded-t-lg"
+                                style={{ height: '17px' }}
+                            >
+                                <div style={{ height: '1px', minWidth: '100%' }}></div>
+                            </div>
+                            
+                            {/* Table container with both scrollbars */}
+                            <div 
+                                ref={bottomScrollRef}
+                                className="overflow-auto border-x border-b border-gray-200 rounded-b-lg"
+                                style={{ maxHeight: '600px' }}
+                            >
+                                <table className="min-w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-100 sticky top-0 z-10">
                                     <tr>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">SKU</th>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Name</th>
@@ -651,6 +718,7 @@ export default function SkuManagement() {
                                     )}
                                 </tbody>
                             </table>
+                            </div>
                         </div>
                     </div>
                 </div>
