@@ -3,6 +3,7 @@ import { requireAdminOrDev } from '@/lib/auth/middleware';
 import { query } from '@/lib/db/connection';
 import { updateSingleSku, deleteSingleSku } from '@/lib/db/queries';
 import { logActivity } from '@/lib/db/queries';
+import { deleteProduct } from '@/lib/services/woocommerce';
 
 export async function PUT(
     req: NextRequest,
@@ -75,14 +76,52 @@ export async function DELETE(
             return NextResponse.json({ error: 'Invalid SKU ID' }, { status: 400 });
         }
 
-        // Get SKU before deletion for logging
+        // Get SKU before deletion for logging and to get WooCommerce Product ID
         const skuResult = await query('SELECT * FROM "his_db".single_skus WHERE id = $1', [id]);
         if (!skuResult.rows[0]) {
             return NextResponse.json({ error: 'SKU not found' }, { status: 404 });
         }
+        const skuToDelete = skuResult.rows[0];
+        const wcProductId = skuToDelete.woocommerce_product_id;
 
-        // Delete SKU
-        const deletedSku = await deleteSingleSku(id);
+        // Step 1: Delete from WooCommerce first (if product ID exists)
+        let wcDeleteSuccess = false;
+        let wcDeleteError: string | null = null;
+        if (wcProductId) {
+            try {
+                const result = await deleteProduct(wcProductId);
+                if (result) {
+                    wcDeleteSuccess = true;
+                    console.log(`✅ Deleted WooCommerce product ${wcProductId} for SKU ${skuToDelete.sku}`);
+                } else {
+                    wcDeleteError = 'WooCommerce returned unexpected response';
+                    console.warn(`⚠️ WooCommerce deletion returned false for product ${wcProductId}`);
+                }
+            } catch (wcError: any) {
+                // Check if product doesn't exist (404) - this is okay, product might already be deleted
+                if (wcError.response?.status === 404 || wcError.message?.includes('404')) {
+                    wcDeleteSuccess = true; // Treat as success since product doesn't exist
+                    console.log(`ℹ️ WooCommerce product ${wcProductId} not found (may already be deleted)`);
+                } else {
+                    wcDeleteError = wcError.message || 'Unknown error';
+                    console.error(`❌ Failed to delete WooCommerce product ${wcProductId}:`, wcError);
+                }
+            }
+        } else {
+            // No WooCommerce product ID, skip WC deletion
+            wcDeleteSuccess = true;
+        }
+
+        // Step 2: Delete SKU from HIS (always proceed, even if WC deletion had issues)
+        let deletedSku;
+        try {
+            deletedSku = await deleteSingleSku(id);
+        } catch (hisError: any) {
+            console.error(`❌ Failed to delete SKU from HIS:`, hisError);
+            return NextResponse.json({ 
+                error: `Failed to delete SKU from HIS: ${hisError.message || 'Unknown error'}` 
+            }, { status: 500 });
+        }
 
         // Log activity
         await logActivity({
@@ -90,11 +129,29 @@ export async function DELETE(
             action: 'sku_deleted',
             entityType: 'single_sku',
             entityId: id,
-            details: { sku: deletedSku.sku, name: deletedSku.name },
+            details: { 
+                sku: deletedSku.sku, 
+                name: deletedSku.name,
+                woocommerceProductId: wcProductId,
+                wcProductDeleted: wcDeleteSuccess,
+                wcDeleteError: wcDeleteError
+            },
             success: true
         });
 
-        return NextResponse.json({ success: true, message: 'SKU deleted successfully' });
+        // Return success message based on WC deletion status
+        if (wcDeleteSuccess) {
+            return NextResponse.json({ 
+                success: true, 
+                message: 'SKU deleted successfully from both HIS and WooCommerce' 
+            });
+        } else {
+            return NextResponse.json({ 
+                success: true, 
+                message: `SKU deleted from HIS, but WooCommerce deletion failed: ${wcDeleteError}`,
+                warning: `WooCommerce product ${wcProductId} may still exist`
+            });
+        }
     } catch (error: any) {
         console.error('Error deleting single SKU:', error);
         return NextResponse.json({ error: 'Internal server error', details: error.message }, { status: 500 });

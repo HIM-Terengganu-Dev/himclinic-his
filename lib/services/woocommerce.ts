@@ -76,6 +76,19 @@ export async function createProduct(data: any): Promise<WooCommerceProduct> {
 }
 
 /**
+ * Delete a product (WRITE access) - Used for rollback if HIS creation fails
+ */
+export async function deleteProduct(productId: number): Promise<boolean> {
+  try {
+    const response = await wooCommerce.delete(`products/${productId}`, { force: true });
+    return response.data?.id === productId;
+  } catch (error) {
+    console.error(`Error deleting product ${productId}:`, error);
+    throw error;
+  }
+}
+
+/**
  * Fetch orders from WooCommerce
  */
 export async function getOrders(params?: {
