@@ -1066,10 +1066,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                 )}
                                             </td>
                                             <td className="px-6 py-4">
-                                                <div className="max-w-xs truncate text-gray-600">
+                                                <div className="max-w-xs text-gray-600">
                                                     {(log.action === 'procurement_update' || log.action === 'refund_return') && log.details ? (
                                                         <div className="space-y-1">
-                                                            <span>
+                                                            <span className="whitespace-normal break-words">
                                                                 {log.details.operation === 'add' ? 'Added' : log.details.operation === 'subtract' ? 'Deducted' : 'Set to'} <strong>{log.details.quantity}</strong> units
                                                                 {(log.details.previousQuantity !== undefined && log.details.newQuantity !== undefined) && (
                                                                     <span className="ml-2 text-gray-600">
@@ -1092,12 +1092,12 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 )}
                                                             </span>
                                                             {log.details.notes && (
-                                                                <div className="text-xs text-gray-400">{log.details.notes}</div>
+                                                                <div className="text-xs text-gray-400 whitespace-normal break-words">{log.details.notes}</div>
                                                             )}
                                                         </div>
                                                     ) : log.action.includes('webhook_log_failed') && log.details ? (
                                                         <div className="space-y-1">
-                                                            <div className="text-xs font-medium text-red-700">
+                                                            <div className="text-xs font-medium text-red-700 whitespace-normal break-words">
                                                                 {log.details.note || 'Webhook log failed - manual reconciliation required'}
                                                             </div>
                                                             {log.details.orderId && (
@@ -1121,13 +1121,13 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                 </div>
                                                             )}
                                                             {log.error_message && (
-                                                                <div className="text-xs text-red-600 mt-1">
+                                                                <div className="text-xs text-red-600 mt-1 whitespace-normal break-words">
                                                                     <span className="font-medium">Error:</span> {log.error_message}
                                                                 </div>
                                                             )}
                                                         </div>
                                                     ) : (
-                                                        <span className="truncate">{JSON.stringify(log.details)}</span>
+                                                        <span className="whitespace-normal break-words">{JSON.stringify(log.details)}</span>
                                                     )}
                                                 </div>
                                             </td>
