@@ -5,7 +5,7 @@ const DDL = "postgresql://neondb_owner:npg_tP8qomJXdH9e@ep-misty-bonus-a1z6q1cy-
 const client = new Client({ connectionString: DDL });
 await client.connect();
 
-const ORDER_ID = 12388;
+const ORDER_ID = 12224;
 
 // 1. All webhook logs for this order
 console.log('\n====== WC_WEBHOOK_LOGS for order', ORDER_ID, '======');
@@ -19,12 +19,12 @@ const webhookLogs = await client.query(`
 `, [ORDER_ID]);
 console.log(`Found ${webhookLogs.rows.length} webhook log entries:`);
 webhookLogs.rows.forEach((r, i) => {
-    console.log(`\n[${i + 1}] id=${r.id} | event=${r.webhook_event} | status=${r.status} | current_status=${r.current_status} | created_at=${r.created_at}`);
-    console.log(`     success=${r.success} | error=${r.error_message}`);
-    console.log(`     entity_sku=${r.entity_sku}`);
-    console.log(`     affected_skus=${JSON.stringify(r.affected_skus)}`);
-    console.log(`     combo_updates=${JSON.stringify(r.combo_updates)}`);
-    console.log(`     details=${JSON.stringify(r.details)}`);
+  console.log(`\n[${i + 1}] id=${r.id} | event=${r.webhook_event} | status=${r.status} | current_status=${r.current_status} | created_at=${r.created_at}`);
+  console.log(`     success=${r.success} | error=${r.error_message}`);
+  console.log(`     entity_sku=${r.entity_sku}`);
+  console.log(`     affected_skus=${JSON.stringify(r.affected_skus)}`);
+  console.log(`     combo_updates=${JSON.stringify(r.combo_updates)}`);
+  console.log(`     details=${JSON.stringify(r.details)}`);
 });
 
 // 2. All stock transactions linked to this order
@@ -46,17 +46,17 @@ const stockTx = await client.query(`
 `, [ORDER_ID, `%${ORDER_ID}%`]);
 console.log(`Found ${stockTx.rows.length} stock transaction entries:`);
 stockTx.rows.forEach((r, i) => {
-    console.log(`\n[${i + 1}] id=${r.id} | sku=${r.sku} | type=${r.transaction_type} | change=${r.quantity_change}`);
-    console.log(`     stock: ${r.stock_before} → ${r.stock_after}`);
-    console.log(`     pending: ${r.pending_before} → ${r.pending_after}`);
-    console.log(`     in_warehouse: ${r.in_warehouse_before} → ${r.in_warehouse_after}`);
-    console.log(`     processing: ${r.processing_before} → ${r.processing_after}`);
-    console.log(`     pending_consult: ${r.pending_consult_before} → ${r.pending_consult_after}`);
-    console.log(`     pending_review: ${r.pending_review_before} → ${r.pending_review_after}`);
-    console.log(`     backorder: ${r.backorder_before} → ${r.backorder_after}`);
-    console.log(`     source: ${r.source_type} / ${r.source_event} | source_id=${r.source_id}`);
-    console.log(`     details=${JSON.stringify(r.details)}`);
-    console.log(`     created_at=${r.created_at}`);
+  console.log(`\n[${i + 1}] id=${r.id} | sku=${r.sku} | type=${r.transaction_type} | change=${r.quantity_change}`);
+  console.log(`     stock: ${r.stock_before} → ${r.stock_after}`);
+  console.log(`     pending: ${r.pending_before} → ${r.pending_after}`);
+  console.log(`     in_warehouse: ${r.in_warehouse_before} → ${r.in_warehouse_after}`);
+  console.log(`     processing: ${r.processing_before} → ${r.processing_after}`);
+  console.log(`     pending_consult: ${r.pending_consult_before} → ${r.pending_consult_after}`);
+  console.log(`     pending_review: ${r.pending_review_before} → ${r.pending_review_after}`);
+  console.log(`     backorder: ${r.backorder_before} → ${r.backorder_after}`);
+  console.log(`     source: ${r.source_type} / ${r.source_event} | source_id=${r.source_id}`);
+  console.log(`     details=${JSON.stringify(r.details)}`);
+  console.log(`     created_at=${r.created_at}`);
 });
 
 // 3. Check if any webhook log mentions nv-pending-pickup in any field
@@ -73,7 +73,7 @@ const nvCheck = await client.query(`
 `);
 console.log(`Found ${nvCheck.rows.length} logs with nv-pending-pickup reference:`);
 nvCheck.rows.forEach((r, i) => {
-    console.log(`[${i + 1}] id=${r.id} | order=${r.entity_id} | event=${r.webhook_event} | status=${r.status} | current_status=${r.current_status} | created_at=${r.created_at}`);
+  console.log(`[${i + 1}] id=${r.id} | order=${r.entity_id} | event=${r.webhook_event} | status=${r.status} | current_status=${r.current_status} | created_at=${r.created_at}`);
 });
 
 // 4. What distinct statuses/events exist in webhook logs?
@@ -86,7 +86,7 @@ const distinct = await client.query(`
   LIMIT 30
 `);
 distinct.rows.forEach(r => {
-    console.log(`  event=${r.webhook_event} | status=${r.status} | current_status=${r.current_status} | count=${r.cnt}`);
+  console.log(`  event=${r.webhook_event} | status=${r.status} | current_status=${r.current_status} | count=${r.cnt}`);
 });
 
 await client.end();

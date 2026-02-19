@@ -103,9 +103,9 @@ try {
     const pendingBefore = parseFloat(lastTx.pending_after);
     const pendingAfter = pendingBefore - (dedConsult + dedReview);
 
-    // In Warehouse should NOT change (items never left)
+    // In Warehouse SHOULD change (items returned to stock)
     const inWarehouseBefore = parseFloat(lastTx.in_warehouse_after);
-    const inWarehouseAfter = inWarehouseBefore;
+    const inWarehouseAfter = inWarehouseBefore + (dedProcessing + dedConsult + dedReview);
 
     // Backorder calculation
     const backorderBefore = parseFloat(lastTx.backorder_after);

@@ -295,7 +295,22 @@ export async function POST(request: Request) {
             console.log(`📋 Order #${orderId} was previously in ${previousPendingStatus} - will check if components were already deducted before processing`);
         }
 
-        // Check if this order was already processed (idempotency protection)
+        // ── GUARD 1: nv-pending-pickup idempotency ──────────────────────────────
+        // If this order already advanced to nv-pending-pickup, any subsequent
+        // order.processing webhooks are WooCommerce retries/replays and must be
+        // dropped unconditionally. Processing them would inflate the processing
+        // counter even though the order has already been physically dispatched.
+        const previousNvPickupLog = await getWcWebhookLogByOrderId(orderId, 'order.nv-pending-pickup');
+        if (previousNvPickupLog && previousNvPickupLog.success) {
+            console.log(`⏭️ Order #${orderId} already reached nv-pending-pickup (dispatched) - ignoring late order.processing webhook replay from WooCommerce`);
+            return NextResponse.json({
+                success: true,
+                message: `Order #${orderId} already dispatched (nv-pending-pickup). Ignoring replayed order.processing webhook.`,
+                previousPickupTime: previousNvPickupLog.created_at
+            });
+        }
+
+        // ── GUARD 2: processing idempotency ────────────────────────────────────
         // Prevents double deduction if order goes: processing → pending → processing
         // BUT allows reprocessing if order was cancelled (stock was restored)
         const previousProcessingLog = await getWcWebhookLogByOrderId(orderId, 'order.processing');

@@ -8,21 +8,21 @@ import { fetchWithRole } from '@/lib/utils/fetchWithRole';
 import { Download, RefreshCw, Filter, Search, User, AlertCircle, AlertTriangle, CheckCircle2, Package, ShoppingCart, ChevronLeft, ChevronRight } from 'lucide-react';
 
 // Component to fetch and display component deductions for a single log entry
-function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoadingCache }: { 
-    logEntry: WcWebhookLogEntry; 
+function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoadingCache }: {
+    logEntry: WcWebhookLogEntry;
     activeTab: string;
     cachedDeductions?: any[];
     isLoadingCache?: boolean;
 }) {
     const orderId = logEntry.entity_id;
-    
+
     // Use cached deductions if available, otherwise show loading
     const dbDeductions = cachedDeductions || [];
-    
+
     if (isLoadingCache) {
         return <span className="text-gray-400 text-xs">Loading...</span>;
     }
-    
+
     // Match deductions to this specific log entry by event type and timestamp
     let eventType = '';
     if (logEntry.webhook_event) {
@@ -31,7 +31,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
         eventType = (logEntry as any).current_status || logEntry.status || '';
     }
     const logTime = new Date(logEntry.created_at).getTime();
-    
+
     // Map webhook event to transaction type
     const mapEventToTransactionType = (event: string): string => {
         if (!event) return '';
@@ -43,9 +43,9 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
         if (lowerEvent.includes('cancelled') || lowerEvent === 'cancelled') return 'order_cancelled';
         return '';
     };
-    
+
     const expectedTransactionType = mapEventToTransactionType(eventType);
-    
+
     console.log(`[ComponentDeductionsCell] Order #${orderId} matching:`, {
         eventType,
         expectedTransactionType,
@@ -61,17 +61,17 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
             createdAt: d.createdAt
         }))
     });
-    
+
     // Find deductions that match this event
     // For nv-pending-pickup (NinjaVan webhooks), timezone is unreliable, so match by type only
     // For other events, still use time matching but with a very lenient window
-    const isNvPendingPickup = eventType.toLowerCase().includes('nv-pending-pickup') || 
-                               eventType.toLowerCase().includes('nv_pending_pickup');
-    
+    const isNvPendingPickup = eventType.toLowerCase().includes('nv-pending-pickup') ||
+        eventType.toLowerCase().includes('nv_pending_pickup');
+
     const matchingDeductions = dbDeductions.filter((deduction: any) => {
         const txType = deduction.transactionType || deduction.sourceEvent || '';
         let typeMatches = false;
-        
+
         if (expectedTransactionType && txType) {
             const normalizeType = (t: string) => {
                 return t.toLowerCase()
@@ -79,11 +79,11 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                     .replace(/[_-]/g, '_')
                     .trim();
             };
-            
+
             const normalizedTxType = normalizeType(txType);
             const normalizedExpected = normalizeType(expectedTransactionType);
             typeMatches = normalizedTxType === normalizedExpected;
-            
+
             if (!typeMatches && eventType) {
                 const eventLower = eventType.toLowerCase();
                 const txLower = txType.toLowerCase();
@@ -100,28 +100,26 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
             if (eventLower.includes('cancelled') && txLower.includes('cancelled')) typeMatches = true;
             if (eventLower.includes('processing') && txLower.includes('processing')) typeMatches = true;
         }
-        
+
         // Time matching strategy:
-        // Since timezone issues affect all webhook events, match by type only for all order events
-        // This ensures we always find the correct transaction regardless of timezone differences
-        const isOrderEvent = eventType.toLowerCase().includes('processing') ||
-                            eventType.toLowerCase().includes('pending-consult') ||
-                            eventType.toLowerCase().includes('pending-review') ||
-                            eventType.toLowerCase().includes('nv-pending-pickup') ||
-                            eventType.toLowerCase().includes('cancelled');
-        
-        let timeMatches = true;
-        if (isOrderEvent) {
-            // For all order events: Ignore time matching (timezone issues are common)
-            // Match by order ID + transaction type only
+        // - nv-pending-pickup and cancelled: type-only match (NinjaVan timezone is unreliable)
+        // - processing, pending-consult, pending-review: match within ±2 minutes of the webhook log
+        //   This prevents ghost retry transactions from being attributed to the wrong webhook event
+        const isTimezoneUnreliable = eventType.toLowerCase().includes('nv-pending-pickup') ||
+            eventType.toLowerCase().includes('cancelled');
+
+        let timeMatches: boolean;
+        if (isTimezoneUnreliable) {
+            // For NV pickup and cancellations: timezone diffs are common, match by type only
             timeMatches = true;
         } else {
-            // For other events (manual operations, etc.): Use moderate time window
+            // For processing / pending-consult / pending-review: use a ±2 minute window
+            // so that each webhook log entry only shows its OWN transactions, not retry replays
             const deductionTime = new Date(deduction.createdAt).getTime();
             const timeDiff = Math.abs(deductionTime - logTime);
-            timeMatches = timeDiff < 300000; // 5 minutes
+            timeMatches = timeDiff < 120000; // 2 minutes
         }
-        
+
         const matches = timeMatches && typeMatches;
         if (orderId) {
             const deductionTime = new Date(deduction.createdAt).getTime();
@@ -135,24 +133,24 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                 matches
             });
         }
-        
+
         return matches;
     });
-    
+
     // Fallback to webhook log data if database data not available
     const webhookDeductions = logEntry.details?.componentDeductions || [];
-    
+
     // No loose matching - we must match by transaction type exactly
     // This ensures we don't accidentally match transactions from different events or orders
     let deductions = matchingDeductions;
-    
+
     // Additional guardrails to ensure we only show the correct transaction:
     // 1. For processing events: Show all component deductions (for combo SKUs)
     // 2. For nv-pending-pickup: Only show transactions that came after the first processing transaction
     if (eventType.toLowerCase().includes('processing') && deductions.length > 1) {
         // For combo SKUs, we want to show ALL component deductions, not just the first one
         // They should all have the same timestamp (created at the same time for the same order)
-        deductions = deductions.sort((a: any, b: any) => 
+        deductions = deductions.sort((a: any, b: any) =>
             new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
         );
         // Don't slice - keep all component deductions
@@ -164,25 +162,25 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
             const txType = d.transactionType || d.sourceEvent || '';
             return txType.toLowerCase().includes('processing');
         });
-        
+
         if (processingTransactions.length > 0) {
             // Get the first processing transaction timestamp
             const firstProcessingTime = processingTransactions
                 .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0]
                 .createdAt;
-            
+
             // Only show nv-pending-pickup transactions that came after the first processing
-            deductions = deductions.filter((d: any) => 
+            deductions = deductions.filter((d: any) =>
                 new Date(d.createdAt).getTime() >= new Date(firstProcessingTime).getTime()
             );
-            
+
             // For combo SKUs, we want to show ALL component deductions, not just the first one
             // So we don't slice here - we keep all matching deductions
             // They should all have the same timestamp (created at the same time for the same order)
             console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple nv-pending-pickup transactions found (${deductions.length}), showing all component deductions`);
         }
     }
-    
+
     // Final fallback to webhook log details
     if (deductions.length === 0) {
         console.log(`[ComponentDeductionsCell] Order #${orderId}: No matching dbDeductions, falling back to webhookDeductions`, {
@@ -191,7 +189,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
         });
         deductions = webhookDeductions;
     }
-    
+
     // Debug logging if no deductions found
     if (deductions.length === 0 && orderId) {
         console.log(`[ComponentDeductionsCell] No deductions found for Order #${orderId}`, {
@@ -211,7 +209,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
         });
         return <span className="text-gray-400 text-xs">—</span>;
     }
-    
+
     console.log(`[ComponentDeductionsCell] Order #${orderId}: Found ${deductions.length} deductions to display`, {
         eventType,
         deductions: deductions.map((d: any) => ({
@@ -223,7 +221,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
             inWarehouseAfter: d.inWarehouseAfter
         }))
     });
-    
+
     /**
      * Display component deductions based on Stock Management Flow documentation
      * Shows only the statuses that change according to the documented flow
@@ -241,26 +239,26 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
         const pendingReviewAfter = deduction.pendingReviewAfter ?? 0;
         const backorderBefore = deduction.backorderBefore ?? 0;
         const backorderAfter = deduction.backorderAfter ?? 0;
-        
+
         // Calculate available_for_purchase (always calculated, never set directly)
-        const availableBefore = deduction.availableForPurchaseBefore ?? Math.max(0, 
+        const availableBefore = deduction.availableForPurchaseBefore ?? Math.max(0,
             inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore
         );
         const availableAfter = deduction.availableForPurchaseAfter ?? deduction.availableForPurchase ?? Math.max(0,
             inWarehouseAfter - pendingConsultAfter - pendingReviewAfter - processingAfter
         );
-        
+
         // Determine transaction type
         const txType = deduction.transactionType || deduction.sourceEvent || eventType || '';
         const isPendingConsult = txType.includes('pending_consult') || eventType.toLowerCase().includes('pending-consult');
         const isPendingReview = txType.includes('pending_review') || eventType.toLowerCase().includes('pending-review');
         const isProcessing = txType.includes('processing') || eventType.toLowerCase().includes('processing');
-        const isNvPendingPickup = txType.includes('nv_pending_pickup') || txType.includes('nv-pending-pickup') || 
-                                 eventType.toLowerCase().includes('nv-pending-pickup');
+        const isNvPendingPickup = txType.includes('nv_pending_pickup') || txType.includes('nv-pending-pickup') ||
+            eventType.toLowerCase().includes('nv-pending-pickup');
         const isCancelled = txType.includes('cancelled') || eventType.toLowerCase().includes('cancelled');
-        const isEdgeCase = logEntry.details?.isEdgeCase === true && 
-                          logEntry.details?.edgeCaseType === 'shipped_order_cancelled';
-        
+        const isEdgeCase = logEntry.details?.isEdgeCase === true &&
+            logEntry.details?.edgeCaseType === 'shipped_order_cancelled';
+
         // Get event label
         const getEventLabel = () => {
             if (isPendingConsult) return 'Pending Consult';
@@ -270,10 +268,10 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
             if (isCancelled) return 'Cancelled';
             return txType.replace(/order[._]/g, '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
         };
-        
+
         // Build status changes array based on documented flow
         const changes: Array<{ label: string; before: number; after: number; color: string }> = [];
-        
+
         // EDGE CASE: Shipped order cancelled - no stock restoration
         if (isCancelled && isEdgeCase) {
             return (
@@ -284,7 +282,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                 </div>
             );
         }
-        
+
         // PENDING CONSULT/REVIEW: Show pending changes, available changes, in_warehouse unchanged
         if (isPendingConsult || isPendingReview) {
             if (pendingConsultBefore !== pendingConsultAfter) {
@@ -302,7 +300,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                 changes.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
             }
         }
-        
+
         // PROCESSING: Show processing changes, available changes, in_warehouse unchanged
         else if (isProcessing) {
             if (pendingConsultBefore !== pendingConsultAfter) {
@@ -319,7 +317,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
             }
             // Note: in_warehouse should be unchanged (not shown)
         }
-        
+
         // NV PENDING PICKUP: Show in_warehouse changes, processing changes, available changes
         else if (isNvPendingPickup) {
             if (inWarehouseBefore !== inWarehouseAfter) {
@@ -332,7 +330,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                 changes.push({ label: 'Available', before: availableBefore, after: availableAfter, color: 'text-green-600' });
             }
         }
-        
+
         // CANCELLED: Show status removal, in_warehouse restoration (if applicable), available changes
         else if (isCancelled) {
             // Show which status was removed
@@ -356,7 +354,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                 changes.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
             }
         }
-        
+
         // UNKNOWN/OTHER: Show all changes
         else {
             if (inWarehouseBefore !== inWarehouseAfter) {
@@ -378,7 +376,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                 changes.push({ label: 'Backorder', before: backorderBefore, after: backorderAfter, color: 'text-orange-600' });
             }
         }
-        
+
         return (
             <div key={deductionIdx} className="text-xs text-gray-600 mb-3 border-b border-gray-100 pb-2 last:border-0 last:pb-0">
                 <div className="font-mono font-semibold mb-1">{deduction.sku}</div>
@@ -400,7 +398,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
             </div>
         );
     };
-    
+
     return (
         <div className="min-w-[200px]">
             {deductions.map((deduction: any, deductionIdx: number) => renderDeduction(deduction, deductionIdx))}
@@ -477,7 +475,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                 }
             })
             .catch(err => console.error('Failed to fetch SKUs:', err));
-        
+
         // Fetch combo SKUs for Orders filter dropdown
         fetchWithRole('/api/skus/combo')
             .then(res => res.json())
@@ -541,7 +539,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             const data = await res.json();
             setWcLogs(data.logs || []);
             setWcTotalCount(data.total || 0);
-            
+
             // Also fetch ALL logs (without SKU filter AND without date filters) for pending stock calculations
             // This ensures we have all pending-consult logs from other orders, even if they're outside the current date filter
             // Date filters would exclude relevant pending-consult logs that affect pending stock calculations
@@ -559,7 +557,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             // if (filterOrderStatus) allLogsParams.append('orderStatus', filterOrderStatus);
             // Fetch with a high limit to get all logs (or implement pagination if needed)
             allLogsParams.append('limit', '10000'); // High limit to get all logs
-            
+
             const allLogsRes = await fetchWithRole(`/api/webhook-logs?${allLogsParams.toString()}`);
             if (allLogsRes.ok) {
                 const allLogsData = await allLogsRes.json();
@@ -591,14 +589,14 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     useEffect(() => {
         fetchLogs();
     }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab, wcCurrentPage]);
-    
+
     // Fetch component deductions from database for all order events (batch fetch for performance)
     useEffect(() => {
         if (activeTab !== 'orders' || wcLogs.length === 0) {
             setComponentDeductionsCache({});
             return;
         }
-        
+
         // Collect all unique order IDs from webhook logs
         const orderIds = new Set<number>();
         wcLogs.forEach((log: WcWebhookLogEntry) => {
@@ -606,13 +604,13 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                 orderIds.add(log.entity_id);
             }
         });
-        
+
         const uniqueOrderIds = Array.from(orderIds);
         if (uniqueOrderIds.length === 0) {
             setComponentDeductionsCache({});
             return;
         }
-        
+
         // Batch fetch all component deductions in parallel
         setIsLoadingDeductionsCache(true);
         Promise.all(
@@ -645,7 +643,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     useEffect(() => {
         const topScroll = topScrollRef.current;
         const bottomScroll = bottomScrollRef.current;
-        
+
         if (!topScroll || !bottomScroll) return;
 
         // Function to sync table width to top scrollbar
@@ -690,12 +688,12 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     }, [logs.length, wcLogs.length, activeTab]);
 
     const handleExport = () => {
-        const headers = activeTab === 'manual' 
+        const headers = activeTab === 'manual'
             ? ['Timestamp', 'User', 'Action', 'SKU', 'Success', 'Details', 'Error']
             : ['Timestamp', 'Type', 'Entity', 'SKU', 'Status', 'Combo Updates', 'Success', 'Error'];
-        
+
         const data = activeTab === 'manual' ? logs : wcLogs;
-        
+
         const csvContent = [
             headers.join(','),
             ...data.map((log: any) => {
@@ -707,7 +705,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         else if (operation === 'subtract') actionLabel = 'Manual Stock Out';
                         else if (operation === 'set') actionLabel = 'Reconciliation';
                     }
-                    
+
                     return [
                         `"${formatDateTimeWithSecondsGMT8(log.created_at)}"`,
                         `"${log.user_name || log.user_email || 'System'}"`,
@@ -743,11 +741,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
 
     const getActionLabel = (log: ActivityLogEntry) => {
         const action = log.action;
-        
+
         if (action === 'refund_return') {
             return 'Refund/Return';
         }
-        
+
         if (action === 'procurement_update' && log.details) {
             const operation = log.details.operation;
             switch (operation) {
@@ -757,7 +755,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                 default: return 'Stock Update';
             }
         }
-        
+
         // Webhook log failure actions
         if (action === 'webhook_log_failed_after_stock_deduction') {
             return '⚠️ Webhook Log Failed (Stock Deducted)';
@@ -768,7 +766,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         if (action === 'webhook_log_failed_product_update') {
             return '⚠️ Webhook Log Failed (Product Updated)';
         }
-        
+
         switch (action) {
             case 'procurement_update': return 'Stock Update';
             case 'sku_created': return 'Created SKU';
@@ -782,7 +780,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         if (log.action === 'refund_return') {
             return 'bg-orange-100 text-orange-800 border border-orange-200';
         }
-        
+
         if (log.action === 'procurement_update' && log.details) {
             const operation = log.details.operation;
             switch (operation) {
@@ -792,7 +790,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                 default: return 'bg-gray-100 text-gray-800';
             }
         }
-        
+
         if (log.action.includes('sku')) return 'bg-purple-100 text-purple-800';
         if (log.action.includes('error')) return 'bg-red-100 text-red-800';
         if (log.action.includes('webhook_log_failed')) return 'bg-red-100 text-red-800 border border-red-200'; // Critical errors
@@ -830,7 +828,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         <div>
                             <h2 className="text-xl font-bold text-gray-900">Activity Log</h2>
                             <p className="text-sm text-gray-500 mt-1">
-                                {activeTab === 'manual' 
+                                {activeTab === 'manual'
                                     ? 'Audit trail of all manual system changes'
                                     : 'Stock changes and triggers from Orders (order updates, reconciliations)'
                                 }
@@ -951,11 +949,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                     <div className="flex gap-2 border-b border-gray-200">
                         <button
                             onClick={() => setActiveTab('manual')}
-                            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
-                                activeTab === 'manual'
+                            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === 'manual'
                                     ? 'border-blue-500 text-blue-600'
                                     : 'border-transparent text-gray-500 hover:text-gray-700'
-                            }`}
+                                }`}
                         >
                             <div className="flex items-center gap-2">
                                 <User size={16} />
@@ -964,11 +961,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         </button>
                         <button
                             onClick={() => setActiveTab('orders')}
-                            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
-                                activeTab === 'orders'
+                            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === 'orders'
                                     ? 'border-blue-500 text-blue-600'
                                     : 'border-transparent text-gray-500 hover:text-gray-700'
-                            }`}
+                                }`}
                         >
                             <div className="flex items-center gap-2">
                                 <Package size={16} />
@@ -986,445 +982,444 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             ) : (
                 <div className="relative">
                     {/* Top horizontal scrollbar (above header) */}
-                    <div 
+                    <div
                         ref={topScrollRef}
                         className="overflow-x-auto overflow-y-hidden mb-0 border-b border-gray-200 rounded-t-lg"
                         style={{ height: '17px' }}
                     >
                         <div style={{ height: '1px', minWidth: '100%' }}></div>
                     </div>
-                    
+
                     {/* Table container with both scrollbars */}
-                    <div 
+                    <div
                         ref={bottomScrollRef}
                         className="overflow-auto max-h-[600px] border-x border-b border-gray-200 rounded-b-lg"
                     >
                         <table className="w-full text-left text-sm">
-                        <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-100 sticky top-0 z-10">
-                            <tr>
-                                {activeTab === 'manual' ? (
-                                    <>
-                                        <th className="px-6 py-4">Time</th>
-                                        <th className="px-6 py-4">User</th>
-                                        <th className="px-6 py-4">Action</th>
-                                        <th className="px-6 py-4">SKU</th>
-                                        <th className="px-6 py-4">Details</th>
-                                        <th className="px-6 py-4">Status</th>
-                                    </>
-                                ) : (
-                                    <>
-                                        <th className="px-6 py-4">Time</th>
-                                        <th className="px-6 py-4">Type</th>
-                                        <th className="px-6 py-4">Entity</th>
-                                        <th className="px-6 py-4">SKU</th>
-                                        <th className="px-6 py-4 min-w-[200px]">Component Deductions</th>
-                                        <th className="px-6 py-4">Combo Updates</th>
-                                        <th className="px-6 py-4">Status</th>
-                                    </>
-                                )}
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-50">
-                            {currentLogs.length > 0 ? (
-                                activeTab === 'manual' ? (
-                                    logs.map((log) => (
-                                        <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
-                                            <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                                                {formatDateTimeWithSecondsGMT8(log.created_at)}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <div className="flex items-center gap-3">
-                                                    {log.user_picture ? (
-                                                        <img
-                                                            src={log.user_picture}
-                                                            alt={log.user_name}
-                                                            className="w-8 h-8 rounded-full border border-gray-100"
-                                                        />
-                                                    ) : (
-                                                        <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-400">
-                                                            <User size={16} />
-                                                        </div>
-                                                    )}
-                                                    <div>
-                                                        <p className="font-medium text-gray-900">{log.user_name || 'System'}</p>
-                                                        <p className="text-xs text-gray-500">{log.user_email || ''}</p>
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${getActionColor(log)}`}>
-                                                    {getActionLabel(log)}
-                                                </span>
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                {log.affected_sku ? (
-                                                    <span className="font-mono text-sm font-medium text-gray-900 bg-gray-50 px-2 py-1 rounded">
-                                                        {log.affected_sku}
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-gray-400 text-xs">—</span>
-                                                )}
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                <div className="max-w-xs text-gray-600">
-                                                    {(log.action === 'procurement_update' || log.action === 'refund_return') && log.details ? (
-                                                        <div className="space-y-1">
-                                                            <span className="whitespace-normal break-words">
-                                                                {log.details.operation === 'add' ? 'Added' : log.details.operation === 'subtract' ? 'Deducted' : 'Set to'} <strong>{log.details.quantity}</strong> units
-                                                                {(log.details.previousQuantity !== undefined && log.details.newQuantity !== undefined) && (
-                                                                    <span className="ml-2 text-gray-600">
-                                                                        (from <strong>{log.details.previousQuantity}</strong> to <strong>{log.details.newQuantity}</strong>)
-                                                                    </span>
-                                                                )}
-                                                                {log.details.returnCondition && (
-                                                                    <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                                                                        log.details.returnCondition === 'good' ? 'bg-green-100 text-green-800' :
-                                                                        log.details.returnCondition === 'damaged' ? 'bg-orange-100 text-orange-800' :
-                                                                        'bg-red-100 text-red-800'
-                                                                    }`}>
-                                                                        Return: {log.details.returnCondition.charAt(0).toUpperCase() + log.details.returnCondition.slice(1)}
-                                                                    </span>
-                                                                )}
-                                                                {log.details.orderId && (
-                                                                    <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800" title="Order ID">
-                                                                        Order #{log.details.orderId}
-                                                                    </span>
-                                                                )}
-                                                            </span>
-                                                            {log.details.notes && (
-                                                                <div className="text-xs text-gray-400 whitespace-normal break-words">{log.details.notes}</div>
-                                                            )}
-                                                        </div>
-                                                    ) : log.action.includes('webhook_log_failed') && log.details ? (
-                                                        <div className="space-y-1">
-                                                            <div className="text-xs font-medium text-red-700 whitespace-normal break-words">
-                                                                {log.details.note || 'Webhook log failed - manual reconciliation required'}
-                                                            </div>
-                                                            {log.details.orderId && (
-                                                                <div className="text-xs">
-                                                                    <span className="font-medium">Order:</span> #{log.details.orderId}
-                                                                </div>
-                                                            )}
-                                                            {log.details.componentDeductions && Array.isArray(log.details.componentDeductions) && log.details.componentDeductions.length > 0 && (
-                                                                <div className="text-xs">
-                                                                    <span className="font-medium">Affected:</span> {log.details.componentDeductions.map((d: any) => d.sku).join(', ')}
-                                                                </div>
-                                                            )}
-                                                            {log.details.componentRestorations && Array.isArray(log.details.componentRestorations) && log.details.componentRestorations.length > 0 && (
-                                                                <div className="text-xs">
-                                                                    <span className="font-medium">Affected:</span> {log.details.componentRestorations.map((r: any) => r.sku).join(', ')}
-                                                                </div>
-                                                            )}
-                                                            {log.details.sku && (
-                                                                <div className="text-xs">
-                                                                    <span className="font-medium">SKU:</span> {log.details.sku}
-                                                                </div>
-                                                            )}
-                                                            {log.error_message && (
-                                                                <div className="text-xs text-red-600 mt-1 whitespace-normal break-words">
-                                                                    <span className="font-medium">Error:</span> {log.error_message}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    ) : (
-                                                        <span className="whitespace-normal break-words">{JSON.stringify(log.details)}</span>
-                                                    )}
-                                                </div>
-                                            </td>
-                                            <td className="px-6 py-4">
-                                                {log.success ? (
-                                                    <div className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
-                                                        <CheckCircle2 size={16} />
-                                                        Success
-                                                    </div>
-                                                ) : (
-                                                    <div className="flex items-center gap-1.5 text-red-600 text-xs font-medium" title={log.error_message}>
-                                                        <AlertCircle size={16} />
-                                                        Failed
-                                                    </div>
-                                                )}
-                                            </td>
-                                        </tr>
-                                    ))
-                                ) : (
-                                    (() => {
-                                        // Flatten all logs - if a log has _history, expand it to individual entries
-                                        const allLogs: WcWebhookLogEntry[] = [];
-                                        
-                                        for (const log of wcLogs) {
-                                            if (log._isGrouped && log._history && Array.isArray(log._history)) {
-                                                // If grouped, add all history entries individually
-                                                allLogs.push(...log._history);
-                                            } else {
-                                                // Otherwise, add the log as-is
-                                                allLogs.push(log);
-                                            }
-                                        }
-                                        
-                                        // Filter to only show first pending and first processing event per order ID
-                                        // Rule: If there's a pending event, ignore any processing that comes BEFORE the pending
-                                        // This prevents showing glitchy WC webhooks where processing fires before pending
-                                        const seenEvents = new Map<string, boolean>(); // key: "orderId:eventType"
-                                        const filteredLogs: WcWebhookLogEntry[] = [];
-                                        
-                                        // First pass: Find earliest pending event per order
-                                        const orderPendingTimes = new Map<number, number>(); // orderId -> earliest pending timestamp
-                                        
-                                        // Sort by time ascending first to get chronological order
-                                        allLogs.sort((a, b) => {
-                                            const aTime = new Date(a.created_at).getTime();
-                                            const bTime = new Date(b.created_at).getTime();
-                                            return aTime - bTime;
-                                        });
-                                        
-                                        // First pass: identify earliest pending events per order
-                                        for (const log of allLogs) {
-                                            if (log.webhook_type === 'order' && log.entity_id) {
-                                                const orderId = log.entity_id;
-                                                const eventType = log.webhook_event || log.status || '';
-                                                const isPending = eventType.includes('pending-consult') || eventType === 'pending-consult' || 
-                                                    eventType.includes('pending-review') || eventType === 'pending-review' ||
-                                                    log.status === 'pending-consult' || log.status === 'pending-review' ||
-                                                    log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review';
-                                                
-                                                if (isPending && !orderPendingTimes.has(orderId)) {
-                                                    orderPendingTimes.set(orderId, new Date(log.created_at).getTime());
-                                                }
-                                            }
-                                        }
-                                        
-                                        // Second pass: filter events
-                                        for (const log of allLogs) {
-                                            if (log.webhook_type === 'order' && log.entity_id) {
-                                                const orderId = log.entity_id;
-                                                const eventType = log.webhook_event || log.status || '';
-                                                const logTime = new Date(log.created_at).getTime();
-                                                
-                                                // Determine the event type key
-                                                // Treat all pending events (consult/review) as "pending"
-                                                let eventKey: string | null = null;
-                                                const isPending = eventType.includes('pending-consult') || eventType === 'pending-consult' || 
-                                                    eventType.includes('pending-review') || eventType === 'pending-review' ||
-                                                    log.status === 'pending-consult' || log.status === 'pending-review' ||
-                                                    log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review';
-                                                
-                                                const isProcessing = eventType.includes('processing') || eventType === 'processing' ||
-                                                    log.status === 'processing' || log.webhook_event === 'order.processing';
-                                                
-                                                if (isPending) {
-                                                    eventKey = `${orderId}:pending`;
-                                                } else if (isProcessing) {
-                                                    eventKey = `${orderId}:processing`;
-                                                    
-                                                    // Rule: If there's a pending event for this order, ignore processing that comes BEFORE pending
-                                                    //       If there's NO pending event, include processing (order goes straight to processing)
-                                                    const earliestPendingTime = orderPendingTimes.get(orderId);
-                                                    if (earliestPendingTime !== undefined && logTime < earliestPendingTime) {
-                                                        // Skip this processing event - it comes before pending (glitch from WC)
-                                                        continue;
-                                                    }
-                                                    // If earliestPendingTime is undefined (no pending event), this processing event is valid
-                                                }
-                                                
-                                                // Only include if this is the first occurrence of this event type for this order
-                                                if (eventKey && !seenEvents.has(eventKey)) {
-                                                    seenEvents.set(eventKey, true);
-                                                    filteredLogs.push(log);
-                                                } else if (!eventKey) {
-                                                    // For other event types (cancelled, etc.), always include
-                                                    filteredLogs.push(log);
-                                                }
-                                            } else {
-                                                // For non-order events (products, etc.), always include
-                                                filteredLogs.push(log);
-                                            }
-                                        }
-                                        
-                                        // Sort by time descending (latest first) for display
-                                        filteredLogs.sort((a, b) => {
-                                            const aTime = new Date(a.created_at).getTime();
-                                            const bTime = new Date(b.created_at).getTime();
-                                            return bTime - aTime;
-                                        });
-                                        
-                                        return filteredLogs.map((logEntry) => {
-                                            // For logs that came from grouped history, ensure they have access to the full history
-                                            // for pending stock calculations
-                                            const history = logEntry._history || [logEntry];
-                                            const logEntryWithHistory = logEntry._history ? logEntry : { ...logEntry, _history: history };
-                                            
-                                            return (
-                                                <tr 
-                                                    key={logEntry.id} 
-                                                    className="hover:bg-gray-50/50 transition-colors"
-                                                >
-                                                    <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                                                        {formatDateTimeWithSecondsGMT8(logEntry.created_at)}
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getWebhookTypeColor(logEntry.webhook_type, logEntry.status)}`}>
-                                                            {logEntry.webhook_type === 'order' ? <ShoppingCart size={12} className="mr-1" /> : <Package size={12} className="mr-1" />}
-                                                            {logEntry.webhook_type}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="text-gray-900 font-medium">
-                                                            {logEntry.entity_name || `#${logEntry.entity_id}`}
-                                                        </div>
-                                                        {logEntry.status && (
-                                                            <div className="text-xs text-gray-500">{logEntry.status}</div>
-                                                        )}
-                                                        {/* Display edge case warning */}
-                                                        {logEntry.details?.isEdgeCase && (
-                                                            <div className="mt-1">
-                                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 border border-red-300">
-                                                                    <AlertTriangle size={12} className="mr-1" />
-                                                                    {logEntry.details.edgeCaseType === 'shipped_order_cancelled' 
-                                                                        ? 'EDGE CASE: Shipped Order Cancelled'
-                                                                        : 'EDGE CASE'}
-                                                                </span>
-                                                            </div>
-                                                        )}
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        {/* For orders: Show SKUs with quantities from lineItems */}
-                                                        {logEntry.webhook_type === 'order' && logEntry.details?.lineItems && Array.isArray(logEntry.details.lineItems) && logEntry.details.lineItems.length > 0 ? (
-                                                            <div className="font-mono text-xs text-gray-700">
-                                                                {logEntry.details.lineItems.map((item: any, itemIdx: number) => (
-                                                                    <span key={itemIdx}>
-                                                                        {item.sku}
-                                                                        {item.quantity && item.quantity > 0 && (
-                                                                            <span className="text-gray-500 ml-1">(x{item.quantity})</span>
-                                                                        )}
-                                                                        {itemIdx < logEntry.details.lineItems.length - 1 && (
-                                                                            <>
-                                                                                ,<br />
-                                                                            </>
-                                                                        )}
-                                                                    </span>
-                                                                ))}
-                                                            </div>
-                                                        ) : logEntry.webhook_type === 'order' && logEntry.affected_skus && Array.isArray(logEntry.affected_skus) && logEntry.affected_skus.length > 0 ? (
-                                                            /* Fallback: Show affected_skus if lineItems not available */
-                                                            <div className="font-mono text-xs text-gray-700">
-                                                                {logEntry.affected_skus.map((sku: string, skuIdx: number) => (
-                                                                    <span key={skuIdx}>
-                                                                        {sku}
-                                                                        {skuIdx < logEntry.affected_skus!.length - 1 && (
-                                                                            <>
-                                                                                ,<br />
-                                                                            </>
-                                                                        )}
-                                                                    </span>
-                                                                ))}
-                                                            </div>
-                                                        ) : logEntry.webhook_type === 'product' && logEntry.entity_sku ? (
-                                                            /* For products: Show entitySku (the SKU that was manually edited) */
-                                                            <span className="text-gray-700 font-mono text-xs">{logEntry.entity_sku}</span>
-                                                        ) : logEntry.affected_skus && Array.isArray(logEntry.affected_skus) && logEntry.affected_skus.length > 0 ? (
-                                                            /* Fallback for orders: Show affected_skus if available */
-                                                            <div className="font-mono text-xs text-gray-700">
-                                                                {logEntry.affected_skus.map((sku: string, skuIdx: number) => (
-                                                                    <span key={skuIdx}>
-                                                                        {sku}
-                                                                        {skuIdx < logEntry.affected_skus!.length - 1 && (
-                                                                            <>
-                                                                                ,<br />
-                                                                            </>
-                                                                        )}
-                                                                    </span>
-                                                                ))}
-                                                            </div>
-                                                        ) : logEntry.entity_sku ? (
-                                                            /* Fallback for products: Show entity_sku */
-                                                            <span className="text-gray-700 font-mono text-xs">{logEntry.entity_sku}</span>
+                            <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-100 sticky top-0 z-10">
+                                <tr>
+                                    {activeTab === 'manual' ? (
+                                        <>
+                                            <th className="px-6 py-4">Time</th>
+                                            <th className="px-6 py-4">User</th>
+                                            <th className="px-6 py-4">Action</th>
+                                            <th className="px-6 py-4">SKU</th>
+                                            <th className="px-6 py-4">Details</th>
+                                            <th className="px-6 py-4">Status</th>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <th className="px-6 py-4">Time</th>
+                                            <th className="px-6 py-4">Type</th>
+                                            <th className="px-6 py-4">Entity</th>
+                                            <th className="px-6 py-4">SKU</th>
+                                            <th className="px-6 py-4 min-w-[200px]">Component Deductions</th>
+                                            <th className="px-6 py-4">Combo Updates</th>
+                                            <th className="px-6 py-4">Status</th>
+                                        </>
+                                    )}
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-50">
+                                {currentLogs.length > 0 ? (
+                                    activeTab === 'manual' ? (
+                                        logs.map((log) => (
+                                            <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
+                                                <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                                    {formatDateTimeWithSecondsGMT8(log.created_at)}
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <div className="flex items-center gap-3">
+                                                        {log.user_picture ? (
+                                                            <img
+                                                                src={log.user_picture}
+                                                                alt={log.user_name}
+                                                                className="w-8 h-8 rounded-full border border-gray-100"
+                                                            />
                                                         ) : (
-                                                            <span className="text-gray-400 text-xs">—</span>
+                                                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-400">
+                                                                <User size={16} />
+                                                            </div>
                                                         )}
-                                                    </td>
-                                                    <td className="px-6 py-4 min-w-[200px]">
-                                                        {/* Show component restorations for cancelled orders */}
-                                                        {logEntry.details?.componentRestorations && Array.isArray(logEntry.details.componentRestorations) && logEntry.details.componentRestorations.length > 0 ? (
-                                                            <div className="min-w-[200px]">
-                                                                {logEntry.details.componentRestorations.map((restoration: any, restorationIdx: number) => (
-                                                                    <div key={restorationIdx} className="text-xs text-gray-600 mb-2">
-                                                                        <div className="font-mono">{restoration.sku}</div>
-                                                                        <div className="whitespace-nowrap">
-                                                                            <span className="text-gray-500">:{restoration.previousStock}</span>
-                                                                            <span className="text-gray-500">→</span>
-                                                                            <span className="text-green-600 font-medium">{restoration.newStock}</span>
-                                                                        </div>
+                                                        <div>
+                                                            <p className="font-medium text-gray-900">{log.user_name || 'System'}</p>
+                                                            <p className="text-xs text-gray-500">{log.user_email || ''}</p>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${getActionColor(log)}`}>
+                                                        {getActionLabel(log)}
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    {log.affected_sku ? (
+                                                        <span className="font-mono text-sm font-medium text-gray-900 bg-gray-50 px-2 py-1 rounded">
+                                                            {log.affected_sku}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="text-gray-400 text-xs">—</span>
+                                                    )}
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <div className="max-w-xs text-gray-600">
+                                                        {(log.action === 'procurement_update' || log.action === 'refund_return') && log.details ? (
+                                                            <div className="space-y-1">
+                                                                <span className="whitespace-normal break-words">
+                                                                    {log.details.operation === 'add' ? 'Added' : log.details.operation === 'subtract' ? 'Deducted' : 'Set to'} <strong>{log.details.quantity}</strong> units
+                                                                    {(log.details.previousQuantity !== undefined && log.details.newQuantity !== undefined) && (
+                                                                        <span className="ml-2 text-gray-600">
+                                                                            (from <strong>{log.details.previousQuantity}</strong> to <strong>{log.details.newQuantity}</strong>)
+                                                                        </span>
+                                                                    )}
+                                                                    {log.details.returnCondition && (
+                                                                        <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${log.details.returnCondition === 'good' ? 'bg-green-100 text-green-800' :
+                                                                                log.details.returnCondition === 'damaged' ? 'bg-orange-100 text-orange-800' :
+                                                                                    'bg-red-100 text-red-800'
+                                                                            }`}>
+                                                                            Return: {log.details.returnCondition.charAt(0).toUpperCase() + log.details.returnCondition.slice(1)}
+                                                                        </span>
+                                                                    )}
+                                                                    {log.details.orderId && (
+                                                                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800" title="Order ID">
+                                                                            Order #{log.details.orderId}
+                                                                        </span>
+                                                                    )}
+                                                                </span>
+                                                                {log.details.notes && (
+                                                                    <div className="text-xs text-gray-400 whitespace-normal break-words">{log.details.notes}</div>
+                                                                )}
+                                                            </div>
+                                                        ) : log.action.includes('webhook_log_failed') && log.details ? (
+                                                            <div className="space-y-1">
+                                                                <div className="text-xs font-medium text-red-700 whitespace-normal break-words">
+                                                                    {log.details.note || 'Webhook log failed - manual reconciliation required'}
+                                                                </div>
+                                                                {log.details.orderId && (
+                                                                    <div className="text-xs">
+                                                                        <span className="font-medium">Order:</span> #{log.details.orderId}
                                                                     </div>
-                                                                ))}
-                                                                {/* Display edge case warning note after restorations */}
-                                                                {logEntry.details?.isEdgeCase && logEntry.details?.note && (
-                                                                    <div className="mt-3 pt-3 border-t border-red-200">
-                                                                        <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg p-3">
-                                                                            <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
-                                                                            <div className="flex-1">
-                                                                                <p className="text-xs font-semibold text-red-800 mb-1">⚠️ Edge Case Detected</p>
-                                                                                <p className="text-xs text-red-700">{logEntry.details.note}</p>
+                                                                )}
+                                                                {log.details.componentDeductions && Array.isArray(log.details.componentDeductions) && log.details.componentDeductions.length > 0 && (
+                                                                    <div className="text-xs">
+                                                                        <span className="font-medium">Affected:</span> {log.details.componentDeductions.map((d: any) => d.sku).join(', ')}
+                                                                    </div>
+                                                                )}
+                                                                {log.details.componentRestorations && Array.isArray(log.details.componentRestorations) && log.details.componentRestorations.length > 0 && (
+                                                                    <div className="text-xs">
+                                                                        <span className="font-medium">Affected:</span> {log.details.componentRestorations.map((r: any) => r.sku).join(', ')}
+                                                                    </div>
+                                                                )}
+                                                                {log.details.sku && (
+                                                                    <div className="text-xs">
+                                                                        <span className="font-medium">SKU:</span> {log.details.sku}
+                                                                    </div>
+                                                                )}
+                                                                {log.error_message && (
+                                                                    <div className="text-xs text-red-600 mt-1 whitespace-normal break-words">
+                                                                        <span className="font-medium">Error:</span> {log.error_message}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        ) : (
+                                                            <span className="whitespace-normal break-words">{JSON.stringify(log.details)}</span>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    {log.success ? (
+                                                        <div className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
+                                                            <CheckCircle2 size={16} />
+                                                            Success
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex items-center gap-1.5 text-red-600 text-xs font-medium" title={log.error_message}>
+                                                            <AlertCircle size={16} />
+                                                            Failed
+                                                        </div>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ))
+                                    ) : (
+                                        (() => {
+                                            // Flatten all logs - if a log has _history, expand it to individual entries
+                                            const allLogs: WcWebhookLogEntry[] = [];
+
+                                            for (const log of wcLogs) {
+                                                if (log._isGrouped && log._history && Array.isArray(log._history)) {
+                                                    // If grouped, add all history entries individually
+                                                    allLogs.push(...log._history);
+                                                } else {
+                                                    // Otherwise, add the log as-is
+                                                    allLogs.push(log);
+                                                }
+                                            }
+
+                                            // Filter to only show first pending and first processing event per order ID
+                                            // Rule: If there's a pending event, ignore any processing that comes BEFORE the pending
+                                            // This prevents showing glitchy WC webhooks where processing fires before pending
+                                            const seenEvents = new Map<string, boolean>(); // key: "orderId:eventType"
+                                            const filteredLogs: WcWebhookLogEntry[] = [];
+
+                                            // First pass: Find earliest pending event per order
+                                            const orderPendingTimes = new Map<number, number>(); // orderId -> earliest pending timestamp
+
+                                            // Sort by time ascending first to get chronological order
+                                            allLogs.sort((a, b) => {
+                                                const aTime = new Date(a.created_at).getTime();
+                                                const bTime = new Date(b.created_at).getTime();
+                                                return aTime - bTime;
+                                            });
+
+                                            // First pass: identify earliest pending events per order
+                                            for (const log of allLogs) {
+                                                if (log.webhook_type === 'order' && log.entity_id) {
+                                                    const orderId = log.entity_id;
+                                                    const eventType = log.webhook_event || log.status || '';
+                                                    const isPending = eventType.includes('pending-consult') || eventType === 'pending-consult' ||
+                                                        eventType.includes('pending-review') || eventType === 'pending-review' ||
+                                                        log.status === 'pending-consult' || log.status === 'pending-review' ||
+                                                        log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review';
+
+                                                    if (isPending && !orderPendingTimes.has(orderId)) {
+                                                        orderPendingTimes.set(orderId, new Date(log.created_at).getTime());
+                                                    }
+                                                }
+                                            }
+
+                                            // Second pass: filter events
+                                            for (const log of allLogs) {
+                                                if (log.webhook_type === 'order' && log.entity_id) {
+                                                    const orderId = log.entity_id;
+                                                    const eventType = log.webhook_event || log.status || '';
+                                                    const logTime = new Date(log.created_at).getTime();
+
+                                                    // Determine the event type key
+                                                    // Treat all pending events (consult/review) as "pending"
+                                                    let eventKey: string | null = null;
+                                                    const isPending = eventType.includes('pending-consult') || eventType === 'pending-consult' ||
+                                                        eventType.includes('pending-review') || eventType === 'pending-review' ||
+                                                        log.status === 'pending-consult' || log.status === 'pending-review' ||
+                                                        log.webhook_event === 'order.pending-consult' || log.webhook_event === 'order.pending-review';
+
+                                                    const isProcessing = eventType.includes('processing') || eventType === 'processing' ||
+                                                        log.status === 'processing' || log.webhook_event === 'order.processing';
+
+                                                    if (isPending) {
+                                                        eventKey = `${orderId}:pending`;
+                                                    } else if (isProcessing) {
+                                                        eventKey = `${orderId}:processing`;
+
+                                                        // Rule: If there's a pending event for this order, ignore processing that comes BEFORE pending
+                                                        //       If there's NO pending event, include processing (order goes straight to processing)
+                                                        const earliestPendingTime = orderPendingTimes.get(orderId);
+                                                        if (earliestPendingTime !== undefined && logTime < earliestPendingTime) {
+                                                            // Skip this processing event - it comes before pending (glitch from WC)
+                                                            continue;
+                                                        }
+                                                        // If earliestPendingTime is undefined (no pending event), this processing event is valid
+                                                    }
+
+                                                    // Only include if this is the first occurrence of this event type for this order
+                                                    if (eventKey && !seenEvents.has(eventKey)) {
+                                                        seenEvents.set(eventKey, true);
+                                                        filteredLogs.push(log);
+                                                    } else if (!eventKey) {
+                                                        // For other event types (cancelled, etc.), always include
+                                                        filteredLogs.push(log);
+                                                    }
+                                                } else {
+                                                    // For non-order events (products, etc.), always include
+                                                    filteredLogs.push(log);
+                                                }
+                                            }
+
+                                            // Sort by time descending (latest first) for display
+                                            filteredLogs.sort((a, b) => {
+                                                const aTime = new Date(a.created_at).getTime();
+                                                const bTime = new Date(b.created_at).getTime();
+                                                return bTime - aTime;
+                                            });
+
+                                            return filteredLogs.map((logEntry) => {
+                                                // For logs that came from grouped history, ensure they have access to the full history
+                                                // for pending stock calculations
+                                                const history = logEntry._history || [logEntry];
+                                                const logEntryWithHistory = logEntry._history ? logEntry : { ...logEntry, _history: history };
+
+                                                return (
+                                                    <tr
+                                                        key={logEntry.id}
+                                                        className="hover:bg-gray-50/50 transition-colors"
+                                                    >
+                                                        <td className="px-6 py-4 whitespace-nowrap text-gray-500">
+                                                            {formatDateTimeWithSecondsGMT8(logEntry.created_at)}
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getWebhookTypeColor(logEntry.webhook_type, logEntry.status)}`}>
+                                                                {logEntry.webhook_type === 'order' ? <ShoppingCart size={12} className="mr-1" /> : <Package size={12} className="mr-1" />}
+                                                                {logEntry.webhook_type}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            <div className="text-gray-900 font-medium">
+                                                                {logEntry.entity_name || `#${logEntry.entity_id}`}
+                                                            </div>
+                                                            {logEntry.status && (
+                                                                <div className="text-xs text-gray-500">{logEntry.status}</div>
+                                                            )}
+                                                            {/* Display edge case warning */}
+                                                            {logEntry.details?.isEdgeCase && (
+                                                                <div className="mt-1">
+                                                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 border border-red-300">
+                                                                        <AlertTriangle size={12} className="mr-1" />
+                                                                        {logEntry.details.edgeCaseType === 'shipped_order_cancelled'
+                                                                            ? 'EDGE CASE: Shipped Order Cancelled'
+                                                                            : 'EDGE CASE'}
+                                                                    </span>
+                                                                </div>
+                                                            )}
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            {/* For orders: Show SKUs with quantities from lineItems */}
+                                                            {logEntry.webhook_type === 'order' && logEntry.details?.lineItems && Array.isArray(logEntry.details.lineItems) && logEntry.details.lineItems.length > 0 ? (
+                                                                <div className="font-mono text-xs text-gray-700">
+                                                                    {logEntry.details.lineItems.map((item: any, itemIdx: number) => (
+                                                                        <span key={itemIdx}>
+                                                                            {item.sku}
+                                                                            {item.quantity && item.quantity > 0 && (
+                                                                                <span className="text-gray-500 ml-1">(x{item.quantity})</span>
+                                                                            )}
+                                                                            {itemIdx < logEntry.details.lineItems.length - 1 && (
+                                                                                <>
+                                                                                    ,<br />
+                                                                                </>
+                                                                            )}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            ) : logEntry.webhook_type === 'order' && logEntry.affected_skus && Array.isArray(logEntry.affected_skus) && logEntry.affected_skus.length > 0 ? (
+                                                                /* Fallback: Show affected_skus if lineItems not available */
+                                                                <div className="font-mono text-xs text-gray-700">
+                                                                    {logEntry.affected_skus.map((sku: string, skuIdx: number) => (
+                                                                        <span key={skuIdx}>
+                                                                            {sku}
+                                                                            {skuIdx < logEntry.affected_skus!.length - 1 && (
+                                                                                <>
+                                                                                    ,<br />
+                                                                                </>
+                                                                            )}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            ) : logEntry.webhook_type === 'product' && logEntry.entity_sku ? (
+                                                                /* For products: Show entitySku (the SKU that was manually edited) */
+                                                                <span className="text-gray-700 font-mono text-xs">{logEntry.entity_sku}</span>
+                                                            ) : logEntry.affected_skus && Array.isArray(logEntry.affected_skus) && logEntry.affected_skus.length > 0 ? (
+                                                                /* Fallback for orders: Show affected_skus if available */
+                                                                <div className="font-mono text-xs text-gray-700">
+                                                                    {logEntry.affected_skus.map((sku: string, skuIdx: number) => (
+                                                                        <span key={skuIdx}>
+                                                                            {sku}
+                                                                            {skuIdx < logEntry.affected_skus!.length - 1 && (
+                                                                                <>
+                                                                                    ,<br />
+                                                                                </>
+                                                                            )}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            ) : logEntry.entity_sku ? (
+                                                                /* Fallback for products: Show entity_sku */
+                                                                <span className="text-gray-700 font-mono text-xs">{logEntry.entity_sku}</span>
+                                                            ) : (
+                                                                <span className="text-gray-400 text-xs">—</span>
+                                                            )}
+                                                        </td>
+                                                        <td className="px-6 py-4 min-w-[200px]">
+                                                            {/* Show component restorations for cancelled orders */}
+                                                            {logEntry.details?.componentRestorations && Array.isArray(logEntry.details.componentRestorations) && logEntry.details.componentRestorations.length > 0 ? (
+                                                                <div className="min-w-[200px]">
+                                                                    {logEntry.details.componentRestorations.map((restoration: any, restorationIdx: number) => (
+                                                                        <div key={restorationIdx} className="text-xs text-gray-600 mb-2">
+                                                                            <div className="font-mono">{restoration.sku}</div>
+                                                                            <div className="whitespace-nowrap">
+                                                                                <span className="text-gray-500">:{restoration.previousStock}</span>
+                                                                                <span className="text-gray-500">→</span>
+                                                                                <span className="text-green-600 font-medium">{restoration.newStock}</span>
                                                                             </div>
                                                                         </div>
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        ) : (
-                                                            <ComponentDeductionsCell 
-                                                                logEntry={logEntry} 
-                                                                activeTab={activeTab}
-                                                                cachedDeductions={componentDeductionsCache[logEntry.entity_id]}
-                                                                isLoadingCache={isLoadingDeductionsCache}
-                                                            />
-                                                        )}
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        {logEntry.combo_updates && Array.isArray(logEntry.combo_updates) && logEntry.combo_updates.length > 0 ? (
-                                                            <div className="max-w-xs">
-                                                                {logEntry.combo_updates.map((update: any, updateIdx: number) => (
-                                                                    <div key={updateIdx} className="text-xs text-gray-600 mb-1">
-                                                                        <span className="font-mono">{update.sku}</span>: 
-                                                                        {update.error ? (
-                                                                            <span className="text-red-600 ml-1">Error</span>
-                                                                        ) : (
-                                                                            <span className="text-green-600 ml-1">→ {update.newStock}</span>
-                                                                        )}
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        ) : (
-                                                            <span className="text-gray-400 text-xs">—</span>
-                                                        )}
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        {logEntry.success ? (
-                                                            <div className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
-                                                                <CheckCircle2 size={16} />
-                                                                Success
-                                                            </div>
-                                                        ) : (
-                                                            <div className="flex items-center gap-1.5 text-red-600 text-xs font-medium" title={logEntry.error_message}>
-                                                                <AlertCircle size={16} />
-                                                                Failed
-                                                            </div>
-                                                        )}
-                                                    </td>
-                                                </tr>
-                                            );
-                                        });
-                                    })()
-                                )
-                            ) : (
-                                <tr>
-                                    <td colSpan={activeTab === 'manual' ? 6 : 7} className="px-6 py-12 text-center text-gray-500">
-                                        No {activeTab === 'manual' ? 'activity' : 'webhook'} logs found matching your filters.
-                                    </td>
-                                </tr>
-                            )}
-                        </tbody>
+                                                                    ))}
+                                                                    {/* Display edge case warning note after restorations */}
+                                                                    {logEntry.details?.isEdgeCase && logEntry.details?.note && (
+                                                                        <div className="mt-3 pt-3 border-t border-red-200">
+                                                                            <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg p-3">
+                                                                                <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
+                                                                                <div className="flex-1">
+                                                                                    <p className="text-xs font-semibold text-red-800 mb-1">⚠️ Edge Case Detected</p>
+                                                                                    <p className="text-xs text-red-700">{logEntry.details.note}</p>
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            ) : (
+                                                                <ComponentDeductionsCell
+                                                                    logEntry={logEntry}
+                                                                    activeTab={activeTab}
+                                                                    cachedDeductions={componentDeductionsCache[logEntry.entity_id]}
+                                                                    isLoadingCache={isLoadingDeductionsCache}
+                                                                />
+                                                            )}
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            {logEntry.combo_updates && Array.isArray(logEntry.combo_updates) && logEntry.combo_updates.length > 0 ? (
+                                                                <div className="max-w-xs">
+                                                                    {logEntry.combo_updates.map((update: any, updateIdx: number) => (
+                                                                        <div key={updateIdx} className="text-xs text-gray-600 mb-1">
+                                                                            <span className="font-mono">{update.sku}</span>:
+                                                                            {update.error ? (
+                                                                                <span className="text-red-600 ml-1">Error</span>
+                                                                            ) : (
+                                                                                <span className="text-green-600 ml-1">→ {update.newStock}</span>
+                                                                            )}
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            ) : (
+                                                                <span className="text-gray-400 text-xs">—</span>
+                                                            )}
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            {logEntry.success ? (
+                                                                <div className="flex items-center gap-1.5 text-green-600 text-xs font-medium">
+                                                                    <CheckCircle2 size={16} />
+                                                                    Success
+                                                                </div>
+                                                            ) : (
+                                                                <div className="flex items-center gap-1.5 text-red-600 text-xs font-medium" title={logEntry.error_message}>
+                                                                    <AlertCircle size={16} />
+                                                                    Failed
+                                                                </div>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            });
+                                        })()
+                                    )
+                                ) : (
+                                    <tr>
+                                        <td colSpan={activeTab === 'manual' ? 6 : 7} className="px-6 py-12 text-center text-gray-500">
+                                            No {activeTab === 'manual' ? 'activity' : 'webhook'} logs found matching your filters.
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
                         </table>
                     </div>
-                    
+
                     {/* Pagination controls for Orders tab */}
                     {activeTab === 'orders' && wcTotalCount > (limit || 20) && (
                         <div className="mt-4 flex items-center justify-between border-t border-gray-200 pt-4">
@@ -1435,32 +1430,31 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 <button
                                     onClick={() => setWcCurrentPage(prev => Math.max(1, prev - 1))}
                                     disabled={wcCurrentPage === 1}
-                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
-                                        wcCurrentPage === 1
+                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${wcCurrentPage === 1
                                             ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                                             : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                                    }`}
+                                        }`}
                                 >
                                     <div className="flex items-center gap-1">
                                         <ChevronLeft size={16} />
                                         Previous
                                     </div>
                                 </button>
-                                
+
                                 <div className="flex items-center gap-1">
                                     {Array.from({ length: Math.ceil(wcTotalCount / (limit || 20)) }, (_, i) => i + 1)
                                         .filter(page => {
                                             const totalPages = Math.ceil(wcTotalCount / (limit || 20));
                                             // Show first page, last page, current page, and pages around current
-                                            return page === 1 || 
-                                                   page === totalPages || 
-                                                   (page >= wcCurrentPage - 1 && page <= wcCurrentPage + 1);
+                                            return page === 1 ||
+                                                page === totalPages ||
+                                                (page >= wcCurrentPage - 1 && page <= wcCurrentPage + 1);
                                         })
                                         .map((page, idx, arr) => {
                                             const totalPages = Math.ceil(wcTotalCount / (limit || 20));
                                             const showEllipsisBefore = idx > 0 && arr[idx - 1] < page - 1;
                                             const showEllipsisAfter = idx < arr.length - 1 && arr[idx + 1] > page + 1;
-                                            
+
                                             return (
                                                 <div key={page} className="flex items-center gap-1">
                                                     {showEllipsisBefore && (
@@ -1468,11 +1462,10 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                     )}
                                                     <button
                                                         onClick={() => setWcCurrentPage(page)}
-                                                        className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
-                                                            wcCurrentPage === page
+                                                        className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${wcCurrentPage === page
                                                                 ? 'border-blue-500 bg-blue-50 text-blue-600'
                                                                 : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                                                        }`}
+                                                            }`}
                                                     >
                                                         {page}
                                                     </button>
@@ -1483,15 +1476,14 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                             );
                                         })}
                                 </div>
-                                
+
                                 <button
                                     onClick={() => setWcCurrentPage(prev => Math.min(Math.ceil(wcTotalCount / (limit || 20)), prev + 1))}
                                     disabled={wcCurrentPage >= Math.ceil(wcTotalCount / (limit || 20))}
-                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
-                                        wcCurrentPage >= Math.ceil(wcTotalCount / (limit || 20))
+                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${wcCurrentPage >= Math.ceil(wcTotalCount / (limit || 20))
                                             ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                                             : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                                    }`}
+                                        }`}
                                 >
                                     <div className="flex items-center gap-1">
                                         Next
