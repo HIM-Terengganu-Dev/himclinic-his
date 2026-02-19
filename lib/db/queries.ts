@@ -332,7 +332,7 @@ export async function createProcurementUpdate(data: {
     if (!['add', 'subtract', 'set'].includes(data.operation)) {
         throw new Error(`Invalid operation: ${data.operation}. Must be 'add', 'subtract', or 'set'`);
     }
-    
+
     // Start transaction
     const { pool } = await import('./connection');
     if (!pool) {
@@ -346,7 +346,7 @@ export async function createProcurementUpdate(data: {
         // Ensure notes is null (not undefined) for database compatibility
         const notesValue = data.notes && data.notes.trim() ? data.notes.trim() : null;
         console.log(`📝 Inserting procurement update: operation=${data.operation}, quantity=${data.quantity}, notes=${notesValue}`);
-        
+
         const result = await client.query(
             `INSERT INTO "his_db".procurement_updates
        (single_sku_id, operation, quantity, previous_quantity, new_quantity, notes, return_condition, order_id, created_by)
@@ -358,7 +358,7 @@ export async function createProcurementUpdate(data: {
         // Also log to activity_logs
         const entry = result.rows[0];
         console.log(`✅ Procurement update record created: ID=${entry.id}, Operation=${entry.operation}`);
-        
+
         // Explicitly construct details object to ensure operation field is included
         // Use data.operation as source of truth to ensure it's always present
         const details = {
@@ -373,10 +373,10 @@ export async function createProcurementUpdate(data: {
             createdBy: entry.created_by,
             createdAt: entry.created_at
         };
-        
+
         // Determine action type based on return condition
         const action = data.returnCondition ? 'refund_return' : 'procurement_update';
-        
+
         try {
             await client.query(
                 `INSERT INTO "his_db".activity_logs
@@ -586,7 +586,7 @@ export async function logWcWebhook(data: {
             currentStatus = data.status || undefined;
         }
     }
-    
+
     await query(
         `INSERT INTO "his_db".wc_webhook_logs
          (webhook_type, webhook_event, entity_id, entity_sku, entity_name, status, current_status, stock_quantity, previous_stock_quantity, 
@@ -626,11 +626,11 @@ export async function getOrderCurrentStatus(orderId: number): Promise<string | n
         ORDER BY created_at DESC, id DESC
         LIMIT 1
     `, [orderId]);
-    
+
     if (result.rows.length === 0) {
         return null;
     }
-    
+
     return result.rows[0].current_status;
 }
 
@@ -644,19 +644,19 @@ export async function getWcWebhookLogByOrderId(orderId: number, webhookEvent?: s
         AND entity_id = $1
     `;
     const params: any[] = [orderId];
-    
+
     if (webhookEvent) {
         sql += ` AND webhook_event = $2`;
         params.push(webhookEvent);
     }
-    
+
     sql += ` ORDER BY created_at DESC LIMIT 1`;
-    
+
     const result = await query(sql, params);
     if (result.rows.length === 0) {
         return null;
     }
-    
+
     const row = result.rows[0];
     if (row.created_at_gmt8) {
         row.created_at = row.created_at_gmt8;
@@ -690,12 +690,13 @@ export async function getWcWebhookLogs(filters: {
     webhookType?: 'order' | 'product';
     webhookEvent?: string;
     entitySku?: string;
+    orderId?: number;
     limit?: number;
     offset?: number;
     dateFrom?: string;
     dateTo?: string;
     orderStatus?: string;
-    excludeTestActivities?: boolean; // If true, exclude orders containing dummy SKUs and dummy SKU activities
+    excludeTestActivities?: boolean;
 }) {
     // Build WHERE clause for both count and data queries
     let whereClause = `WHERE 1=1`;
@@ -726,7 +727,7 @@ export async function getWcWebhookLogs(filters: {
         const componentRestorationsParam = pIdx++;
         const pendingStockUpdatesParam = pIdx++;
         const stockTxParam = pIdx++;
-        
+
         whereClause += ` AND (
             entity_sku = $${skuParam} OR
             (affected_skus IS NOT NULL AND affected_skus::jsonb @> $${affectedSkusParam}::jsonb) OR
@@ -784,6 +785,11 @@ export async function getWcWebhookLogs(filters: {
         params.push(filters.orderStatus);
     }
 
+    if (filters.orderId) {
+        whereClause += ` AND entity_id = $${pIdx++}`;
+        params.push(filters.orderId);
+    }
+
     // Filter out test activities for non-dev users
     if (filters.excludeTestActivities) {
         // Exclude orders that contain dummy SKUs
@@ -818,7 +824,7 @@ export async function getWcWebhookLogs(filters: {
             // If no webhook type filter, only get orders
             orderWhereClause += ` AND webhook_type = 'order'`;
         }
-        
+
         // Get all order logs matching filters
         let allOrdersSql = `
             SELECT 
@@ -828,9 +834,9 @@ export async function getWcWebhookLogs(filters: {
             ${orderWhereClause}
             ORDER BY entity_id, created_at DESC
         `;
-        
+
         const allOrdersResult = await query(allOrdersSql, params);
-        
+
         // Parse JSONB fields and group by order ID
         const parsedRows = allOrdersResult.rows.map(row => {
             if (row.created_at_gmt8) {
@@ -860,7 +866,7 @@ export async function getWcWebhookLogs(filters: {
             }
             return row;
         });
-        
+
         // Group by order ID
         const orderGroups = new Map<number, typeof parsedRows>();
         for (const row of parsedRows) {
@@ -870,7 +876,7 @@ export async function getWcWebhookLogs(filters: {
             }
             orderGroups.get(orderId)!.push(row);
         }
-        
+
         // Get latest status for each order (for display)
         const latestOrders: any[] = [];
         for (const [orderId, history] of orderGroups.entries()) {
@@ -883,23 +889,23 @@ export async function getWcWebhookLogs(filters: {
                 _history: history // Full history for dropdown
             });
         }
-        
+
         // Sort by latest order's created_at DESC
         latestOrders.sort((a, b) => {
             const aTime = new Date(a.created_at).getTime();
             const bTime = new Date(b.created_at).getTime();
             return bTime - aTime;
         });
-        
+
         // Apply pagination to grouped results
         const total = latestOrders.length;
-        const paginatedOrders = filters.limit 
+        const paginatedOrders = filters.limit
             ? latestOrders.slice(filters.offset || 0, (filters.offset || 0) + filters.limit)
             : latestOrders;
-        
+
         return { rows: paginatedOrders, total };
     }
-    
+
     // For product webhooks or when webhookType is 'product', return as-is
     // If excluding test activities, also filter out dummy SKU product webhooks
     if (filters.excludeTestActivities && filters.webhookType === 'product') {
@@ -913,7 +919,7 @@ export async function getWcWebhookLogs(filters: {
             )
         )`;
     }
-    
+
     // Get total count
     const countSql = `SELECT COUNT(*) as total FROM "his_db".wc_webhook_logs ${whereClause}`;
     const countResult = await query(countSql, params);
@@ -995,9 +1001,9 @@ export async function findDuplicateProcessingOrders() {
         HAVING COUNT(*) > 1
         ORDER BY processing_count DESC, entity_id DESC
     `;
-    
+
     const result = await query(sql, []);
-    
+
     // For each duplicate order, get detailed component deduction info
     const detailedResults = await Promise.all(
         result.rows.map(async (row: any) => {
@@ -1014,7 +1020,7 @@ export async function findDuplicateProcessingOrders() {
                 ORDER BY created_at
             `;
             const detailResult = await query(detailSql, [row.order_id]);
-            
+
             return {
                 order_id: row.order_id,
                 processing_count: row.processing_count,
@@ -1031,7 +1037,7 @@ export async function findDuplicateProcessingOrders() {
                             componentDeductions = [];
                         }
                     }
-                    
+
                     let comboSkusOrdered = r.combo_skus_ordered;
                     if (typeof comboSkusOrdered === 'string') {
                         try {
@@ -1040,7 +1046,7 @@ export async function findDuplicateProcessingOrders() {
                             comboSkusOrdered = [];
                         }
                     }
-                    
+
                     return {
                         log_id: r.id,
                         created_at: r.created_at,
@@ -1053,7 +1059,7 @@ export async function findDuplicateProcessingOrders() {
             };
         })
     );
-    
+
     return detailedResults;
 }
 
@@ -1324,7 +1330,7 @@ export async function updateStockTakeItems(stockTakeId: number, physicalCounts: 
         throw new Error('Database not configured');
     }
     const client = await pool.connect();
-    
+
     try {
         await client.query('BEGIN');
 
@@ -1396,7 +1402,7 @@ export async function markStockTakeItemAdjusted(stockTakeId: number, singleSkuId
  */
 export async function getPendingStockAtTime(sku: string, timestamp: Date): Promise<number> {
     const timeStr = timestamp.toISOString();
-    
+
     // Get the latest transaction before the timestamp
     const result = await query(
         `SELECT pending_after
@@ -1407,11 +1413,11 @@ export async function getPendingStockAtTime(sku: string, timestamp: Date): Promi
          LIMIT 1`,
         [sku, timeStr]
     );
-    
+
     if (result.rows.length === 0) {
         return 0;
     }
-    
+
     return parseInt(result.rows[0].pending_after || '0', 10);
 }
 
@@ -1454,26 +1460,26 @@ export async function getCurrentStockState(sku: string): Promise<{
         ORDER BY created_at DESC, id DESC
         LIMIT 1
     `, [sku]);
-    
+
     if (result.rows.length === 0) {
         // No transactions yet - this should only happen before initial reconciliation
         // After reconciliation, there should always be at least one transaction
         throw new Error(`No stock transactions found for SKU: ${sku}. Please run reconciliation.`);
     }
-    
+
     const row = result.rows[0];
     const inWarehouse = row.in_warehouse || 0;
     const processing = row.processing || 0;
     const pendingConsult = row.pending_consult || 0;
     const pendingReview = row.pending_review || 0;
-    
+
     // Calculate available for purchase: inWarehouse - pendingConsult - pendingReview - processing
     const availableForPurchase = Math.max(0, inWarehouse - pendingConsult - pendingReview - processing);
-    
+
     // Calculate backorder: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
     // This represents orders that exceed available stock
     const backorder = Math.max(0, (pendingConsult + pendingReview + processing) - inWarehouse);
-    
+
     return {
         inWarehouse,
         availableForPurchase,
@@ -1530,13 +1536,13 @@ export async function createStockTransaction(data: {
     const pendingReviewAfter = data.pendingReviewAfter ?? 0;
     const backorderBefore = data.backorderBefore ?? 0;
     const backorderAfter = data.backorderAfter ?? 0;
-    
+
     // Legacy fields (for backward compatibility during transition)
     const stockBefore = data.stockBefore ?? inWarehouseBefore;
     const stockAfter = data.stockAfter ?? inWarehouseAfter;
     const pendingBefore = data.pendingBefore ?? (pendingConsultBefore + pendingReviewBefore);
     const pendingAfter = data.pendingAfter ?? (pendingConsultAfter + pendingReviewAfter);
-    
+
     // Validate: in_warehouse_after should equal in_warehouse_before + quantity_change (if quantity_change affects in_warehouse)
     // Note: quantity_change may not always affect in_warehouse (e.g., moving from pending to processing)
     // So we only validate if quantityChange is non-zero and affects in_warehouse
@@ -1544,9 +1550,9 @@ export async function createStockTransaction(data: {
         // This might be intentional (e.g., status transitions), so we'll log a warning but not throw
         console.warn(`In-warehouse calculation note: ${inWarehouseBefore} + ${data.quantityChange} ≠ ${inWarehouseAfter} (this may be intentional for status transitions)`);
     }
-    
+
     const detailsJson = data.details ? JSON.stringify(data.details) : null;
-    
+
     const result = await query(`
         INSERT INTO "his_db".stock_transactions (
             sku, single_sku_id, transaction_type,
@@ -1587,9 +1593,9 @@ export async function createStockTransaction(data: {
         data.createdBy || null,
         detailsJson
     ]);
-    
+
     // Note: We read directly from transactions, so no materialized view refresh needed
-    
+
     return result.rows[0];
 }
 
@@ -1609,7 +1615,7 @@ export async function getPendingStockByOrderFromTransactions(orderId: number): P
         AND pending_after > pending_before
         ORDER BY sku
     `, [orderId]);
-    
+
     return result.rows.map((r: any) => ({
         sku: r.sku,
         quantity: parseInt(r.quantity || '0', 10)
@@ -1635,13 +1641,13 @@ export async function removePendingStockByOrder(orderId: number): Promise<void> 
         AND transaction_type IN ('order_pending_consult', 'order_pending_review')
         AND pending_after > pending_before
     `, [orderId]);
-    
+
     // For each SKU that had pending stock, create a transaction to remove it
     for (const tx of pendingTransactions.rows) {
         const currentState = await getCurrentStockState(tx.sku);
         const pendingBefore = currentState.pending;
         const pendingAfter = Math.max(0, pendingBefore - parseInt(tx.pending_quantity || '0', 10));
-        
+
         // Only create transaction if there's actually pending to remove
         if (pendingAfter < pendingBefore) {
             await createStockTransaction({
@@ -1688,51 +1694,51 @@ export async function getStockTransactions(filters: {
     `;
     const params: any[] = [];
     let pIdx = 1;
-    
+
     if (filters.sku) {
         sql += ` AND t.sku = $${pIdx++}`;
         params.push(filters.sku);
     }
-    
+
     if (filters.transactionType) {
         sql += ` AND t.transaction_type = $${pIdx++}`;
         params.push(filters.transactionType);
     }
-    
+
     if (filters.sourceType) {
         sql += ` AND t.source_type = $${pIdx++}`;
         params.push(filters.sourceType);
     }
-    
+
     if (filters.sourceId) {
         sql += ` AND t.source_id = $${pIdx++}`;
         params.push(filters.sourceId);
     }
-    
+
     if (filters.dateFrom) {
         sql += ` AND t.created_at >= $${pIdx++}`;
         params.push(filters.dateFrom);
     }
-    
+
     if (filters.dateTo) {
         sql += ` AND t.created_at <= $${pIdx++}`;
         params.push(filters.dateTo);
     }
-    
+
     sql += ` ORDER BY t.created_at DESC, t.id DESC`;
-    
+
     if (filters.limit) {
         sql += ` LIMIT $${pIdx++}`;
         params.push(filters.limit);
     }
-    
+
     if (filters.offset) {
         sql += ` OFFSET $${pIdx++}`;
         params.push(filters.offset);
     }
-    
+
     const result = await query(sql, params);
-    
+
     // Parse JSONB details field
     return result.rows.map((row: any) => {
         if (row.details && typeof row.details === 'string') {
@@ -1750,7 +1756,7 @@ export async function getStockTransactions(filters: {
  * Get current stock for all SKUs (read directly from transactions - more reliable than materialized view)
  * Returns all 6 order statuses/stages
  */
-export async function getAllCurrentStock(): Promise<Record<string, { 
+export async function getAllCurrentStock(): Promise<Record<string, {
     inWarehouse: number;
     availableForPurchase: number; // calculated: inWarehouse - pendingConsult - pendingReview - processing
     processing: number;
@@ -1779,8 +1785,8 @@ export async function getAllCurrentStock(): Promise<Record<string, {
         FROM "his_db".stock_transactions
         ORDER BY sku, created_at DESC, id DESC
     `, []);
-    
-    const stockMap: Record<string, { 
+
+    const stockMap: Record<string, {
         inWarehouse: number;
         availableForPurchase: number;
         processing: number;
@@ -1792,30 +1798,30 @@ export async function getAllCurrentStock(): Promise<Record<string, {
         display: number;
         backOrder: number;
     }> = {};
-    
+
     stockResult.rows.forEach((row: any) => {
         const inWarehouse = row.in_warehouse || 0;
         const processing = row.processing || 0;
         const pendingConsult = row.pending_consult || 0;
         const pendingReview = row.pending_review || 0;
-        
+
         // Calculate available for purchase: inWarehouse - pendingConsult - pendingReview - processing
         const availableForPurchase = Math.max(0, inWarehouse - pendingConsult - pendingReview - processing);
-        
+
         // Calculate backorder: max(0, (pendingConsult + pendingReview + processing) - inWarehouse)
         // This represents orders that exceed available stock
         const backorder = Math.max(0, (pendingConsult + pendingReview + processing) - inWarehouse);
-        
+
         // Debug logging for backorder calculation
         if (backorder > 0) {
             console.log(`[getAllCurrentStock] ${row.sku}: backorder=${backorder} (pendingConsult=${pendingConsult}, pendingReview=${pendingReview}, processing=${processing}, inWarehouse=${inWarehouse})`);
         }
-        
+
         // Legacy fields
         const stock = row.stock || 0;
         const pending = row.pending || 0;
         const display = row.display || 0;
-        
+
         stockMap[row.sku] = {
             inWarehouse,
             availableForPurchase,
@@ -1830,7 +1836,7 @@ export async function getAllCurrentStock(): Promise<Record<string, {
             backOrder: backorder // Alias for backward compatibility
         };
     });
-    
+
     return stockMap;
 }
 

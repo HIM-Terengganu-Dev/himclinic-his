@@ -455,6 +455,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [filterDateFrom, setFilterDateFrom] = useState('');
     const [filterDateTo, setFilterDateTo] = useState('');
     const [filterOrderStatus, setFilterOrderStatus] = useState('');
+    const [filterOrderId, setFilterOrderId] = useState('');
     const [singleSkus, setSingleSkus] = useState<Array<{ sku: string; name: string }>>([]);
     const [comboSkus, setComboSkus] = useState<Array<{ sku: string; name: string }>>([]);
     const [wcCurrentPage, setWcCurrentPage] = useState(1);
@@ -532,6 +533,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             if (filterDateFrom) queryParams.append('dateFrom', filterDateFrom);
             if (filterDateTo) queryParams.append('dateTo', filterDateTo);
             if (filterOrderStatus) queryParams.append('orderStatus', filterOrderStatus);
+            if (filterOrderId.trim()) queryParams.append('orderId', filterOrderId.trim());
 
             const res = await fetchWithRole(`/api/webhook-logs?${queryParams.toString()}`);
             if (!res.ok) throw new Error('Failed to fetch webhook logs');
@@ -584,11 +586,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     // Reset to page 1 when filters change
     useEffect(() => {
         setWcCurrentPage(1);
-    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab]);
+    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, filterOrderId, activeTab]);
 
     useEffect(() => {
         fetchLogs();
-    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, activeTab, wcCurrentPage]);
+    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, filterOrderId, activeTab, wcCurrentPage]);
 
     // Fetch component deductions from database for all order events (batch fetch for performance)
     useEffect(() => {
@@ -879,6 +881,21 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 </div>
                             )}
 
+                            {activeTab === 'orders' && (
+                                <div className="relative">
+                                    <input
+                                        id="filter-order-id"
+                                        type="number"
+                                        min="1"
+                                        value={filterOrderId}
+                                        onChange={(e) => setFilterOrderId(e.target.value)}
+                                        placeholder="Order #"
+                                        className="pl-9 pr-3 py-2 w-32 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                    />
+                                    <ShoppingCart size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                                </div>
+                            )}
+
                             <div className="relative">
                                 <select
                                     value={filterSku}
@@ -950,8 +967,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         <button
                             onClick={() => setActiveTab('manual')}
                             className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === 'manual'
-                                    ? 'border-blue-500 text-blue-600'
-                                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                                ? 'border-blue-500 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700'
                                 }`}
                         >
                             <div className="flex items-center gap-2">
@@ -962,8 +979,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         <button
                             onClick={() => setActiveTab('orders')}
                             className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === 'orders'
-                                    ? 'border-blue-500 text-blue-600'
-                                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                                ? 'border-blue-500 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700'
                                 }`}
                         >
                             <div className="flex items-center gap-2">
@@ -1074,8 +1091,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                                     )}
                                                                     {log.details.returnCondition && (
                                                                         <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${log.details.returnCondition === 'good' ? 'bg-green-100 text-green-800' :
-                                                                                log.details.returnCondition === 'damaged' ? 'bg-orange-100 text-orange-800' :
-                                                                                    'bg-red-100 text-red-800'
+                                                                            log.details.returnCondition === 'damaged' ? 'bg-orange-100 text-orange-800' :
+                                                                                'bg-red-100 text-red-800'
                                                                             }`}>
                                                                             Return: {log.details.returnCondition.charAt(0).toUpperCase() + log.details.returnCondition.slice(1)}
                                                                         </span>
@@ -1431,8 +1448,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                     onClick={() => setWcCurrentPage(prev => Math.max(1, prev - 1))}
                                     disabled={wcCurrentPage === 1}
                                     className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${wcCurrentPage === 1
-                                            ? 'border-gray-200 text-gray-400 cursor-not-allowed'
-                                            : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                                        ? 'border-gray-200 text-gray-400 cursor-not-allowed'
+                                        : 'border-gray-300 text-gray-700 hover:bg-gray-50'
                                         }`}
                                 >
                                     <div className="flex items-center gap-1">
@@ -1463,8 +1480,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                     <button
                                                         onClick={() => setWcCurrentPage(page)}
                                                         className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${wcCurrentPage === page
-                                                                ? 'border-blue-500 bg-blue-50 text-blue-600'
-                                                                : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                                                            ? 'border-blue-500 bg-blue-50 text-blue-600'
+                                                            : 'border-gray-300 text-gray-700 hover:bg-gray-50'
                                                             }`}
                                                     >
                                                         {page}
@@ -1481,8 +1498,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                     onClick={() => setWcCurrentPage(prev => Math.min(Math.ceil(wcTotalCount / (limit || 20)), prev + 1))}
                                     disabled={wcCurrentPage >= Math.ceil(wcTotalCount / (limit || 20))}
                                     className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${wcCurrentPage >= Math.ceil(wcTotalCount / (limit || 20))
-                                            ? 'border-gray-200 text-gray-400 cursor-not-allowed'
-                                            : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                                        ? 'border-gray-200 text-gray-400 cursor-not-allowed'
+                                        : 'border-gray-300 text-gray-700 hover:bg-gray-50'
                                         }`}
                                 >
                                     <div className="flex items-center gap-1">

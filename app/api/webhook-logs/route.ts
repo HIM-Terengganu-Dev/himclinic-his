@@ -18,10 +18,11 @@ export async function GET(req: NextRequest) {
         const dateFrom = searchParams.get('dateFrom') || undefined;
         const dateTo = searchParams.get('dateTo') || undefined;
         const orderStatus = searchParams.get('orderStatus') || undefined;
+        const orderId = searchParams.get('orderId') ? parseInt(searchParams.get('orderId')!) : undefined;
 
         // Get effective role (switched role for dev users, otherwise actual role)
         const effectiveRole = getEffectiveRole(session, req);
-        
+
         // Exclude test activities (test orders and dummy SKU activities) for non-dev users
         const excludeTestActivities = effectiveRole !== 'dev';
 
@@ -34,10 +35,11 @@ export async function GET(req: NextRequest) {
             dateFrom,
             dateTo,
             orderStatus,
+            orderId,
             excludeTestActivities
         });
 
-        return NextResponse.json({ 
+        return NextResponse.json({
             logs: result.rows,
             total: result.total,
             limit,
