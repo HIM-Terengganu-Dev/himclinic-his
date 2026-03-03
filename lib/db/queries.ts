@@ -1,4 +1,4 @@
-import { query, pool } from './connection';
+﻿import { query, pool } from './connection';
 
 /**
  * USER OPERATIONS
@@ -1881,24 +1881,23 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
         WITH
         -- All order-type webhook events per order since cutoff
         OrderEvents AS (
+// NOTE: affected_skus is TEXT[] — ARRAY_AGG on TEXT[] yields TEXT[][], which breaks unnest.
+// SKU list is derived from held_stock in TypeScript instead.
+const sql = `
+        WITH
+        OrderEvents AS (
             SELECT
                 entity_id                                  AS order_id,
                 MAX(created_at)                            AS last_event_at,
                 MIN(created_at)                            AS first_seen_at,
-                -- Last event chronologically
                 (ARRAY_AGG(webhook_event ORDER BY created_at DESC))[1]  AS last_webhook_event,
-                (ARRAY_AGG(current_status ORDER BY created_at DESC))[1] AS last_current_status,
-                -- Flatten and deduplicate all affected SKUs across all events
-                ARRAY(SELECT DISTINCT unnest(
-                    ARRAY_AGG(affected_skus) FILTER (WHERE affected_skus IS NOT NULL AND array_length(affected_skus, 1) > 0)
-                )) AS all_affected_skus
+                (ARRAY_AGG(current_status ORDER BY created_at DESC))[1] AS last_current_status
             FROM his_db.wc_webhook_logs
             WHERE webhook_type = 'order'
               AND success = true
               AND created_at >= $1::timestamptz
             GROUP BY entity_id
         ),
-        -- Orders that have received a terminal event
         TerminalOrders AS (
             SELECT DISTINCT entity_id AS order_id
             FROM his_db.wc_webhook_logs
@@ -1907,34 +1906,26 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
               AND webhook_event IN ('order.nv-pending-pickup', 'order.cancelled', 'order.refunded')
               AND created_at >= $1::timestamptz
         ),
-        -- Active orders = entered since cutoff, not yet terminated
         ActiveOrders AS (
             SELECT oe.*
             FROM OrderEvents oe
             LEFT JOIN TerminalOrders te ON oe.order_id = te.order_id
             WHERE te.order_id IS NULL
         ),
-        -- Latest stock_transaction per (order_id, sku) for active orders
         LatestOrderTx AS (
             SELECT DISTINCT ON (st.source_id, st.sku)
-                st.source_id          AS order_id,
+                st.source_id             AS order_id,
                 st.sku,
-                st.processing_after   AS processing,
+                st.processing_after      AS processing,
                 st.pending_consult_after AS pending_consult,
-                st.pending_review_after AS pending_review
+                st.pending_review_after  AS pending_review
             FROM his_db.stock_transactions st
             INNER JOIN ActiveOrders ao ON st.source_id = ao.order_id
             WHERE st.source_type = 'order'
             ORDER BY st.source_id, st.sku, st.id DESC
         ),
-        -- Only keep orders that still hold stock
         HeldStock AS (
-            SELECT
-                lt.order_id,
-                lt.sku,
-                lt.processing,
-                lt.pending_consult,
-                lt.pending_review
+            SELECT lt.order_id, lt.sku, lt.processing, lt.pending_consult, lt.pending_review
             FROM LatestOrderTx lt
             WHERE (lt.processing > 0 OR lt.pending_consult > 0 OR lt.pending_review > 0)
         ),
@@ -1943,19 +1934,17 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
         )
         SELECT
             ao.order_id,
-            ao.last_current_status         AS current_status,
-            ao.all_affected_skus           AS affected_skus,
+            ao.last_current_status AS current_status,
             ao.first_seen_at,
             ao.last_event_at,
             ao.last_webhook_event,
-            -- Aggregate held stock per order as JSON array
             COALESCE(
                 json_agg(
                     json_build_object(
-                        'sku',            hs.sku,
-                        'processing',     hs.processing,
+                        'sku',             hs.sku,
+                        'processing',      hs.processing,
                         'pending_consult', hs.pending_consult,
-                        'pending_review', hs.pending_review
+                        'pending_review',  hs.pending_review
                     ) ORDER BY hs.sku
                 ) FILTER (WHERE hs.sku IS NOT NULL),
                 '[]'::json
@@ -1964,22 +1953,29 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
         INNER JOIN OrdersWithStock ows ON ao.order_id = ows.order_id
         LEFT JOIN HeldStock hs ON ao.order_id = hs.order_id
         GROUP BY
-            ao.order_id, ao.last_current_status, ao.all_affected_skus,
+            ao.order_id, ao.last_current_status,
             ao.first_seen_at, ao.last_event_at, ao.last_webhook_event
         ORDER BY ao.last_event_at DESC
     `;
 
-    const result = await query(sql, [CUTOFF_UTC]);
+const result = await query(sql, [CUTOFF_UTC]);
 
-    return result.rows.map((r: any) => ({
+return result.rows.map((r: any) => {
+    const heldStock: Array<{ sku: string; processing: number; pending_consult: number; pending_review: number }> =
+        Array.isArray(r.held_stock) ? r.held_stock : [];
+    // Derive affected_skus from the held_stock SKU list
+    const affectedSkus = heldStock.map((h: any) => h.sku).filter(Boolean);
+    return {
         order_id: r.order_id,
         current_status: r.current_status || 'unknown',
-        affected_skus: Array.isArray(r.affected_skus) ? r.affected_skus.filter(Boolean) : [],
+        affected_skus: affectedSkus,
         first_seen_at: r.first_seen_at,
         last_event_at: r.last_event_at,
         last_webhook_event: r.last_webhook_event || '',
-        held_stock: Array.isArray(r.held_stock) ? r.held_stock : [],
-    }));
+        held_stock: heldStock,
+    };
+});
+}
 }
 
 /**
