@@ -1877,13 +1877,10 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
     // Cutoff: 2026-03-03 00:00:00 MYT = 2026-03-02T16:00:00Z
     const CUTOFF_UTC = '2026-03-02T16:00:00Z';
 
+    // NOTE: affected_skus in wc_webhook_logs is TEXT[].
+    // ARRAY_AGG on a TEXT[] column yields TEXT[][], which breaks array_length/unnest.
+    // We omit it from the CTE and derive the SKU list from held_stock in TypeScript.
     const sql = `
-        WITH
-        -- All order-type webhook events per order since cutoff
-        OrderEvents AS (
-// NOTE: affected_skus is TEXT[] — ARRAY_AGG on TEXT[] yields TEXT[][], which breaks unnest.
-// SKU list is derived from held_stock in TypeScript instead.
-const sql = `
         WITH
         OrderEvents AS (
             SELECT
@@ -1958,24 +1955,23 @@ const sql = `
         ORDER BY ao.last_event_at DESC
     `;
 
-const result = await query(sql, [CUTOFF_UTC]);
+    const result = await query(sql, [CUTOFF_UTC]);
 
-return result.rows.map((r: any) => {
-    const heldStock: Array<{ sku: string; processing: number; pending_consult: number; pending_review: number }> =
-        Array.isArray(r.held_stock) ? r.held_stock : [];
-    // Derive affected_skus from the held_stock SKU list
-    const affectedSkus = heldStock.map((h: any) => h.sku).filter(Boolean);
-    return {
-        order_id: r.order_id,
-        current_status: r.current_status || 'unknown',
-        affected_skus: affectedSkus,
-        first_seen_at: r.first_seen_at,
-        last_event_at: r.last_event_at,
-        last_webhook_event: r.last_webhook_event || '',
-        held_stock: heldStock,
-    };
-});
-}
+    return result.rows.map((r: any) => {
+        const heldStock: Array<{ sku: string; processing: number; pending_consult: number; pending_review: number }> =
+            Array.isArray(r.held_stock) ? r.held_stock : [];
+        // Derive affected_skus from the held_stock SKU list (all SKUs still holding stock)
+        const affectedSkus = heldStock.map((h: any) => h.sku).filter(Boolean);
+        return {
+            order_id: r.order_id,
+            current_status: r.current_status || 'unknown',
+            affected_skus: affectedSkus,
+            first_seen_at: r.first_seen_at,
+            last_event_at: r.last_event_at,
+            last_webhook_event: r.last_webhook_event || '',
+            held_stock: heldStock,
+        };
+    });
 }
 
 /**
