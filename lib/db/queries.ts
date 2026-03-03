@@ -1840,5 +1840,328 @@ export async function getAllCurrentStock(): Promise<Record<string, {
     return stockMap;
 }
 
+/**
+ * ========================================
+ * UNRESOLVED ORDERS
+ * ========================================
+ * Only tracks orders that entered the system on or after 2026-03-03 (MYT, UTC+8).
+ * An order is "unresolved" if its latest webhook event is still in an active holding
+ * state (pending-consult, pending-review, or processing) — i.e. it has NOT exited via
+ * nv-pending-pickup, cancelled, or refunded.
+ */
+
+export interface UnresolvedOrderEntry {
+    order_id: number;
+    current_status: string;        // last known status from wc_webhook_logs
+    affected_skus: string[];
+    first_seen_at: string;         // when the order first appeared
+    last_event_at: string;         // most recent event time
+    last_webhook_event: string;    // e.g. 'order.processing'
+    // Per-SKU held stock snapshot from stock_transactions
+    held_stock: Array<{
+        sku: string;
+        processing: number;
+        pending_consult: number;
+        pending_review: number;
+    }>;
+}
+
+/**
+ * Return every order that:
+ *   1. First appeared on or after 2026-03-03 00:00:00 MYT (2026-03-02 16:00:00 UTC)
+ *   2. Has NOT received a terminal event (nv-pending-pickup, cancelled, refunded)
+ *   3. Still has stock held in processing / pending_consult / pending_review
+ *      in the latest stock_transactions rows for that order's SKUs
+ */
+export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
+    // Cutoff: 2026-03-03 00:00:00 MYT = 2026-03-02T16:00:00Z
+    const CUTOFF_UTC = '2026-03-02T16:00:00Z';
+
+    const sql = `
+        WITH
+        -- All order-type webhook events per order since cutoff
+        OrderEvents AS (
+            SELECT
+                entity_id                                  AS order_id,
+                MAX(created_at)                            AS last_event_at,
+                MIN(created_at)                            AS first_seen_at,
+                -- Last event chronologically
+                (ARRAY_AGG(webhook_event ORDER BY created_at DESC))[1]  AS last_webhook_event,
+                (ARRAY_AGG(current_status ORDER BY created_at DESC))[1] AS last_current_status,
+                -- Flatten and deduplicate all affected SKUs across all events
+                ARRAY(SELECT DISTINCT unnest(
+                    ARRAY_AGG(affected_skus) FILTER (WHERE affected_skus IS NOT NULL AND array_length(affected_skus, 1) > 0)
+                )) AS all_affected_skus
+            FROM his_db.wc_webhook_logs
+            WHERE webhook_type = 'order'
+              AND success = true
+              AND created_at >= $1::timestamptz
+            GROUP BY entity_id
+        ),
+        -- Orders that have received a terminal event
+        TerminalOrders AS (
+            SELECT DISTINCT entity_id AS order_id
+            FROM his_db.wc_webhook_logs
+            WHERE webhook_type = 'order'
+              AND success = true
+              AND webhook_event IN ('order.nv-pending-pickup', 'order.cancelled', 'order.refunded')
+              AND created_at >= $1::timestamptz
+        ),
+        -- Active orders = entered since cutoff, not yet terminated
+        ActiveOrders AS (
+            SELECT oe.*
+            FROM OrderEvents oe
+            LEFT JOIN TerminalOrders te ON oe.order_id = te.order_id
+            WHERE te.order_id IS NULL
+        ),
+        -- Latest stock_transaction per (order_id, sku) for active orders
+        LatestOrderTx AS (
+            SELECT DISTINCT ON (st.source_id, st.sku)
+                st.source_id          AS order_id,
+                st.sku,
+                st.processing_after   AS processing,
+                st.pending_consult_after AS pending_consult,
+                st.pending_review_after AS pending_review
+            FROM his_db.stock_transactions st
+            INNER JOIN ActiveOrders ao ON st.source_id = ao.order_id
+            WHERE st.source_type = 'order'
+            ORDER BY st.source_id, st.sku, st.id DESC
+        ),
+        -- Only keep orders that still hold stock
+        HeldStock AS (
+            SELECT
+                lt.order_id,
+                lt.sku,
+                lt.processing,
+                lt.pending_consult,
+                lt.pending_review
+            FROM LatestOrderTx lt
+            WHERE (lt.processing > 0 OR lt.pending_consult > 0 OR lt.pending_review > 0)
+        ),
+        OrdersWithStock AS (
+            SELECT DISTINCT order_id FROM HeldStock
+        )
+        SELECT
+            ao.order_id,
+            ao.last_current_status         AS current_status,
+            ao.all_affected_skus           AS affected_skus,
+            ao.first_seen_at,
+            ao.last_event_at,
+            ao.last_webhook_event,
+            -- Aggregate held stock per order as JSON array
+            COALESCE(
+                json_agg(
+                    json_build_object(
+                        'sku',            hs.sku,
+                        'processing',     hs.processing,
+                        'pending_consult', hs.pending_consult,
+                        'pending_review', hs.pending_review
+                    ) ORDER BY hs.sku
+                ) FILTER (WHERE hs.sku IS NOT NULL),
+                '[]'::json
+            ) AS held_stock
+        FROM ActiveOrders ao
+        INNER JOIN OrdersWithStock ows ON ao.order_id = ows.order_id
+        LEFT JOIN HeldStock hs ON ao.order_id = hs.order_id
+        GROUP BY
+            ao.order_id, ao.last_current_status, ao.all_affected_skus,
+            ao.first_seen_at, ao.last_event_at, ao.last_webhook_event
+        ORDER BY ao.last_event_at DESC
+    `;
+
+    const result = await query(sql, [CUTOFF_UTC]);
+
+    return result.rows.map((r: any) => ({
+        order_id: r.order_id,
+        current_status: r.current_status || 'unknown',
+        affected_skus: Array.isArray(r.affected_skus) ? r.affected_skus.filter(Boolean) : [],
+        first_seen_at: r.first_seen_at,
+        last_event_at: r.last_event_at,
+        last_webhook_event: r.last_webhook_event || '',
+        held_stock: Array.isArray(r.held_stock) ? r.held_stock : [],
+    }));
+}
+
+/**
+ * Manually resolve an order by releasing all stock it currently holds.
+ * Mirrors the natural nv-pending-pickup exit:
+ *   - in_warehouse is DEDUCTED by the total held quantity (stock physically shipped)
+ *   - processing / pending_consult / pending_review are cleared for the order
+ *   - Inserts an 'order_nv_pending_pickup' transaction (identical to a real dispatch)
+ *   - Writes to activity_logs for full audit trail
+ *
+ * Returns the list of SKUs that were affected.
+ */
+export async function resolveOrderManually(
+    orderId: number,
+    reason: string,
+    resolvedByUserId: number | null
+): Promise<Array<{ sku: string; processing_cleared: number; pending_consult_cleared: number; pending_review_cleared: number; in_warehouse_deducted: number }>> {
+    const { pool } = await import('./connection');
+    if (!pool) throw new Error('Database not configured');
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        // Get the latest stock_transaction per SKU that came from this order
+        const orderTxRes = await client.query(`
+            SELECT DISTINCT ON (sku)
+                sku,
+                single_sku_id,
+                processing_after,
+                pending_consult_after,
+                pending_review_after
+            FROM his_db.stock_transactions
+            WHERE source_id = $1
+              AND source_type = 'order'
+            ORDER BY sku, id DESC
+        `, [orderId]);
+
+        const results: Array<{ sku: string; processing_cleared: number; pending_consult_cleared: number; pending_review_cleared: number; in_warehouse_deducted: number }> = [];
+
+        for (const row of orderTxRes.rows) {
+            const orderProcessing = parseInt(row.processing_after || '0', 10);
+            const orderPendingConsult = parseInt(row.pending_consult_after || '0', 10);
+            const orderPendingReview = parseInt(row.pending_review_after || '0', 10);
+
+            // Skip if this order's last tx contributed nothing
+            if (orderProcessing === 0 && orderPendingConsult === 0 && orderPendingReview === 0) continue;
+
+            // Get the current global stock state for this SKU
+            const globalTxRes = await client.query(`
+                SELECT
+                    in_warehouse_after,
+                    processing_after,
+                    pending_consult_after,
+                    pending_review_after,
+                    backorder_after,
+                    stock_after,
+                    pending_after
+                FROM his_db.stock_transactions
+                WHERE sku = $1
+                ORDER BY id DESC LIMIT 1
+            `, [row.sku]);
+
+            if (globalTxRes.rows.length === 0) continue;
+            const g = globalTxRes.rows[0];
+
+            const inWarehouseBefore = parseInt(g.in_warehouse_after || '0', 10);
+            const processingBefore = parseInt(g.processing_after || '0', 10);
+            const pcBefore = parseInt(g.pending_consult_after || '0', 10);
+            const prBefore = parseInt(g.pending_review_after || '0', 10);
+            const stockBefore = parseInt(g.stock_after || '0', 10);
+            const pendingBefore = parseInt(g.pending_after || '0', 10);
+            const backorderBefore = parseInt(g.backorder_after || '0', 10);
+
+            // Amount to release — capped at global totals so we never go negative
+            const clearProcessing = Math.min(processingBefore, orderProcessing);
+            const clearPc = Math.min(pcBefore, orderPendingConsult);
+            const clearPr = Math.min(prBefore, orderPendingReview);
+            const totalCleared = clearProcessing + clearPc + clearPr;
+
+            if (totalCleared === 0) continue;
+
+            // ── Mirror nv-pending-pickup: in_warehouse deducted (goods left the building) ──
+            const inWarehouseAfter = Math.max(0, inWarehouseBefore - totalCleared);
+            const stockAfter = inWarehouseAfter;
+            const processingAfter = processingBefore - clearProcessing;
+            const pcAfter = pcBefore - clearPc;
+            const prAfter = prBefore - clearPr;
+            const pendingAfter = pendingBefore - (clearPc + clearPr);
+            const backorderAfter = Math.max(0, (processingAfter + pcAfter + prAfter) - inWarehouseAfter);
+
+            await client.query(`
+                INSERT INTO his_db.stock_transactions (
+                    sku, single_sku_id, transaction_type, quantity_change,
+                    stock_before, stock_after,
+                    pending_before, pending_after,
+                    in_warehouse_before, in_warehouse_after,
+                    processing_before, processing_after,
+                    pending_consult_before, pending_consult_after,
+                    pending_review_before, pending_review_after,
+                    backorder_before, backorder_after,
+                    source_type, source_id, source_event,
+                    created_by, details, created_at
+                ) VALUES (
+                    $1, $2, 'order_nv_pending_pickup', $3,
+                    $4, $5,
+                    $6, $7,
+                    $8, $9,
+                    $10, $11,
+                    $12, $13,
+                    $14, $15,
+                    $16, $17,
+                    'order', $18, 'admin.manual_resolve',
+                    $19, $20::jsonb, NOW()
+                )
+            `, [
+                row.sku, row.single_sku_id,
+                -totalCleared,                        // quantity_change: negative = deducted from in_warehouse
+                stockBefore, stockAfter,
+                pendingBefore, pendingAfter,
+                inWarehouseBefore, inWarehouseAfter,
+                processingBefore, processingAfter,
+                pcBefore, pcAfter,
+                prBefore, prAfter,
+                backorderBefore, backorderAfter,
+                orderId,
+                resolvedByUserId,
+                JSON.stringify({
+                    reason,
+                    order_id: orderId,
+                    manual_resolve: true,
+                    cleared: {
+                        processing: clearProcessing,
+                        pending_consult: clearPc,
+                        pending_review: clearPr,
+                        total: totalCleared,
+                    },
+                    in_warehouse_deducted: totalCleared,
+                    note: 'Admin manually resolved — treated as nv-pending-pickup (in_warehouse deducted, stock released)',
+                }),
+            ]);
+
+            results.push({
+                sku: row.sku,
+                processing_cleared: clearProcessing,
+                pending_consult_cleared: clearPc,
+                pending_review_cleared: clearPr,
+                in_warehouse_deducted: totalCleared,
+            });
+        }
+
+        await client.query('COMMIT');
+
+        // ── Activity log (fire-and-forget, non-critical) ──────────────────────
+        if (results.length > 0) {
+            logActivity({
+                userId: resolvedByUserId ?? undefined,
+                action: 'manual_order_resolve',
+                entityType: 'order',
+                entityId: orderId,
+                details: {
+                    order_id: orderId,
+                    reason,
+                    resolved_skus: results,
+                    total_skus_affected: results.length,
+                    note: 'Admin manually resolved unresolved order via Admin Access → Unresolved Orders. ' +
+                        'Treated as natural nv-pending-pickup: in_warehouse deducted by held qty, processing/pending cleared.',
+                },
+                success: true,
+            }).catch((err: any) => {
+                console.error(`[resolveOrderManually] Activity log failed for order #${orderId}:`, err);
+            });
+        }
+
+        return results;
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
+}
+
 // Export low stock functions
 export * from './queries_low_stock';

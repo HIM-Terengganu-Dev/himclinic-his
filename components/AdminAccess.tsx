@@ -2,10 +2,11 @@
 
 import { useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { Settings, Shield, Users, Database, Key, Box, Layers, Bell } from 'lucide-react';
+import { Settings, Shield, Users, Database, Key, Box, Layers, Bell, AlertTriangle } from 'lucide-react';
 import UserManagement from './UserManagement';
 import SkuManagement from './SkuManagement';
 import LowStockAlerts from './LowStockAlerts';
+import UnresolvedOrders from './UnresolvedOrders';
 
 export default function AdminAccess() {
   const { data: session } = useSession();
@@ -24,7 +25,7 @@ export default function AdminAccess() {
     );
   }
 
-  const [activeSection, setActiveSection] = useState<'users' | 'skus' | 'low-stock'>('users');
+  const [activeSection, setActiveSection] = useState<'users' | 'skus' | 'low-stock' | 'unresolved-orders'>('users');
 
   return (
     <div className="space-y-6">
@@ -43,36 +44,43 @@ export default function AdminAccess() {
         <div className="flex bg-gray-100 rounded-lg p-1 mb-6">
           <button
             onClick={() => setActiveSection('users')}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all ${
-              activeSection === 'users' 
-                ? 'bg-white shadow-sm text-purple-600' 
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all ${activeSection === 'users'
+                ? 'bg-white shadow-sm text-purple-600'
                 : 'text-gray-600 hover:text-gray-900'
-            }`}
+              }`}
           >
             <Users size={16} />
             User Management
           </button>
           <button
             onClick={() => setActiveSection('skus')}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all ${
-              activeSection === 'skus' 
-                ? 'bg-white shadow-sm text-purple-600' 
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all ${activeSection === 'skus'
+                ? 'bg-white shadow-sm text-purple-600'
                 : 'text-gray-600 hover:text-gray-900'
-            }`}
+              }`}
           >
             <Box size={16} />
             SKU Management
           </button>
           <button
             onClick={() => setActiveSection('low-stock')}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all ${
-              activeSection === 'low-stock' 
-                ? 'bg-white shadow-sm text-purple-600' 
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all ${activeSection === 'low-stock'
+                ? 'bg-white shadow-sm text-purple-600'
                 : 'text-gray-600 hover:text-gray-900'
-            }`}
+              }`}
           >
             <Bell size={16} />
             Low Stock Alerts
+          </button>
+          <button
+            onClick={() => setActiveSection('unresolved-orders')}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all ${activeSection === 'unresolved-orders'
+                ? 'bg-white shadow-sm text-amber-600'
+                : 'text-gray-600 hover:text-gray-900'
+              }`}
+          >
+            <AlertTriangle size={16} />
+            Unresolved Orders
           </button>
         </div>
 
@@ -80,6 +88,7 @@ export default function AdminAccess() {
         {activeSection === 'users' && <UserManagement />}
         {activeSection === 'skus' && <SkuManagement />}
         {activeSection === 'low-stock' && <LowStockAlerts />}
+        {activeSection === 'unresolved-orders' && <UnresolvedOrders />}
       </div>
     </div>
   );
