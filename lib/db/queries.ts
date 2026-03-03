@@ -1877,9 +1877,11 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
     // Cutoff: 2026-03-03 00:00:00 MYT = 2026-03-02T16:00:00Z
     const CUTOFF_UTC = '2026-03-02T16:00:00Z';
 
-    // NOTE: affected_skus in wc_webhook_logs is TEXT[].
-    // ARRAY_AGG on a TEXT[] column yields TEXT[][], which breaks array_length/unnest.
-    // We omit it from the CTE and derive the SKU list from held_stock in TypeScript.
+    // HeldStock uses the FIRST transaction per (order, sku) to measure the
+    // delta that order added — i.e. the quantity *this specific order* contributed
+    // to processing/pending_consult/pending_review.
+    // Using the first (not latest) tx avoids double-counting if correction
+    // transactions were later inserted for the same order.
     const sql = `
         WITH
         OrderEvents AS (
@@ -1909,22 +1911,24 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
             LEFT JOIN TerminalOrders te ON oe.order_id = te.order_id
             WHERE te.order_id IS NULL
         ),
-        LatestOrderTx AS (
+        -- Use the FIRST transaction per (order, sku) to get the per-order delta
+        -- (how much THIS order specifically added to each bucket)
+        FirstOrderTx AS (
             SELECT DISTINCT ON (st.source_id, st.sku)
-                st.source_id             AS order_id,
+                st.source_id                                                         AS order_id,
                 st.sku,
-                st.processing_after      AS processing,
-                st.pending_consult_after AS pending_consult,
-                st.pending_review_after  AS pending_review
+                GREATEST(0, st.processing_after      - st.processing_before)        AS processing,
+                GREATEST(0, st.pending_consult_after - st.pending_consult_before)   AS pending_consult,
+                GREATEST(0, st.pending_review_after  - st.pending_review_before)    AS pending_review
             FROM his_db.stock_transactions st
             INNER JOIN ActiveOrders ao ON st.source_id = ao.order_id
             WHERE st.source_type = 'order'
-            ORDER BY st.source_id, st.sku, st.id DESC
+            ORDER BY st.source_id, st.sku, st.id ASC  -- FIRST tx, not latest
         ),
         HeldStock AS (
-            SELECT lt.order_id, lt.sku, lt.processing, lt.pending_consult, lt.pending_review
-            FROM LatestOrderTx lt
-            WHERE (lt.processing > 0 OR lt.pending_consult > 0 OR lt.pending_review > 0)
+            SELECT ft.order_id, ft.sku, ft.processing, ft.pending_consult, ft.pending_review
+            FROM FirstOrderTx ft
+            WHERE (ft.processing > 0 OR ft.pending_consult > 0 OR ft.pending_review > 0)
         ),
         OrdersWithStock AS (
             SELECT DISTINCT order_id FROM HeldStock
@@ -1960,7 +1964,7 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
     return result.rows.map((r: any) => {
         const heldStock: Array<{ sku: string; processing: number; pending_consult: number; pending_review: number }> =
             Array.isArray(r.held_stock) ? r.held_stock : [];
-        // Derive affected_skus from the held_stock SKU list (all SKUs still holding stock)
+        // Derive affected_skus from the held_stock SKU list (all SKUs this order holds)
         const affectedSkus = heldStock.map((h: any) => h.sku).filter(Boolean);
         return {
             order_id: r.order_id,
