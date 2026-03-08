@@ -1911,24 +1911,26 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
             LEFT JOIN TerminalOrders te ON oe.order_id = te.order_id
             WHERE te.order_id IS NULL
         ),
-        -- Use the FIRST transaction per (order, sku) to get the per-order delta
-        -- (how much THIS order specifically added to each bucket)
-        FirstOrderTx AS (
-            SELECT DISTINCT ON (st.source_id, st.sku)
-                st.source_id                                                         AS order_id,
+        -- Sum ALL transaction deltas for each (order, sku) to get the true net
+        -- contribution this order made to each bucket.
+        -- Example: pending-consult (+1 pc) then processing (-1 pc, +1 proc)
+        --   → net: processing=1, pending_consult=0  (matches dashboard global state)
+        NetOrderTx AS (
+            SELECT
+                st.source_id                                       AS order_id,
                 st.sku,
-                GREATEST(0, st.processing_after      - st.processing_before)        AS processing,
-                GREATEST(0, st.pending_consult_after - st.pending_consult_before)   AS pending_consult,
-                GREATEST(0, st.pending_review_after  - st.pending_review_before)    AS pending_review
+                GREATEST(0, SUM(st.processing_after      - st.processing_before))      AS processing,
+                GREATEST(0, SUM(st.pending_consult_after - st.pending_consult_before)) AS pending_consult,
+                GREATEST(0, SUM(st.pending_review_after  - st.pending_review_before))  AS pending_review
             FROM his_db.stock_transactions st
             INNER JOIN ActiveOrders ao ON st.source_id = ao.order_id
             WHERE st.source_type = 'order'
-            ORDER BY st.source_id, st.sku, st.id ASC  -- FIRST tx, not latest
+            GROUP BY st.source_id, st.sku
         ),
         HeldStock AS (
-            SELECT ft.order_id, ft.sku, ft.processing, ft.pending_consult, ft.pending_review
-            FROM FirstOrderTx ft
-            WHERE (ft.processing > 0 OR ft.pending_consult > 0 OR ft.pending_review > 0)
+            SELECT nt.order_id, nt.sku, nt.processing, nt.pending_consult, nt.pending_review
+            FROM NetOrderTx nt
+            WHERE (nt.processing > 0 OR nt.pending_consult > 0 OR nt.pending_review > 0)
         ),
         OrdersWithStock AS (
             SELECT DISTINCT order_id FROM HeldStock
