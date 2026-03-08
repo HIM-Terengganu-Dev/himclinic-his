@@ -1929,23 +1929,20 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                 let hasStatusStock = false; // Track if order has stock in any status
                 let actualStatusType: 'processing' | 'pending-consult' | 'pending-review' | 'none' = 'none'; // Track which status has stock
 
-                // Always check processing transactions (for orders that went through processing)
-                // Use the LAST transaction's net delta only (not a historical sum across all time).
-                // Summing all transactions would inflate the count if duplicate processing webhooks fired earlier.
+                // Use NET SUM of all processing deltas for this order+sku.
+                // This correctly handles orders that transitioned through pending→processing
+                // AND survives mid-flight reconciliations (which reset global counters).
+                // Using only the first tx would leave ghost stock if a reconciliation ran
+                // between the order's pending and processing transactions.
                 const orderProcessingTxs = await getStockTransactions({
                     sku,
                     sourceType: 'order',
                     sourceId: orderId,
                     transactionType: 'order_processing'
                 });
-                if (orderProcessingTxs.length > 0) {
-                    // Sort ascending by id to get the first (original) processing transaction
-                    const firstProcessingTx = orderProcessingTxs.sort((a: any, b: any) => a.id - b.id)[0];
-                    // The canonical quantity is what the FIRST transaction added to processing
-                    orderProcessingQty = Math.max(0, (firstProcessingTx.processing_after || 0) - (firstProcessingTx.processing_before || 0));
-                } else {
-                    orderProcessingQty = 0;
-                }
+                orderProcessingQty = Math.max(0, orderProcessingTxs.reduce((sum: number, tx: any) => {
+                    return sum + ((tx.processing_after || 0) - (tx.processing_before || 0));
+                }, 0));
 
                 // Check pending-consult transactions (for orders that went from pending-consult to nv-pending-pickup)
                 const orderPendingConsultTxs = await getStockTransactions({
@@ -1954,10 +1951,9 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                     sourceId: orderId,
                     transactionType: 'order_pending_consult'
                 });
-                orderPendingConsultQty = orderPendingConsultTxs.reduce((sum: number, tx: any) => {
-                    const qty = (tx.pending_consult_after || 0) - (tx.pending_consult_before || 0);
-                    return sum + Math.abs(qty);
-                }, 0);
+                orderPendingConsultQty = Math.max(0, orderPendingConsultTxs.reduce((sum: number, tx: any) => {
+                    return sum + ((tx.pending_consult_after || 0) - (tx.pending_consult_before || 0));
+                }, 0));
 
                 // Check pending-review transactions (for orders that went from pending-review to nv-pending-pickup)
                 const orderPendingReviewTxs = await getStockTransactions({
@@ -1966,10 +1962,9 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                     sourceId: orderId,
                     transactionType: 'order_pending_review'
                 });
-                orderPendingReviewQty = orderPendingReviewTxs.reduce((sum: number, tx: any) => {
-                    const qty = (tx.pending_review_after || 0) - (tx.pending_review_before || 0);
-                    return sum + Math.abs(qty);
-                }, 0);
+                orderPendingReviewQty = Math.max(0, orderPendingReviewTxs.reduce((sum: number, tx: any) => {
+                    return sum + ((tx.pending_review_after || 0) - (tx.pending_review_before || 0));
+                }, 0));
 
                 // Determine which status has stock (priority: processing > pending-consult > pending-review)
                 if (orderProcessingQty > 0) {
