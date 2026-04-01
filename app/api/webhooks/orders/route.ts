@@ -1970,26 +1970,22 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                 if (orderProcessingQty > 0) {
                     hasStatusStock = true;
                     actualStatusType = 'processing';
-                    // Guardrail: Check if order has enough in processing
+                    // Mismatch warning: order holds fewer units than the webhook says.
+                    // Do NOT skip — clear what the order actually holds to prevent counter drift.
                     if (orderProcessingQty < totalQty) {
-                        console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from processing, but order only has ${orderProcessingQty} in processing. Skipping deduction for ${sku}.`);
-                        continue; // Skip this SKU - order doesn't have enough in processing
+                        console.warn(`⚠️ Order #${orderId} has ${orderProcessingQty} in processing for ${sku} but webhook says ${totalQty}. Clearing ${orderProcessingQty} from processing and deducting ${totalQty} from in_warehouse.`);
                     }
                 } else if (orderPendingConsultQty > 0) {
                     hasStatusStock = true;
                     actualStatusType = 'pending-consult';
-                    // Guardrail: Check if order has enough in pending-consult
                     if (orderPendingConsultQty < totalQty) {
-                        console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from pending-consult, but order only has ${orderPendingConsultQty}. Skipping deduction for ${sku}.`);
-                        continue;
+                        console.warn(`⚠️ Order #${orderId} has ${orderPendingConsultQty} in pending-consult for ${sku} but webhook says ${totalQty}. Clearing ${orderPendingConsultQty} and deducting ${totalQty} from in_warehouse.`);
                     }
                 } else if (orderPendingReviewQty > 0) {
                     hasStatusStock = true;
                     actualStatusType = 'pending-review';
-                    // Guardrail: Check if order has enough in pending-review
                     if (orderPendingReviewQty < totalQty) {
-                        console.warn(`⚠️ Order #${orderId} trying to deduct ${totalQty} from pending-review, but order only has ${orderPendingReviewQty}. Skipping deduction for ${sku}.`);
-                        continue;
+                        console.warn(`⚠️ Order #${orderId} has ${orderPendingReviewQty} in pending-review for ${sku} but webhook says ${totalQty}. Clearing ${orderPendingReviewQty} and deducting ${totalQty} from in_warehouse.`);
                     }
                 } else {
                     // No stock in any status - direct nv-pending-pickup (deduct from in_warehouse only)
@@ -2004,28 +2000,29 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                 let statusAfter = 0;
 
                 if (hasStatusStock) {
-                    // Order has stock in a status - deduct from that status
+                    // Order has stock in a status — deduct the order's ACTUAL held quantity
+                    // (not totalQty) to correctly clear the bucket even when there's a mismatch.
                     if (actualStatusType === 'pending-consult') {
                         statusType = 'pending-consult';
                         statusBefore = pendingConsultBefore;
-                        statusAfter = Math.max(0, pendingConsultBefore - totalQty);
-                        console.log(`📦 Order #${orderId} ${sku}: Deducting from pending-consult and in_warehouse (${totalQty} units)`);
+                        statusAfter = Math.max(0, pendingConsultBefore - orderPendingConsultQty);
+                        console.log(`📦 Order #${orderId} ${sku}: Clearing ${orderPendingConsultQty} from pending-consult, deducting ${totalQty} from in_warehouse`);
                     } else if (actualStatusType === 'pending-review') {
                         statusType = 'pending-review';
                         statusBefore = pendingReviewBefore;
-                        statusAfter = Math.max(0, pendingReviewBefore - totalQty);
-                        console.log(`📦 Order #${orderId} ${sku}: Deducting from pending-review and in_warehouse (${totalQty} units)`);
+                        statusAfter = Math.max(0, pendingReviewBefore - orderPendingReviewQty);
+                        console.log(`📦 Order #${orderId} ${sku}: Clearing ${orderPendingReviewQty} from pending-review, deducting ${totalQty} from in_warehouse`);
                     } else {
-                        // Default to processing
+                        // processing
                         statusType = 'processing';
                         statusBefore = processingBefore;
-                        statusAfter = Math.max(0, processingBefore - totalQty);
-                        console.log(`📦 Order #${orderId} ${sku}: Deducting from processing and in_warehouse (${totalQty} units)`);
+                        statusAfter = Math.max(0, processingBefore - orderProcessingQty);
+                        console.log(`📦 Order #${orderId} ${sku}: Clearing ${orderProcessingQty} from processing, deducting ${totalQty} from in_warehouse`);
                     }
                 } else {
                     // Order has no stock in any status - direct nv-pending-pickup
                     // Don't deduct from status, only from in_warehouse
-                    statusType = 'none'; // No status deduction
+                    statusType = 'none';
                     statusBefore = 0;
                     statusAfter = 0;
                     console.log(`📦 Order #${orderId} ${sku}: Direct nv-pending-pickup (no prior status) - deducting ${totalQty} from in_warehouse only`);
@@ -2046,10 +2043,7 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                 } else if (statusType === 'pending-review') {
                     pendingReviewAfter = statusAfter;
                 } else if (statusType === 'none') {
-                    // No status change - direct deduction from in_warehouse
-                    // Keep status counts unchanged
-                } else if (statusType === 'none') {
-                    // No status change - direct deduction from in_warehouse
+                    // No status change - direct deduction from in_warehouse only
                     // Keep status counts unchanged
                 }
 
