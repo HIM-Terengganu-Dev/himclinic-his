@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdminOrDev } from '@/lib/auth/middleware';
+import { requireAdminOrDev, requireAuth } from '@/lib/auth/middleware';
 import { createSingleSku, getSingleSkuByCode, getAllSingleSkusAdmin, updateSingleSku, deleteSingleSku, createStockTransaction } from '@/lib/db/queries';
 import { logActivity } from '@/lib/db/queries';
 import { createProduct, deleteProduct, updateProductStock } from '@/lib/services/woocommerce';
 
 export async function GET(req: NextRequest) {
     try {
-        const session = await requireAdminOrDev(req);
+        const session = await requireAuth();
         if (!session) {
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
