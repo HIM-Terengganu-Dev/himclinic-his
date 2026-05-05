@@ -324,7 +324,7 @@ export default function UnresolvedOrders() {
 
             {/* Bulk Action Bar */}
             {!loading && !error && selectedOrders.size > 0 && (
-                <div className="bg-white border border-blue-200 rounded-xl p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4">
+                <div className="sticky top-0 z-30 bg-white/95 backdrop-blur-sm border border-blue-200 rounded-xl p-4 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
                     <div className="flex items-center gap-2">
                         <div className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-semibold">
                             {selectedOrders.size} selected
