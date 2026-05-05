@@ -8,7 +8,7 @@ import { resolveOrderManually } from '@/lib/db/queries';
  * that zeroes out any held stock (processing, pending_consult, pending_review) for the order.
  * Admin/Dev only.
  *
- * Body: { orderId: number, reason?: string }
+ * Body: { orderId: number, reason?: string, resolutionType?: 'nv-pending-pickup' | 'cancelled' | 'refunded' }
  */
 export async function POST(req: NextRequest) {
     try {
@@ -18,14 +18,19 @@ export async function POST(req: NextRequest) {
         }
 
         const body = await req.json();
-        const { orderId, reason } = body;
+        const { orderId, reason, resolutionType = 'nv-pending-pickup' } = body;
 
         if (!orderId || typeof orderId !== 'number') {
             return NextResponse.json({ error: 'orderId (number) is required' }, { status: 400 });
         }
 
+        const validTypes = ['nv-pending-pickup', 'cancelled', 'refunded'];
+        if (!validTypes.includes(resolutionType)) {
+            return NextResponse.json({ error: 'Invalid resolutionType' }, { status: 400 });
+        }
+
         const userId = (session.user as any)?.id;
-        const result = await resolveOrderManually(orderId, reason || 'Manual resolution by admin', userId ?? null);
+        const result = await resolveOrderManually(orderId, reason || 'Manual resolution by admin', userId ?? null, resolutionType);
 
         return NextResponse.json({ success: true, resolved: result });
     } catch (error: any) {

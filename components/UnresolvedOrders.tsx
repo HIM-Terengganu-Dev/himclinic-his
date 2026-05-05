@@ -77,6 +77,9 @@ export default function UnresolvedOrders() {
     const [resolved, setResolved] = useState<Set<number>>(new Set());
     const [confirmId, setConfirmId] = useState<number | null>(null);
     const [resolveReason, setResolveReason] = useState('');
+    const [resolveType, setResolveType] = useState<'nv-pending-pickup' | 'cancelled' | 'refunded'>('nv-pending-pickup');
+    const [wcStatuses, setWcStatuses] = useState<Record<number, string>>({});
+    const [isCheckingWc, setIsCheckingWc] = useState(false);
     const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
     const showToast = (type: 'success' | 'error', msg: string) => {
@@ -101,6 +104,27 @@ export default function UnresolvedOrders() {
 
     useEffect(() => { fetchOrders(); }, [fetchOrders]);
 
+    const handleCheckWc = async () => {
+        if (orders.length === 0) return;
+        setIsCheckingWc(true);
+        try {
+            const orderIds = orders.map(o => o.order_id);
+            const res = await fetch('/api/orders/unresolved/check-wc', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ orderIds }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to check WC');
+            setWcStatuses(data.statuses || {});
+            showToast('success', 'WooCommerce statuses fetched successfully.');
+        } catch (e: any) {
+            showToast('error', e.message);
+        } finally {
+            setIsCheckingWc(false);
+        }
+    };
+
     const toggleRow = (id: number) => {
         setExpandedRows(prev => {
             const next = new Set(prev);
@@ -115,7 +139,11 @@ export default function UnresolvedOrders() {
             const res = await fetch('/api/orders/unresolved/resolve', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ orderId, reason: resolveReason || 'Manual resolution by admin' }),
+                body: JSON.stringify({ 
+                    orderId, 
+                    reason: resolveReason || 'Manual resolution by admin',
+                    resolutionType: resolveType
+                }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to resolve');
@@ -133,6 +161,7 @@ export default function UnresolvedOrders() {
             setResolving(prev => { const s = new Set(prev); s.delete(orderId); return s; });
             setConfirmId(null);
             setResolveReason('');
+            setResolveType('nv-pending-pickup');
         }
     };
 
@@ -164,14 +193,24 @@ export default function UnresolvedOrders() {
                         )}
                     </span>
                 </div>
-                <button
-                    onClick={fetchOrders}
-                    disabled={loading}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm disabled:opacity-50"
-                >
-                    <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                    Refresh
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleCheckWc}
+                        disabled={loading || isCheckingWc || orders.length === 0}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 border border-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50"
+                    >
+                        {isCheckingWc ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        Check WC Status
+                    </button>
+                    <button
+                        onClick={fetchOrders}
+                        disabled={loading}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm disabled:opacity-50"
+                    >
+                        <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                        Refresh
+                    </button>
+                </div>
             </div>
 
             {/* Info banner */}
@@ -220,6 +259,9 @@ export default function UnresolvedOrders() {
                             <tr>
                                 <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Order</th>
                                 <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Status</th>
+                                {Object.keys(wcStatuses).length > 0 && (
+                                    <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">WC Status</th>
+                                )}
                                 <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">SKUs</th>
                                 <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Last Event</th>
                                 <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Held Stock</th>
@@ -264,6 +306,22 @@ export default function UnresolvedOrders() {
                                                 {statusTag(order.current_status)}
                                                 <div className="text-xs text-gray-400 mt-1 font-mono">{order.last_webhook_event}</div>
                                             </td>
+
+                                            {/* WC Status (Optional) */}
+                                            {Object.keys(wcStatuses).length > 0 && (
+                                                <td className="px-4 py-3">
+                                                    {wcStatuses[order.order_id] ? (
+                                                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold 
+                                                            ${['cancelled', 'refunded'].includes(wcStatuses[order.order_id]) 
+                                                                ? 'bg-red-100 text-red-700' 
+                                                                : 'bg-gray-100 text-gray-700'}`}>
+                                                            {wcStatuses[order.order_id]}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="text-xs text-gray-400">—</span>
+                                                    )}
+                                                </td>
+                                            )}
 
                                             {/* SKUs */}
                                             <td className="px-4 py-3">
@@ -311,7 +369,14 @@ export default function UnresolvedOrders() {
                                                     </button>
                                                     {!isResolved && !isConfirming && (
                                                         <button
-                                                            onClick={() => setConfirmId(order.order_id)}
+                                                            onClick={() => {
+                                                                setConfirmId(order.order_id);
+                                                                // Pre-select based on WC status if available
+                                                                const wcStat = wcStatuses[order.order_id];
+                                                                if (wcStat === 'cancelled') setResolveType('cancelled');
+                                                                else if (wcStat === 'refunded') setResolveType('refunded');
+                                                                else setResolveType('nv-pending-pickup');
+                                                            }}
                                                             disabled={isResolving}
                                                             className="px-3 py-1.5 text-xs font-medium bg-red-50 text-red-700 border border-red-200 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
                                                         >
@@ -330,35 +395,69 @@ export default function UnresolvedOrders() {
                                         {/* Confirm resolve inline */}
                                         {isConfirming && (
                                             <tr key={`confirm-${order.order_id}`} className="bg-red-50">
-                                                <td colSpan={6} className="px-6 py-4">
+                                                <td colSpan={Object.keys(wcStatuses).length > 0 ? 7 : 6} className="px-6 py-4">
                                                     <div className="flex flex-col gap-3">
                                                         <div className="flex items-start gap-2 text-sm text-red-800">
                                                             <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-red-500" />
                                                             <div>
                                                                 <strong>Confirm manual resolve for Order #{order.order_id}</strong>
-                                                                <p className="text-xs text-red-600 mt-0.5">
-                                                                    This treats the order as a natural <strong>nv-pending-pickup</strong>: <strong>in_warehouse will be deducted</strong> by the held quantity and processing/pending counters cleared. Logged to the activity log. Cannot be undone automatically.
-                                                                </p>
+                                                                {resolveType === 'nv-pending-pickup' && (
+                                                                    <p className="text-xs text-red-600 mt-0.5">
+                                                                        This treats the order as a natural <strong>nv-pending-pickup</strong>: <strong>in_warehouse will be deducted</strong> by the held quantity and processing/pending counters cleared. Cannot be undone automatically.
+                                                                    </p>
+                                                                )}
+                                                                {resolveType === 'cancelled' && (
+                                                                    <p className="text-xs text-red-600 mt-0.5">
+                                                                        This treats the order as <strong>Cancelled</strong>: Held stock will be cleared and return to Available, but <strong>in_warehouse will NOT be deducted</strong> (goods never left).
+                                                                    </p>
+                                                                )}
+                                                                {resolveType === 'refunded' && (
+                                                                    <p className="text-xs text-red-600 mt-0.5">
+                                                                        For Refunds, it is safer to process them via the <strong>Refund/Return</strong> tab to properly document returned items and optionally restock them.
+                                                                    </p>
+                                                                )}
                                                             </div>
                                                         </div>
                                                         <div className="flex items-center gap-3">
-                                                            <input
-                                                                type="text"
-                                                                value={resolveReason}
-                                                                onChange={e => setResolveReason(e.target.value)}
-                                                                placeholder="Reason (optional)"
-                                                                className="flex-1 px-3 py-1.5 text-sm border border-red-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-red-300"
-                                                            />
-                                                            <button
-                                                                onClick={() => handleResolve(order.order_id)}
-                                                                disabled={isResolving}
-                                                                className="flex items-center gap-1.5 px-4 py-1.5 text-sm font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-60"
+                                                            <select
+                                                                value={resolveType}
+                                                                onChange={(e) => setResolveType(e.target.value as any)}
+                                                                className="px-3 py-1.5 text-sm border border-red-200 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-red-300"
                                                             >
-                                                                {isResolving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                                                                Confirm Resolve
-                                                            </button>
+                                                                <option value="nv-pending-pickup">Treat as nv-pending-pickup (Deduct Stock)</option>
+                                                                <option value="cancelled">Treat as Cancelled (Return to Available)</option>
+                                                                <option value="refunded">Treat as Refunded</option>
+                                                            </select>
+                                                            {resolveType !== 'refunded' && (
+                                                                <input
+                                                                    type="text"
+                                                                    value={resolveReason}
+                                                                    onChange={e => setResolveReason(e.target.value)}
+                                                                    placeholder="Reason (optional)"
+                                                                    className="flex-1 px-3 py-1.5 text-sm border border-red-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-red-300"
+                                                                />
+                                                            )}
+                                                            {resolveType === 'refunded' ? (
+                                                                <button
+                                                                    onClick={() => {
+                                                                        window.dispatchEvent(new CustomEvent('navigate', { detail: 'return-refund' }));
+                                                                    }}
+                                                                    className="flex items-center gap-1.5 px-4 py-1.5 text-sm font-semibold bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors"
+                                                                >
+                                                                    Go to Refunds Tab
+                                                                </button>
+                                                            ) : (
+                                                                <button
+                                                                    onClick={() => handleResolve(order.order_id)}
+                                                                    disabled={isResolving}
+                                                                    className="flex items-center gap-1.5 px-4 py-1.5 text-sm font-semibold bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-60"
+                                                                >
+                                                                    {isResolving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                                                                    Confirm Resolve
+                                                                </button>
+                                                            )}
                                                             <button
-                                                                onClick={() => { setConfirmId(null); setResolveReason(''); }}
+                                                                onClick={() => { setConfirmId(null); setResolveReason(''); setResolveType('nv-pending-pickup'); }}
                                                                 className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                                                             >
                                                                 Cancel
@@ -372,7 +471,7 @@ export default function UnresolvedOrders() {
                                         {/* Expanded SKU detail */}
                                         {isExpanded && !isConfirming && (
                                             <tr key={`detail-${order.order_id}`} className="bg-gray-50">
-                                                <td colSpan={6} className="px-6 py-4">
+                                                <td colSpan={Object.keys(wcStatuses).length > 0 ? 7 : 6} className="px-6 py-4">
                                                     <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Held Stock Breakdown</p>
                                                     <div className="overflow-x-auto">
                                                         <table className="text-xs w-auto border-collapse">

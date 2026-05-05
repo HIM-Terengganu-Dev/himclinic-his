@@ -1,4 +1,4 @@
-﻿import { query, pool } from './connection';
+import { query, pool } from './connection';
 
 /**
  * USER OPERATIONS
@@ -1993,7 +1993,8 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
 export async function resolveOrderManually(
     orderId: number,
     reason: string,
-    resolvedByUserId: number | null
+    resolvedByUserId: number | null,
+    resolutionType: 'nv-pending-pickup' | 'cancelled' | 'refunded' = 'nv-pending-pickup'
 ): Promise<Array<{ sku: string; processing_cleared: number; pending_consult_cleared: number; pending_review_cleared: number; in_warehouse_deducted: number }>> {
     const { pool } = await import('./connection');
     if (!pool) throw new Error('Database not configured');
@@ -2060,8 +2061,23 @@ export async function resolveOrderManually(
 
             if (totalCleared === 0) continue;
 
-            // ── Mirror nv-pending-pickup: in_warehouse deducted (goods left the building) ──
-            const inWarehouseAfter = Math.max(0, inWarehouseBefore - totalCleared);
+            let quantityChange = 0;
+            let transactionType = 'order_nv_pending_pickup';
+            
+            if (resolutionType === 'nv-pending-pickup') {
+                quantityChange = -totalCleared;
+            } else if (resolutionType === 'cancelled') {
+                transactionType = 'order_cancelled';
+                quantityChange = 0; // in_warehouse is kept intact
+            } else if (resolutionType === 'refunded') {
+                transactionType = 'order_refunded';
+                quantityChange = 0; // in_warehouse is kept intact
+            }
+
+            // ── Mirror nv-pending-pickup (or cancellation): processing/pending are cleared ──
+            // If nv-pending-pickup: in_warehouse deducted (goods left the building)
+            // If cancelled/refunded: in_warehouse unchanged (goods never left building)
+            const inWarehouseAfter = Math.max(0, inWarehouseBefore + quantityChange);
             const stockAfter = inWarehouseAfter;
             const processingAfter = processingBefore - clearProcessing;
             const pcAfter = pcBefore - clearPc;
@@ -2082,20 +2098,19 @@ export async function resolveOrderManually(
                     source_type, source_id, source_event,
                     created_by, details, created_at
                 ) VALUES (
-                    $1, $2, 'order_nv_pending_pickup', $3,
-                    $4, $5,
-                    $6, $7,
-                    $8, $9,
-                    $10, $11,
-                    $12, $13,
-                    $14, $15,
-                    $16, $17,
-                    'order', $18, 'admin.manual_resolve',
-                    $19, $20::jsonb, NOW()
+                    $1, $2, $3, $4,
+                    $5, $6,
+                    $7, $8,
+                    $9, $10,
+                    $11, $12,
+                    $13, $14,
+                    $15, $16,
+                    $17, $18,
+                    'order', $19, 'admin.manual_resolve',
+                    $20, $21::jsonb, NOW()
                 )
             `, [
-                row.sku, row.single_sku_id,
-                -totalCleared,                        // quantity_change: negative = deducted from in_warehouse
+                row.sku, row.single_sku_id, transactionType, quantityChange,
                 stockBefore, stockAfter,
                 pendingBefore, pendingAfter,
                 inWarehouseBefore, inWarehouseAfter,
@@ -2109,14 +2124,15 @@ export async function resolveOrderManually(
                     reason,
                     order_id: orderId,
                     manual_resolve: true,
+                    resolution_type: resolutionType,
                     cleared: {
                         processing: clearProcessing,
                         pending_consult: clearPc,
                         pending_review: clearPr,
                         total: totalCleared,
                     },
-                    in_warehouse_deducted: totalCleared,
-                    note: 'Admin manually resolved — treated as nv-pending-pickup (in_warehouse deducted, stock released)',
+                    in_warehouse_deducted: -quantityChange,
+                    note: `Admin manually resolved as ${resolutionType} — ${resolutionType === 'nv-pending-pickup' ? 'in_warehouse deducted' : 'in_warehouse restored/unchanged'}, held stock released`,
                 }),
             ]);
 
@@ -2125,7 +2141,7 @@ export async function resolveOrderManually(
                 processing_cleared: clearProcessing,
                 pending_consult_cleared: clearPc,
                 pending_review_cleared: clearPr,
-                in_warehouse_deducted: totalCleared,
+                in_warehouse_deducted: -quantityChange,
             });
         }
 
@@ -2141,10 +2157,10 @@ export async function resolveOrderManually(
                 details: {
                     order_id: orderId,
                     reason,
+                    resolution_type: resolutionType,
                     resolved_skus: results,
                     total_skus_affected: results.length,
-                    note: 'Admin manually resolved unresolved order via Admin Access → Unresolved Orders. ' +
-                        'Treated as natural nv-pending-pickup: in_warehouse deducted by held qty, processing/pending cleared.',
+                    note: `Admin manually resolved unresolved order via Admin Access → Unresolved Orders. Treated as ${resolutionType}: ${resolutionType === 'nv-pending-pickup' ? 'in_warehouse deducted' : 'in_warehouse intact'}, processing/pending cleared.`,
                 },
                 success: true,
             }).catch((err: any) => {
