@@ -220,8 +220,8 @@ export default function UnresolvedOrders() {
                     Orders tracked from <strong>3 March 2026</strong> onwards that are still holding stock in
                     <strong> pending-consult</strong>, <strong>pending-review</strong>, or <strong>processing</strong> —
                     and have <em>not</em> exited via nv-pending-pickup, cancelled, or refunded.
-                    Resolving an order treats it as a natural <strong>nv-pending-pickup</strong>:
-                    held stock is deducted from <strong>in_warehouse</strong> and processing/pending counters are cleared.
+                    You can resolve orders by matching them to their actual WooCommerce status. 
+                    <strong>nv-pending-pickup</strong> deducts stock from the warehouse, while <strong>Cancelled</strong> returns held stock to available without deducting from the warehouse.
                     Every resolve is logged in the system activity log.
                 </div>
             </div>
