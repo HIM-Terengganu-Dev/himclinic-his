@@ -237,6 +237,55 @@ export default function UnresolvedOrders() {
     };
 
     return (
+        <>
+        {/* Fixed Bulk Action Bar - appears at the bottom when orders are selected */}
+        {!loading && !error && selectedOrders.size > 0 && (
+            <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-blue-200 bg-white/95 backdrop-blur-sm shadow-[0_-4px_24px_rgba(0,0,0,0.08)] px-6 py-3">
+                <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                        <div className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-semibold">
+                            {selectedOrders.size} order{selectedOrders.size !== 1 ? 's' : ''} selected
+                        </div>
+                        <span className="text-sm text-gray-500">Bulk Resolve Action</span>
+                    </div>
+                    <div className="flex flex-col sm:flex-row items-center gap-3">
+                        <select
+                            value={bulkResolveType}
+                            onChange={(e) => setBulkResolveType(e.target.value as any)}
+                            disabled={isBulkResolving}
+                            className="w-full sm:w-auto px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                            <option value="nv-pending-pickup">nv-pending-pickup (Deduct Stock)</option>
+                            <option value="cancelled">Cancelled (Return to Available)</option>
+                        </select>
+                        <input
+                            type="text"
+                            value={bulkResolveReason}
+                            onChange={e => setBulkResolveReason(e.target.value)}
+                            disabled={isBulkResolving}
+                            placeholder="Reason (optional)"
+                            className="w-full sm:w-48 px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                            onClick={handleBulkResolve}
+                            disabled={isBulkResolving}
+                            className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-5 py-1.5 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-60"
+                        >
+                            {isBulkResolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                            Resolve Selected
+                        </button>
+                        <button
+                            onClick={() => setSelectedOrders(new Set())}
+                            disabled={isBulkResolving}
+                            className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                        >
+                            Clear
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
         <div className="space-y-4">
             {/* Toast */}
             {toast && (
@@ -322,44 +371,7 @@ export default function UnresolvedOrders() {
                 </div>
             )}
 
-            {/* Bulk Action Bar */}
-            {!loading && !error && selectedOrders.size > 0 && (
-                <div className="sticky top-0 z-30 bg-white/95 backdrop-blur-sm border border-blue-200 rounded-xl p-4 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div className="flex items-center gap-2">
-                        <div className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-semibold">
-                            {selectedOrders.size} selected
-                        </div>
-                        <span className="text-sm text-gray-600 font-medium">Bulk Resolve Action</span>
-                    </div>
-                    <div className="flex flex-col sm:flex-row items-center gap-3">
-                        <select
-                            value={bulkResolveType}
-                            onChange={(e) => setBulkResolveType(e.target.value as any)}
-                            disabled={isBulkResolving}
-                            className="w-full sm:w-auto px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        >
-                            <option value="nv-pending-pickup">Treat as nv-pending-pickup (Deduct Stock)</option>
-                            <option value="cancelled">Treat as Cancelled (Return to Available)</option>
-                        </select>
-                        <input
-                            type="text"
-                            value={bulkResolveReason}
-                            onChange={e => setBulkResolveReason(e.target.value)}
-                            disabled={isBulkResolving}
-                            placeholder="Reason (optional)"
-                            className="w-full sm:w-auto px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                        <button
-                            onClick={handleBulkResolve}
-                            disabled={isBulkResolving}
-                            className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-1.5 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-60"
-                        >
-                            {isBulkResolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                            Resolve Selected
-                        </button>
-                    </div>
-                </div>
-            )}
+            {/* Bulk Action Bar moved to fixed footer — rendered above */}
 
             {/* Order table */}
             {!loading && !error && orders.length > 0 && (
@@ -644,5 +656,6 @@ export default function UnresolvedOrders() {
                 </div>
             )}
         </div>
+        </>
     );
 }
