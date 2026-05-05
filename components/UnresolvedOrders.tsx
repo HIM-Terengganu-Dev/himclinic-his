@@ -80,6 +80,13 @@ export default function UnresolvedOrders() {
     const [resolveType, setResolveType] = useState<'nv-pending-pickup' | 'cancelled' | 'refunded'>('nv-pending-pickup');
     const [wcStatuses, setWcStatuses] = useState<Record<number, string>>({});
     const [isCheckingWc, setIsCheckingWc] = useState(false);
+    
+    // Bulk resolve state
+    const [selectedOrders, setSelectedOrders] = useState<Set<number>>(new Set());
+    const [isBulkResolving, setIsBulkResolving] = useState(false);
+    const [bulkResolveType, setBulkResolveType] = useState<'nv-pending-pickup' | 'cancelled'>('nv-pending-pickup');
+    const [bulkResolveReason, setBulkResolveReason] = useState('');
+
     const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
     const showToast = (type: 'success' | 'error', msg: string) => {
@@ -163,6 +170,70 @@ export default function UnresolvedOrders() {
             setResolveReason('');
             setResolveType('nv-pending-pickup');
         }
+    };
+
+    const handleBulkResolve = async () => {
+        if (selectedOrders.size === 0) return;
+        setIsBulkResolving(true);
+        try {
+            const res = await fetch('/api/orders/unresolved/resolve-bulk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    orderIds: Array.from(selectedOrders),
+                    reason: bulkResolveReason || 'Bulk manual resolution by admin',
+                    resolutionType: bulkResolveType
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to bulk resolve');
+            
+            if (data.errorCount > 0) {
+                showToast('error', `Resolved ${data.resolvedCount} orders, but failed on ${data.errorCount} orders.`);
+            } else {
+                showToast('success', `Successfully resolved ${data.resolvedCount} orders.`);
+            }
+            
+            // Mark as resolved visually
+            setResolved(prev => {
+                const next = new Set(prev);
+                Array.from(selectedOrders).forEach(id => next.add(id));
+                return next;
+            });
+            
+            setTimeout(() => {
+                setOrders(prev => prev.filter(o => !selectedOrders.has(o.order_id)));
+                setResolved(prev => {
+                    const next = new Set(prev);
+                    Array.from(selectedOrders).forEach(id => next.delete(id));
+                    return next;
+                });
+                setSelectedOrders(new Set());
+                setBulkResolveReason('');
+                setBulkResolveType('nv-pending-pickup');
+            }, 1500);
+        } catch (e: any) {
+            showToast('error', e.message);
+        } finally {
+            setIsBulkResolving(false);
+        }
+    };
+
+    const toggleSelectAll = () => {
+        if (selectedOrders.size === orders.length) {
+            setSelectedOrders(new Set());
+        } else {
+            setSelectedOrders(new Set(orders.map(o => o.order_id)));
+        }
+    };
+
+    const toggleSelect = (id: number) => {
+        setSelectedOrders(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
     };
 
     return (
@@ -251,12 +322,59 @@ export default function UnresolvedOrders() {
                 </div>
             )}
 
+            {/* Bulk Action Bar */}
+            {!loading && !error && selectedOrders.size > 0 && (
+                <div className="bg-white border border-blue-200 rounded-xl p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4">
+                    <div className="flex items-center gap-2">
+                        <div className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-semibold">
+                            {selectedOrders.size} selected
+                        </div>
+                        <span className="text-sm text-gray-600 font-medium">Bulk Resolve Action</span>
+                    </div>
+                    <div className="flex flex-col sm:flex-row items-center gap-3">
+                        <select
+                            value={bulkResolveType}
+                            onChange={(e) => setBulkResolveType(e.target.value as any)}
+                            disabled={isBulkResolving}
+                            className="w-full sm:w-auto px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                            <option value="nv-pending-pickup">Treat as nv-pending-pickup (Deduct Stock)</option>
+                            <option value="cancelled">Treat as Cancelled (Return to Available)</option>
+                        </select>
+                        <input
+                            type="text"
+                            value={bulkResolveReason}
+                            onChange={e => setBulkResolveReason(e.target.value)}
+                            disabled={isBulkResolving}
+                            placeholder="Reason (optional)"
+                            className="w-full sm:w-auto px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                            onClick={handleBulkResolve}
+                            disabled={isBulkResolving}
+                            className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-1.5 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-60"
+                        >
+                            {isBulkResolving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                            Resolve Selected
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Order table */}
             {!loading && !error && orders.length > 0 && (
                 <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
                     <table className="w-full text-sm">
                         <thead className="bg-gray-50 border-b border-gray-200">
                             <tr>
+                                <th className="px-4 py-3 w-12 text-center">
+                                    <input 
+                                        type="checkbox" 
+                                        checked={selectedOrders.size === orders.length && orders.length > 0}
+                                        onChange={toggleSelectAll}
+                                        className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                                    />
+                                </th>
                                 <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Order</th>
                                 <th className="text-left px-4 py-3 font-semibold text-gray-600 text-xs uppercase tracking-wide">Status</th>
                                 {Object.keys(wcStatuses).length > 0 && (
@@ -279,8 +397,19 @@ export default function UnresolvedOrders() {
                                     <>
                                         <tr
                                             key={order.order_id}
-                                            className={`hover:bg-gray-50 transition-colors ${isResolved ? 'opacity-50' : ''}`}
+                                            className={`hover:bg-gray-50 transition-colors ${isResolved ? 'opacity-50' : ''} ${selectedOrders.has(order.order_id) ? 'bg-blue-50/30' : ''}`}
                                         >
+                                            {/* Checkbox */}
+                                            <td className="px-4 py-3 text-center">
+                                                <input 
+                                                    type="checkbox" 
+                                                    checked={selectedOrders.has(order.order_id)}
+                                                    onChange={() => toggleSelect(order.order_id)}
+                                                    disabled={isResolved || isResolving}
+                                                    className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer disabled:opacity-50"
+                                                />
+                                            </td>
+
                                             {/* Order ID */}
                                             <td className="px-4 py-3">
                                                 <div className="flex items-center gap-2">
@@ -395,7 +524,7 @@ export default function UnresolvedOrders() {
                                         {/* Confirm resolve inline */}
                                         {isConfirming && (
                                             <tr key={`confirm-${order.order_id}`} className="bg-red-50">
-                                                <td colSpan={Object.keys(wcStatuses).length > 0 ? 7 : 6} className="px-6 py-4">
+                                                <td colSpan={Object.keys(wcStatuses).length > 0 ? 8 : 7} className="px-6 py-4">
                                                     <div className="flex flex-col gap-3">
                                                         <div className="flex items-start gap-2 text-sm text-red-800">
                                                             <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-red-500" />
@@ -471,7 +600,7 @@ export default function UnresolvedOrders() {
                                         {/* Expanded SKU detail */}
                                         {isExpanded && !isConfirming && (
                                             <tr key={`detail-${order.order_id}`} className="bg-gray-50">
-                                                <td colSpan={Object.keys(wcStatuses).length > 0 ? 7 : 6} className="px-6 py-4">
+                                                <td colSpan={Object.keys(wcStatuses).length > 0 ? 8 : 7} className="px-6 py-4">
                                                     <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Held Stock Breakdown</p>
                                                     <div className="overflow-x-auto">
                                                         <table className="text-xs w-auto border-collapse">
