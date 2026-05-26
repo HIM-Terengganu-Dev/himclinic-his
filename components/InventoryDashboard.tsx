@@ -1,7 +1,8 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { InventoryStock, ComboAvailability } from '@/types/inventory';
-import { Package, TrendingUp, AlertTriangle } from 'lucide-react';
+import { Package, TrendingUp, AlertTriangle, Globe, RefreshCw, CheckCircle } from 'lucide-react';
 
 interface SingleSkuInfo {
   sku: string;
@@ -41,6 +42,29 @@ export default function InventoryDashboard({
   pendingStock = {},
   loading,
 }: InventoryDashboardProps) {
+  const [webhookStatus, setWebhookStatus] = useState<'active' | 'paused' | 'disabled' | 'unconfigured' | 'error' | null>(null);
+  const [webhookDetails, setWebhookDetails] = useState<any>(null);
+
+  useEffect(() => {
+    fetch('/api/webhooks/status')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          if (data.configured) {
+            setWebhookStatus(data.webhook.status);
+            setWebhookDetails(data.webhook);
+          } else {
+            setWebhookStatus('unconfigured');
+          }
+        } else {
+          setWebhookStatus('error');
+        }
+      })
+      .catch(() => {
+        setWebhookStatus('error');
+      });
+  }, []);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -82,6 +106,101 @@ export default function InventoryDashboard({
 
   return (
     <div className="space-y-8">
+      {/* WooCommerce Webhook Diagnostic Banner */}
+      {webhookStatus && webhookStatus !== 'active' && (
+        <div className={`border-2 rounded-xl p-5 shadow-sm animate-in fade-in slide-in-from-top-4 ${
+          webhookStatus === 'disabled' || webhookStatus === 'paused'
+            ? 'bg-red-50 border-red-200 text-red-900'
+            : webhookStatus === 'unconfigured'
+            ? 'bg-amber-50 border-amber-200 text-amber-900'
+            : 'bg-gray-50 border-gray-200 text-gray-800'
+        }`}>
+          <div className="flex items-start gap-4">
+            <div className="flex-shrink-0 mt-0.5">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                webhookStatus === 'disabled' || webhookStatus === 'paused'
+                  ? 'bg-red-100 text-red-600'
+                  : webhookStatus === 'unconfigured'
+                  ? 'bg-amber-100 text-amber-600'
+                  : 'bg-gray-200 text-gray-600'
+              }`}>
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+            </div>
+            <div className="flex-1">
+              <h4 className="text-md font-bold mb-1">
+                {webhookStatus === 'disabled' || webhookStatus === 'paused'
+                  ? '🔴 WooCommerce Webhook Disconnected!'
+                  : webhookStatus === 'unconfigured'
+                  ? '⚠️ WooCommerce Webhook Unconfigured'
+                  : '⚠️ Webhook Connection Error'}
+              </h4>
+              <p className="text-sm opacity-90 leading-relaxed mb-3">
+                {webhookStatus === 'disabled' || webhookStatus === 'paused'
+                  ? `WooCommerce has disabled or paused order syncing for your store. Real-time sales and stock changes are currently OFFLINE. (Webhook ID: ${webhookDetails?.id || 'Unknown'})`
+                  : webhookStatus === 'unconfigured'
+                  ? 'No WooCommerce webhook topic "order.updated" was detected pointing to your Vercel domains. Live order stock syncing will not operate.'
+                  : 'Could not fetch live webhook connection status from WooCommerce.'}
+              </p>
+              <div className="flex flex-wrap gap-3">
+                <a 
+                  href="https://forhimclinic.com/wp-admin/admin.php?page=wc-settings&tab=advanced&section=webhooks"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-colors ${
+                    webhookStatus === 'disabled' || webhookStatus === 'paused'
+                      ? 'bg-red-600 hover:bg-red-700 text-white'
+                      : 'bg-amber-600 hover:bg-amber-700 text-white'
+                  }`}
+                >
+                  <Globe className="w-3.5 h-3.5" />
+                  Open WooCommerce Settings
+                </a>
+                <button 
+                  onClick={() => {
+                    setWebhookStatus(null);
+                    fetch('/api/webhooks/status')
+                      .then(res => res.json())
+                      .then(data => {
+                        if (data.success && data.configured) {
+                          setWebhookStatus(data.webhook.status);
+                          setWebhookDetails(data.webhook);
+                        } else if (data.success) {
+                          setWebhookStatus('unconfigured');
+                        } else {
+                          setWebhookStatus('error');
+                        }
+                      });
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Re-Check Status
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {webhookStatus === 'active' && (
+        <div className="bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">
+              <CheckCircle className="w-4 h-4" />
+            </div>
+            <div>
+              <span className="text-sm font-semibold text-emerald-950">WooCommerce Webhook Online</span>
+              <p className="text-xs text-emerald-700 mt-0.5">
+                Order status updates and inventory syncing are functioning in real-time.
+              </p>
+            </div>
+          </div>
+          <div className="text-xs font-medium text-emerald-700 bg-emerald-100/50 px-2.5 py-1 rounded-full border border-emerald-200 whitespace-nowrap self-start sm:self-auto">
+            Active: {webhookDetails?.delivery_url ? new URL(webhookDetails.delivery_url).hostname : 'Vercel'}
+          </div>
+        </div>
+      )}
       {/* Low Stock Summary Header */}
       {totalLowStockCount > 0 && (
         <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-lg p-6 shadow-sm">
