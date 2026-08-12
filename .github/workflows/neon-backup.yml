@@ -1,0 +1,40 @@
+name: Neon Database Daily Backup
+
+on:
+  schedule:
+    # Run every day at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allow manual trigger via GitHub UI
+
+jobs:
+  backup:
+    name: Backup Neon PostgreSQL DB
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL Client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Run Database Dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret is missing!"
+            exit 1
+          fi
+          mkdir -p backups
+          TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          BACKUP_FILENAME="neon_backup_${TIMESTAMP}.dump"
+          pg_dump "$DATABASE_URL" -Fc --schema=public -f "backups/${BACKUP_FILENAME}"
+      - name: Upload Backup Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: neon-db-backup-${{ github.run_number }}
+          path: backups/*.dump
+          retention-days: 30

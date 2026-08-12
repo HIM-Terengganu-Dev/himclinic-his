@@ -560,7 +560,7 @@ export async function logWcWebhook(data: {
     stockQuantity?: number;
     previousStockQuantity?: number;
     affectedSkus?: string[];
-    comboUpdates?: Array<{ sku: string; newStock: number; wcProductId?: number; error?: string }>;
+    comboUpdates?: Array<{ sku: string; previousStock?: number; newStock: number; wcProductId?: number; error?: string }>;
     details?: any;
     ipAddress?: string;
     userAgent?: string;
@@ -1902,7 +1902,7 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
             FROM his_db.wc_webhook_logs
             WHERE webhook_type = 'order'
               AND success = true
-              AND webhook_event IN ('order.nv-pending-pickup', 'order.cancelled', 'order.refunded')
+              AND webhook_event IN ('order.nv-pending-pickup', 'order.cancelled', 'order.refunded', 'order.manual_resolve', 'order.manual_resolved')
               AND created_at >= $1::timestamptz
         ),
         ActiveOrders AS (
@@ -2003,28 +2003,29 @@ export async function resolveOrderManually(
     try {
         await client.query('BEGIN');
 
-        // Get the latest stock_transaction per SKU that came from this order
+        // Get net held stock per SKU contributed by this specific order
+        // Summing deltas gives the exact quantity this specific order added to processing/pending counters
         const orderTxRes = await client.query(`
-            SELECT DISTINCT ON (sku)
+            SELECT
                 sku,
-                single_sku_id,
-                processing_after,
-                pending_consult_after,
-                pending_review_after
+                MAX(single_sku_id) AS single_sku_id,
+                GREATEST(0, SUM(processing_after - processing_before)) AS order_processing,
+                GREATEST(0, SUM(pending_consult_after - pending_consult_before)) AS order_pending_consult,
+                GREATEST(0, SUM(pending_review_after - pending_review_before)) AS order_pending_review
             FROM his_db.stock_transactions
-            WHERE source_id = $1
+            WHERE source_id::text = $1::text
               AND source_type = 'order'
-            ORDER BY sku, id DESC
+            GROUP BY sku
         `, [orderId]);
 
         const results: Array<{ sku: string; processing_cleared: number; pending_consult_cleared: number; pending_review_cleared: number; in_warehouse_deducted: number }> = [];
 
         for (const row of orderTxRes.rows) {
-            const orderProcessing = parseInt(row.processing_after || '0', 10);
-            const orderPendingConsult = parseInt(row.pending_consult_after || '0', 10);
-            const orderPendingReview = parseInt(row.pending_review_after || '0', 10);
+            const orderProcessing = parseInt(row.order_processing || '0', 10);
+            const orderPendingConsult = parseInt(row.order_pending_consult || '0', 10);
+            const orderPendingReview = parseInt(row.order_pending_review || '0', 10);
 
-            // Skip if this order's last tx contributed nothing
+            // Skip if this order's transactions contributed nothing to held stock
             if (orderProcessing === 0 && orderPendingConsult === 0 && orderPendingReview === 0) continue;
 
             // Get the current global stock state for this SKU
@@ -2079,10 +2080,10 @@ export async function resolveOrderManually(
             // If cancelled/refunded: in_warehouse unchanged (goods never left building)
             const inWarehouseAfter = Math.max(0, inWarehouseBefore + quantityChange);
             const stockAfter = inWarehouseAfter;
-            const processingAfter = processingBefore - clearProcessing;
-            const pcAfter = pcBefore - clearPc;
-            const prAfter = prBefore - clearPr;
-            const pendingAfter = pendingBefore - (clearPc + clearPr);
+            const processingAfter = Math.max(0, processingBefore - clearProcessing);
+            const pcAfter = Math.max(0, pcBefore - clearPc);
+            const prAfter = Math.max(0, prBefore - clearPr);
+            const pendingAfter = Math.max(0, pendingBefore - (clearPc + clearPr));
             const backorderAfter = Math.max(0, (processingAfter + pcAfter + prAfter) - inWarehouseAfter);
 
             await client.query(`
@@ -2144,6 +2145,20 @@ export async function resolveOrderManually(
                 in_warehouse_deducted: -quantityChange,
             });
         }
+
+        // Insert resolution event into wc_webhook_logs so getUnresolvedOrders classifies this order as terminal
+        await client.query(`
+            INSERT INTO his_db.wc_webhook_logs (
+                webhook_type, webhook_event, entity_id, current_status, success, payload, created_at
+            ) VALUES (
+                'order', $1, $2, $3, true, $4::jsonb, NOW()
+            )
+        `, [
+            `order.${resolutionType === 'nv-pending-pickup' ? 'nv-pending-pickup' : resolutionType === 'cancelled' ? 'cancelled' : 'refunded'}`,
+            orderId,
+            resolutionType,
+            JSON.stringify({ manual_resolve: true, reason, resolution_type: resolutionType, resolved_at: new Date().toISOString() })
+        ]);
 
         await client.query('COMMIT');
 

@@ -1164,23 +1164,26 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
             return components.some((comp: any) => affectedSingleSkus.has(comp.sku));
         });
 
-        const comboUpdates: Array<{ sku: string; newStock: number }> = [];
+        const comboUpdates: Array<{ sku: string; previousStock?: number; newStock: number }> = [];
 
         if (affectedCombos.length > 0) {
             console.log(`Recalculating ${affectedCombos.length} affected combo SKU(s) after ${previousStatus} cancellation`);
 
             // Build stock map: fetch current stock from WooCommerce
             const stockMap: Record<string, number> = {};
+            const stockMapBefore: Record<string, number> = {};
 
             // Use restored stock values if available
             for (const restored of restoredComponentStocks) {
                 stockMap[restored.sku] = restored.newStock;
+                stockMapBefore[restored.sku] = restored.previousStock ?? restored.newStock;
             }
 
             // Use stock readings if available
             for (const reading of stockReadings) {
                 if (!stockMap.hasOwnProperty(reading.sku)) {
                     stockMap[reading.sku] = reading.wcStock;
+                    stockMapBefore[reading.sku] = (reading as any).previousStock ?? reading.wcStock;
                 }
             }
 
@@ -1199,9 +1202,11 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                     try {
                         const currentState = await getCurrentStockState(s);
                         stockMap[s] = currentState.inWarehouse; // Use in_warehouse for combo calculations
+                        stockMapBefore[s] = currentState.inWarehouse;
                     } catch (e) {
                         console.warn(`Failed to fetch stock for component ${s} from database`, e);
                         stockMap[s] = 0;
+                        stockMapBefore[s] = 0;
                     }
                 }
             }));
@@ -1210,19 +1215,23 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
             for (const combo of affectedCombos) {
                 const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
                 let comboLimit = Infinity;
+                let comboLimitBefore = Infinity;
 
                 for (const comp of components) {
                     const stock = stockMap[comp.sku] || 0;
                     const canMake = Math.floor(stock / comp.quantity);
                     if (canMake < comboLimit) comboLimit = canMake;
+
+                    const stockBefore = stockMapBefore[comp.sku] ?? stock;
+                    const canMakeBefore = Math.floor(stockBefore / comp.quantity);
+                    if (canMakeBefore < comboLimitBefore) comboLimitBefore = canMakeBefore;
                 }
 
                 if (comboLimit === Infinity) comboLimit = 0;
+                if (comboLimitBefore === Infinity) comboLimitBefore = 0;
 
-                // Note: Combo availability is calculated from database transactions
-                // No need to update WooCommerce - database is source of truth
-                comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
-                console.log(`✅ Calculated combo ${combo.sku} availability after ${previousStatus} cancellation: ${comboLimit} units (database only)`);
+                comboUpdates.push({ sku: combo.sku, previousStock: comboLimitBefore, newStock: comboLimit });
+                console.log(`✅ Calculated combo ${combo.sku} availability after ${previousStatus} cancellation: ${comboLimitBefore} → ${comboLimit} units (database only)`);
             }
         }
 
@@ -1249,6 +1258,7 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                 affectedSkus: orderSkus,
                 comboUpdates: comboUpdates.map(u => ({
                     sku: u.sku,
+                    previousStock: u.previousStock,
                     newStock: u.newStock
                 })),
                 details: {
@@ -1685,17 +1695,19 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
             return components.some((comp: any) => affectedSingleSkus.has(comp.sku));
         });
 
-        const comboUpdates: Array<{ sku: string; newStock: number }> = [];
+        const comboUpdates: Array<{ sku: string; previousStock?: number; newStock: number }> = [];
 
         if (affectedCombos.length > 0) {
             console.log(`Recalculating ${affectedCombos.length} affected combo SKU(s) for ${status} status`);
 
             // Build stock map: fetch current stock from database (after deductions)
             const stockMap: Record<string, number> = {};
+            const stockMapBefore: Record<string, number> = {};
 
             // Use updated stock from pendingStockUpdates if available, otherwise fetch from database
             for (const update of pendingStockUpdates) {
                 stockMap[update.sku] = update.wcStock; // Use the stock after deduction
+                stockMapBefore[update.sku] = (update as any).previousStock ?? update.wcStock;
             }
 
             // Collect all unique component SKUs needed for affected combos
@@ -1713,9 +1725,11 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                     try {
                         const currentState = await getCurrentStockState(s);
                         stockMap[s] = currentState.inWarehouse; // Use in_warehouse for combo calculations
+                        stockMapBefore[s] = currentState.inWarehouse;
                     } catch (e) {
                         console.warn(`Failed to fetch stock for component ${s} from database`, e);
                         stockMap[s] = 0;
+                        stockMapBefore[s] = 0;
                     }
                 }
             }));
@@ -1724,19 +1738,25 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
             for (const combo of affectedCombos) {
                 const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
                 let comboLimit = Infinity;
+                let comboLimitBefore = Infinity;
 
                 for (const comp of components) {
                     const stock = stockMap[comp.sku] || 0;
                     const canMake = Math.floor(stock / comp.quantity);
                     if (canMake < comboLimit) comboLimit = canMake;
+
+                    const stockBefore = stockMapBefore[comp.sku] ?? stock;
+                    const canMakeBefore = Math.floor(stockBefore / comp.quantity);
+                    if (canMakeBefore < comboLimitBefore) comboLimitBefore = canMakeBefore;
                 }
 
                 if (comboLimit === Infinity) comboLimit = 0;
+                if (comboLimitBefore === Infinity) comboLimitBefore = 0;
 
                 // Note: Combo availability is calculated from database transactions
                 // No need to update WooCommerce - database is source of truth
-                comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
-                console.log(`✅ Calculated combo ${combo.sku} availability for ${status}: ${comboLimit} units (database only)`);
+                comboUpdates.push({ sku: combo.sku, previousStock: comboLimitBefore, newStock: comboLimit });
+                console.log(`✅ Calculated combo ${combo.sku} availability for ${status}: ${comboLimitBefore} → ${comboLimit} units (database only)`);
             }
         }
 
@@ -1763,6 +1783,7 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                 affectedSkus: orderSkus,
                 comboUpdates: comboUpdates.map(u => ({
                     sku: u.sku,
+                    previousStock: u.previousStock,
                     newStock: u.newStock
                 })),
                 details: {
@@ -2643,16 +2664,18 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             return components.some((comp: any) => Object.keys(totalRestorations).includes(comp.sku));
         });
 
-        const comboUpdates: Array<{ sku: string; newStock: number }> = [];
+        const comboUpdates: Array<{ sku: string; previousStock?: number; newStock: number }> = [];
 
         if (affectedCombos.length > 0) {
             console.log(`Recalculating ${affectedCombos.length} combo SKU(s) after cancellation restoration`);
 
             const stockMap: Record<string, number> = {};
+            const stockMapBefore: Record<string, number> = {};
 
             // Use restored stock values
             for (const update of [...restoredUpdates, ...wcSideRestorations]) {
                 stockMap[update.sku] = update.newStock;
+                stockMapBefore[update.sku] = update.previousStock ?? update.newStock;
             }
 
             // Fetch current stock for other components from database
@@ -2664,8 +2687,10 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     try {
                         const currentState = await getCurrentStockState(sku);
                         stockMap[sku] = currentState.inWarehouse; // Use in_warehouse for combo calculations
+                        stockMapBefore[sku] = currentState.inWarehouse;
                     } catch (e) {
                         stockMap[sku] = 0;
+                        stockMapBefore[sku] = 0;
                     }
                 }
             }
@@ -2684,8 +2709,10 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     try {
                         const currentState = await getCurrentStockState(s);
                         stockMap[s] = currentState.inWarehouse; // Use in_warehouse for combo calculations
+                        stockMapBefore[s] = currentState.inWarehouse;
                     } catch (e) {
                         stockMap[s] = 0;
+                        stockMapBefore[s] = 0;
                     }
                 }
             }));
@@ -2694,19 +2721,25 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             for (const combo of affectedCombos) {
                 const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
                 let comboLimit = Infinity;
+                let comboLimitBefore = Infinity;
 
                 for (const comp of components) {
                     const stock = stockMap[comp.sku] || 0;
                     const canMake = Math.floor(stock / comp.quantity);
                     if (canMake < comboLimit) comboLimit = canMake;
+
+                    const stockBefore = stockMapBefore[comp.sku] ?? stock;
+                    const canMakeBefore = Math.floor(stockBefore / comp.quantity);
+                    if (canMakeBefore < comboLimitBefore) comboLimitBefore = canMakeBefore;
                 }
 
                 if (comboLimit === Infinity) comboLimit = 0;
+                if (comboLimitBefore === Infinity) comboLimitBefore = 0;
 
                 // Note: Combo availability is calculated from database transactions
                 // No need to update WooCommerce - database is source of truth
-                comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
-                console.log(`✅ Calculated combo ${combo.sku} availability after cancellation: ${comboLimit} units (database only)`);
+                comboUpdates.push({ sku: combo.sku, previousStock: comboLimitBefore, newStock: comboLimit });
+                console.log(`✅ Calculated combo ${combo.sku} availability after cancellation: ${comboLimitBefore} → ${comboLimit} units (database only)`);
             }
         }
 
@@ -2732,7 +2765,7 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                 status: payload.status,
                 currentStatus: 'cancelled', // Track current status
                 affectedSkus: orderSkus,
-                comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock })),
+                comboUpdates: comboUpdates.map(u => ({ sku: u.sku, previousStock: u.previousStock, newStock: u.newStock })),
                 details: {
                     orderId,
                     status: payload.status,

@@ -13,6 +13,7 @@ import {
     Loader2,
     ShieldAlert,
     Info,
+    FlaskConical,
 } from 'lucide-react';
 
 interface HeldSku {
@@ -87,6 +88,9 @@ export default function UnresolvedOrders() {
     const [bulkResolveType, setBulkResolveType] = useState<'nv-pending-pickup' | 'cancelled'>('nv-pending-pickup');
     const [bulkResolveReason, setBulkResolveReason] = useState('');
 
+    // Sandbox mode state
+    const [isSandbox, setIsSandbox] = useState(false);
+
     const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
     const showToast = (type: 'success' | 'error', msg: string) => {
@@ -94,11 +98,15 @@ export default function UnresolvedOrders() {
         setTimeout(() => setToast(null), 4000);
     };
 
-    const fetchOrders = useCallback(async () => {
+    const fetchOrders = useCallback(async (sandboxState?: boolean) => {
+        const useSandbox = sandboxState !== undefined ? sandboxState : isSandbox;
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch('/api/orders/unresolved', { cache: 'no-store' });
+            const res = await fetch('/api/orders/unresolved', { 
+                cache: 'no-store',
+                headers: useSandbox ? { 'x-sandbox-mode': 'true' } : {}
+            });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to load');
             setOrders(data.orders || []);
@@ -107,9 +115,24 @@ export default function UnresolvedOrders() {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [isSandbox]);
 
     useEffect(() => { fetchOrders(); }, [fetchOrders]);
+
+    const handleResetSandbox = async () => {
+        setLoading(true);
+        try {
+            const res = await fetch('/api/orders/unresolved/sandbox-reset', { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to reset sandbox');
+            setOrders(data.orders || []);
+            showToast('success', 'Sandbox test data reset successfully.');
+        } catch (e: any) {
+            showToast('error', e.message);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const handleCheckWc = async () => {
         if (orders.length === 0) return;
@@ -143,12 +166,15 @@ export default function UnresolvedOrders() {
     const handleResolve = async (orderId: number) => {
         setResolving(prev => new Set(prev).add(orderId));
         try {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (isSandbox) headers['x-sandbox-mode'] = 'true';
+
             const res = await fetch('/api/orders/unresolved/resolve', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ 
                     orderId, 
-                    reason: resolveReason || 'Manual resolution by admin',
+                    reason: resolveReason || (isSandbox ? 'Sandbox resolution' : 'Manual resolution by admin'),
                     resolutionType: resolveType
                 }),
             });
@@ -156,7 +182,7 @@ export default function UnresolvedOrders() {
             if (!res.ok) throw new Error(data.error || 'Failed to resolve');
             setResolved(prev => new Set(prev).add(orderId));
             const totalDeducted = (data.resolved || []).reduce((s: number, r: any) => s + (r.in_warehouse_deducted || 0), 0);
-            showToast('success', `Order #${orderId} resolved — ${data.resolved?.length ?? 0} SKU(s) cleared, ${totalDeducted} unit(s) deducted from in_warehouse.`);
+            showToast('success', `${isSandbox ? '[SANDBOX] ' : ''}Order #${orderId} resolved — ${data.resolved?.length ?? 0} SKU(s) cleared, ${totalDeducted} unit(s) deducted from in_warehouse.`);
             // Remove from list after short delay
             setTimeout(() => {
                 setOrders(prev => prev.filter(o => o.order_id !== orderId));
@@ -176,12 +202,15 @@ export default function UnresolvedOrders() {
         if (selectedOrders.size === 0) return;
         setIsBulkResolving(true);
         try {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (isSandbox) headers['x-sandbox-mode'] = 'true';
+
             const res = await fetch('/api/orders/unresolved/resolve-bulk', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({
                     orderIds: Array.from(selectedOrders),
-                    reason: bulkResolveReason || 'Bulk manual resolution by admin',
+                    reason: bulkResolveReason || (isSandbox ? 'Bulk sandbox resolution' : 'Bulk manual resolution by admin'),
                     resolutionType: bulkResolveType
                 }),
             });
@@ -263,18 +292,52 @@ export default function UnresolvedOrders() {
                             </span>
                         )}
                     </span>
+                    {isSandbox && (
+                        <span className="ml-2 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                            <FlaskConical className="w-3.5 h-3.5" /> SANDBOX MODE
+                        </span>
+                    )}
                 </div>
                 <div className="flex items-center gap-2">
+                    {/* Sandbox Toggle Switch */}
+                    <button
+                        onClick={() => {
+                            const nextState = !isSandbox;
+                            setIsSandbox(nextState);
+                            fetchOrders(nextState);
+                        }}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors shadow-sm ${
+                            isSandbox
+                                ? 'bg-amber-500 text-white border-amber-600 hover:bg-amber-600'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        }`}
+                        title="Toggle sandbox mode for safe testing without affecting DB"
+                    >
+                        <FlaskConical className="w-3.5 h-3.5" />
+                        {isSandbox ? 'Sandbox Mode ON' : 'Enable Sandbox Mode'}
+                    </button>
+
+                    {isSandbox && (
+                        <button
+                            onClick={handleResetSandbox}
+                            disabled={loading}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors shadow-sm disabled:opacity-50"
+                        >
+                            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                            Reset Mock Data
+                        </button>
+                    )}
+
                     <button
                         onClick={handleCheckWc}
-                        disabled={loading || isCheckingWc || orders.length === 0}
+                        disabled={loading || isCheckingWc || orders.length === 0 || isSandbox}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 border border-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50"
                     >
                         {isCheckingWc ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
                         Check WC Status
                     </button>
                     <button
-                        onClick={fetchOrders}
+                        onClick={() => fetchOrders()}
                         disabled={loading}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm disabled:opacity-50"
                     >
@@ -284,18 +347,34 @@ export default function UnresolvedOrders() {
                 </div>
             </div>
 
-            {/* Info banner */}
-            <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800">
-                <Info className="w-4 h-4 mt-0.5 flex-shrink-0 text-blue-500" />
-                <div>
-                    Orders tracked from <strong>3 March 2026</strong> onwards that are still holding stock in
-                    <strong> pending-consult</strong>, <strong>pending-review</strong>, or <strong>processing</strong> —
-                    and have <em>not</em> exited via nv-pending-pickup, cancelled, or refunded.
-                    You can resolve orders by matching them to their actual WooCommerce status. 
-                    <strong>nv-pending-pickup</strong> deducts stock from the warehouse, while <strong>Cancelled</strong> returns held stock to available without deducting from the warehouse.
-                    Every resolve is logged in the system activity log.
+            {/* Sandbox Banner */}
+            {isSandbox && (
+                <div className="flex items-start gap-3 bg-amber-50 border-2 border-amber-300 rounded-xl p-4 text-sm text-amber-900 shadow-sm animate-in fade-in">
+                    <FlaskConical className="w-5 h-5 mt-0.5 flex-shrink-0 text-amber-600" />
+                    <div>
+                        <strong className="font-bold uppercase tracking-wide">Sandbox Test Mode Active</strong>
+                        <p className="text-xs text-amber-800 mt-0.5">
+                            Actions taken in Sandbox Mode use isolated in-memory test orders (`#99101`, `#99102`, etc.). 
+                            <strong> NO changes</strong> are written to `his_db.stock_transactions` or production inventory tables.
+                        </p>
+                    </div>
                 </div>
-            </div>
+            )}
+
+            {/* Info banner */}
+            {!isSandbox && (
+                <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800">
+                    <Info className="w-4 h-4 mt-0.5 flex-shrink-0 text-blue-500" />
+                    <div>
+                        Orders tracked from <strong>3 March 2026</strong> onwards that are still holding stock in
+                        <strong> pending-consult</strong>, <strong>pending-review</strong>, or <strong>processing</strong> —
+                        and have <em>not</em> exited via nv-pending-pickup, cancelled, or refunded.
+                        You can resolve orders by matching them to their actual WooCommerce status. 
+                        <strong>nv-pending-pickup</strong> deducts stock from the warehouse, while <strong>Cancelled</strong> returns held stock to available without deducting from the warehouse.
+                        Every resolve is logged in the system activity log.
+                    </div>
+                </div>
+            )}
 
             {/* Loading */}
             {loading && (

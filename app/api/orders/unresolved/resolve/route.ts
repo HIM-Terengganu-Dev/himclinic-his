@@ -10,6 +10,8 @@ import { resolveOrderManually } from '@/lib/db/queries';
  *
  * Body: { orderId: number, reason?: string, resolutionType?: 'nv-pending-pickup' | 'cancelled' | 'refunded' }
  */
+import { resolveSandboxOrder } from '@/lib/sandbox/sandboxOrders';
+
 export async function POST(req: NextRequest) {
     try {
         const session = await requireAdminOrDev(req);
@@ -19,6 +21,7 @@ export async function POST(req: NextRequest) {
 
         const body = await req.json();
         const { orderId, reason, resolutionType = 'nv-pending-pickup' } = body;
+        const isSandbox = req.headers.get('x-sandbox-mode') === 'true' || body.isSandbox === true;
 
         if (!orderId || typeof orderId !== 'number') {
             return NextResponse.json({ error: 'orderId (number) is required' }, { status: 400 });
@@ -27,6 +30,11 @@ export async function POST(req: NextRequest) {
         const validTypes = ['nv-pending-pickup', 'cancelled', 'refunded'];
         if (!validTypes.includes(resolutionType)) {
             return NextResponse.json({ error: 'Invalid resolutionType' }, { status: 400 });
+        }
+
+        if (isSandbox) {
+            const result = resolveSandboxOrder(orderId, reason || 'Sandbox manual resolution', resolutionType);
+            return NextResponse.json({ success: true, isSandbox: true, resolved: result });
         }
 
         const userId = (session.user as any)?.id;

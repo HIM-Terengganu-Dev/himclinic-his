@@ -116,7 +116,9 @@ export async function POST(request: Request) {
 
         // Build stock map for combo calculations from our database (source of truth)
         const stockMap: Record<string, number> = {};
+        const stockMapBefore: Record<string, number> = {};
         stockMap[singleSku.sku] = stockQuantity || 0; // Use the updated stock from webhook
+        stockMapBefore[singleSku.sku] = previousStockQuantity !== undefined ? previousStockQuantity : (stockQuantity || 0);
 
         // Collect all unique component SKUs needed for affected combos
         const neededSkus = new Set<string>();
@@ -134,31 +136,39 @@ export async function POST(request: Request) {
             try {
                 const currentState = await getCurrentStockState(s);
                 stockMap[s] = currentState.stock;
+                stockMapBefore[s] = currentState.stock;
             } catch (e) {
                 console.warn(`Failed to fetch stock for component ${s} from database`, e);
                 stockMap[s] = 0;
+                stockMapBefore[s] = 0;
             }
         }));
 
         // Calculate combo availability (for logging only - we don't update WooCommerce)
-        const comboUpdates: Array<{ sku: string; newStock: number }> = [];
+        const comboUpdates: Array<{ sku: string; previousStock?: number; newStock: number }> = [];
 
         for (const combo of affectedCombos) {
             const components = Array.isArray(combo.components) 
                 ? combo.components 
                 : JSON.parse(combo.components || '[]');
             let comboLimit = Infinity;
+            let comboLimitBefore = Infinity;
 
             for (const comp of components) {
                 const stock = stockMap[comp.sku] || 0;
                 const canMake = Math.floor(stock / comp.quantity);
                 if (canMake < comboLimit) comboLimit = canMake;
+
+                const stockBefore = stockMapBefore[comp.sku] ?? stock;
+                const canMakeBefore = Math.floor(stockBefore / comp.quantity);
+                if (canMakeBefore < comboLimitBefore) comboLimitBefore = canMakeBefore;
             }
 
             if (comboLimit === Infinity) comboLimit = 0;
+            if (comboLimitBefore === Infinity) comboLimitBefore = 0;
 
-            comboUpdates.push({ sku: combo.sku, newStock: comboLimit });
-            console.log(`📊 Calculated combo ${combo.sku} availability: ${comboLimit} units (logged only, not updated in WooCommerce)`);
+            comboUpdates.push({ sku: combo.sku, previousStock: comboLimitBefore, newStock: comboLimit });
+            console.log(`📊 Calculated combo ${combo.sku} availability: ${comboLimitBefore} → ${comboLimit} units (logged only, not updated in WooCommerce)`);
         }
 
         // Get IP address and user agent from request
@@ -181,6 +191,7 @@ export async function POST(request: Request) {
                 affectedSkus: [singleSku.sku],
                 comboUpdates: comboUpdates.map(u => ({ 
                     sku: u.sku, 
+                    previousStock: u.previousStock,
                     newStock: u.newStock 
                 })),
                 details: { 
@@ -189,7 +200,7 @@ export async function POST(request: Request) {
                     previousStock: previousStockQuantity,
                     newStock: stockQuantity,
                     note: 'Product stock updated in WooCommerce (webhook received). Combo SKU availability recalculated (logged only, not updated in WooCommerce).',
-                    comboUpdates: comboUpdates.map(u => ({ sku: u.sku, newStock: u.newStock }))
+                    comboUpdates: comboUpdates.map(u => ({ sku: u.sku, previousStock: u.previousStock, newStock: u.newStock }))
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,

@@ -8,11 +8,18 @@ import { getUnresolvedOrders } from '@/lib/db/queries';
  * (i.e. still have stock held in pending-consult, pending-review, or processing).
  * Admin/Dev only.
  */
+import { getSandboxOrders } from '@/lib/sandbox/sandboxOrders';
+
 export async function GET(req: NextRequest) {
     try {
         const session = await requireAdminOrDev(req);
         if (!session) {
             return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+        }
+
+        const isSandbox = req.headers.get('x-sandbox-mode') === 'true' || req.nextUrl.searchParams.get('sandbox') === 'true';
+        if (isSandbox) {
+            return NextResponse.json({ success: true, isSandbox: true, orders: getSandboxOrders() });
         }
 
         const orders = await getUnresolvedOrders();

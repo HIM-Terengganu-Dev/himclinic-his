@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdminOrDev } from '@/lib/auth/middleware';
 import { resolveOrderManually } from '@/lib/db/queries';
 
+import { resolveSandboxOrder } from '@/lib/sandbox/sandboxOrders';
+
 export async function POST(req: NextRequest) {
     try {
         const session = await requireAdminOrDev(req);
@@ -11,6 +13,7 @@ export async function POST(req: NextRequest) {
 
         const body = await req.json();
         const { orderIds, reason, resolutionType = 'nv-pending-pickup' } = body;
+        const isSandbox = req.headers.get('x-sandbox-mode') === 'true' || body.isSandbox === true;
 
         if (!orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
             return NextResponse.json({ error: 'orderIds array is required' }, { status: 400 });
@@ -25,17 +28,19 @@ export async function POST(req: NextRequest) {
         const results = [];
         const errors = [];
 
-        // Process sequentially to ensure database transaction integrity per order
+        // Process sequentially
         for (const orderId of orderIds) {
             if (typeof orderId !== 'number') continue;
             
             try {
-                const result = await resolveOrderManually(
-                    orderId, 
-                    reason || `Bulk manual resolution by admin`, 
-                    userId ?? null, 
-                    resolutionType as 'nv-pending-pickup' | 'cancelled'
-                );
+                const result = isSandbox
+                    ? resolveSandboxOrder(orderId, reason || 'Bulk manual resolution (Sandbox)', resolutionType as 'nv-pending-pickup' | 'cancelled')
+                    : await resolveOrderManually(
+                        orderId, 
+                        reason || `Bulk manual resolution by admin`, 
+                        userId ?? null, 
+                        resolutionType as 'nv-pending-pickup' | 'cancelled'
+                    );
                 results.push({ orderId, resolved: result });
             } catch (err: any) {
                 errors.push({ orderId, error: err.message });

@@ -430,7 +430,7 @@ interface WcWebhookLogEntry {
     stock_quantity?: number;
     previous_stock_quantity?: number;
     affected_skus?: string[];
-    combo_updates?: Array<{ sku: string; newStock: number; wcProductId?: number; error?: string }>;
+    combo_updates?: Array<{ sku: string; previousStock?: number; newStock: number; wcProductId?: number; error?: string }>;
     details: any;
     success: boolean;
     error_message?: string;
@@ -438,6 +438,61 @@ interface WcWebhookLogEntry {
     _isGrouped?: boolean;
     _orderId?: number;
     _history?: WcWebhookLogEntry[];
+}
+
+function deriveComboPreviousStock(update: any, logEntry: WcWebhookLogEntry, comboSkus: any[]) {
+    if (update.previousStock !== undefined && update.previousStock !== null) return update.previousStock;
+    if (update.previous_stock !== undefined && update.previous_stock !== null) return update.previous_stock;
+    if (update.oldStock !== undefined && update.oldStock !== null) return update.oldStock;
+
+    // Find combo definition
+    const comboDef = comboSkus.find((c: any) => c.sku === update.sku);
+    if (!comboDef || !comboDef.components) return undefined;
+
+    const components = Array.isArray(comboDef.components)
+        ? comboDef.components
+        : (typeof comboDef.components === 'string' ? JSON.parse(comboDef.components) : []);
+
+    if (!components || components.length === 0) return undefined;
+
+    // Gather component stock changes from logEntry details
+    const deductions = logEntry.details?.componentDeductions || logEntry.details?.pendingStockUpdates || [];
+    const restorations = logEntry.details?.componentRestorations || [];
+    const allCompChanges = [...deductions, ...restorations];
+
+    if (allCompChanges.length === 0) return undefined;
+
+    let comboLimitBefore = Infinity;
+    let foundAnyComponent = false;
+
+    for (const comp of components) {
+        const matchingChange = allCompChanges.find((c: any) => c.sku === comp.sku);
+        if (matchingChange) {
+            foundAnyComponent = true;
+            let compPrevStock: number | undefined = undefined;
+
+            if (matchingChange.previousStock !== undefined && matchingChange.previousStock !== null) {
+                compPrevStock = matchingChange.previousStock;
+            } else if (matchingChange.inWarehouseBefore !== undefined && matchingChange.inWarehouseBefore !== null) {
+                compPrevStock = matchingChange.inWarehouseBefore;
+            } else if (matchingChange.newStock !== undefined && matchingChange.deductedQty !== undefined) {
+                compPrevStock = matchingChange.newStock + matchingChange.deductedQty;
+            } else if (matchingChange.newStock !== undefined && matchingChange.restoredQty !== undefined) {
+                compPrevStock = matchingChange.newStock - matchingChange.restoredQty;
+            }
+
+            if (compPrevStock !== undefined) {
+                const canMakeBefore = Math.floor(compPrevStock / comp.quantity);
+                if (canMakeBefore < comboLimitBefore) comboLimitBefore = canMakeBefore;
+            }
+        }
+    }
+
+    if (foundAnyComponent && comboLimitBefore !== Infinity) {
+        return comboLimitBefore;
+    }
+
+    return undefined;
 }
 
 type TabType = 'manual' | 'orders';
@@ -457,7 +512,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [filterOrderStatus, setFilterOrderStatus] = useState('');
     const [filterOrderId, setFilterOrderId] = useState('');
     const [singleSkus, setSingleSkus] = useState<Array<{ sku: string; name: string }>>([]);
-    const [comboSkus, setComboSkus] = useState<Array<{ sku: string; name: string }>>([]);
+    const [comboSkus, setComboSkus] = useState<Array<{ sku: string; name: string; components?: any }>>([]);
     const [wcCurrentPage, setWcCurrentPage] = useState(1);
     const [wcTotalCount, setWcTotalCount] = useState(0);
     // Cache for component deductions: orderId -> deductions array
@@ -482,7 +537,7 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             .then(res => res.json())
             .then(data => {
                 if (data.skus) {
-                    setComboSkus(data.skus.map((s: any) => ({ sku: s.sku, name: s.name })));
+                    setComboSkus(data.skus.map((s: any) => ({ sku: s.sku, name: s.name, components: s.components })));
                 }
             })
             .catch(err => console.error('Failed to fetch combo SKUs:', err));
@@ -1393,16 +1448,24 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                         <td className="px-6 py-4">
                                                             {logEntry.combo_updates && Array.isArray(logEntry.combo_updates) && logEntry.combo_updates.length > 0 ? (
                                                                 <div className="max-w-xs">
-                                                                    {logEntry.combo_updates.map((update: any, updateIdx: number) => (
-                                                                        <div key={updateIdx} className="text-xs text-gray-600 mb-1">
-                                                                            <span className="font-mono">{update.sku}</span>:
-                                                                            {update.error ? (
-                                                                                <span className="text-red-600 ml-1">Error</span>
-                                                                            ) : (
-                                                                                <span className="text-green-600 ml-1">→ {update.newStock}</span>
-                                                                            )}
-                                                                        </div>
-                                                                    ))}
+                                                                    {logEntry.combo_updates.map((update: any, updateIdx: number) => {
+                                                                        const prevStock = deriveComboPreviousStock(update, logEntry, comboSkus);
+                                                                        return (
+                                                                            <div key={updateIdx} className="text-xs text-gray-600 mb-1">
+                                                                                <span className="font-mono">{update.sku}</span>:
+                                                                                {update.error ? (
+                                                                                    <span className="text-red-600 ml-1">Error</span>
+                                                                                ) : (
+                                                                                    <span className="whitespace-nowrap">
+                                                                                        {prevStock !== undefined && prevStock !== null && (
+                                                                                            <span className="text-gray-500 ml-1">{prevStock}</span>
+                                                                                        )}
+                                                                                        <span className="text-green-600 font-medium ml-1">→ {update.newStock}</span>
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                        );
+                                                                    })}
                                                                 </div>
                                                             ) : (
                                                                 <span className="text-gray-400 text-xs">—</span>

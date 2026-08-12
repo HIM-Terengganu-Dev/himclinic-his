@@ -169,7 +169,9 @@ export async function POST(request: Request) {
         });
 
         const stockMap: Record<string, number> = {};
+        const stockMapBefore: Record<string, number> = {};
         stockMap[sku] = newQuantity;
+        stockMapBefore[sku] = currentStock;
 
         const missingSkus = Array.from(neededSkus).filter(s => s !== sku);
 
@@ -177,28 +179,37 @@ export async function POST(request: Request) {
           try {
             const currentState = await getCurrentStockState(s);
             stockMap[s] = currentState.stock;
+            stockMapBefore[s] = currentState.stock;
           } catch (e) {
             console.warn(`Failed to fetch stock for component ${s} from database`, e);
             stockMap[s] = 0;
+            stockMapBefore[s] = 0;
           }
         }));
 
         for (const combo of affectedCombos) {
           const components = Array.isArray(combo.components) ? combo.components : JSON.parse(combo.components || '[]');
           let comboLimit = Infinity;
+          let comboLimitBefore = Infinity;
           for (const comp of components) {
             const compStock = stockMap[comp.sku] || 0;
             const canMake = Math.floor(compStock / comp.quantity);
             if (canMake < comboLimit) comboLimit = canMake;
+
+            const compStockBefore = stockMapBefore[comp.sku] ?? compStock;
+            const canMakeBefore = Math.floor(compStockBefore / comp.quantity);
+            if (canMakeBefore < comboLimitBefore) comboLimitBefore = canMakeBefore;
           }
           if (comboLimit === Infinity) comboLimit = 0;
+          if (comboLimitBefore === Infinity) comboLimitBefore = 0;
 
           comboUpdates.push({
             sku: combo.sku,
             name: combo.name,
+            previousStock: comboLimitBefore,
             newStock: comboLimit
           });
-          console.log(`📊 Calculated combo ${combo.sku} availability: ${comboLimit} units (logged only, not updated in WooCommerce)`);
+          console.log(`📊 Calculated combo ${combo.sku} availability: ${comboLimitBefore} → ${comboLimit} units (logged only, not updated in WooCommerce)`);
         }
       }
     } else if (!shouldRestoreStock) {
