@@ -1904,6 +1904,11 @@ export async function getUnresolvedOrders(): Promise<UnresolvedOrderEntry[]> {
               AND success = true
               AND webhook_event IN ('order.nv-pending-pickup', 'order.cancelled', 'order.refunded', 'order.manual_resolve', 'order.manual_resolved')
               AND created_at >= $1::timestamptz
+            UNION
+            SELECT DISTINCT source_id AS order_id
+            FROM his_db.stock_transactions
+            WHERE source_type = 'order'
+              AND (source_event = 'admin.manual_resolve' OR transaction_type IN ('order_nv_pending_pickup', 'order_cancelled', 'order_refunded'))
         ),
         ActiveOrders AS (
             SELECT oe.*
@@ -2149,9 +2154,9 @@ export async function resolveOrderManually(
         // Insert resolution event into wc_webhook_logs so getUnresolvedOrders classifies this order as terminal
         await client.query(`
             INSERT INTO his_db.wc_webhook_logs (
-                webhook_type, webhook_event, entity_id, current_status, success, payload, created_at
+                webhook_type, webhook_event, entity_id, status, current_status, success, details, created_at
             ) VALUES (
-                'order', $1, $2, $3, true, $4::jsonb, NOW()
+                'order', $1, $2, $3, $3, true, $4::jsonb, NOW()
             )
         `, [
             `order.${resolutionType === 'nv-pending-pickup' ? 'nv-pending-pickup' : resolutionType === 'cancelled' ? 'cancelled' : 'refunded'}`,

@@ -4,8 +4,8 @@ import { fileURLToPath } from 'url';
 import pg from 'pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const envContent = readFileSync(resolve(__dirname, '../.env.local'), 'utf-8');
-const match = envContent.match(/DATABASE_URL_DDL\s*=\s*(.+)/);
+const envContent = readFileSync(resolve(__dirname, '../.env'), 'utf-8');
+const match = envContent.match(/DATABASE_URL\s*=\s*"([^"]+)"/);
 const pool = new pg.Pool({ connectionString: match[1].trim(), ssl: { rejectUnauthorized: false } });
 
 const CUTOFF_UTC = '2026-03-02T16:00:00Z';
@@ -22,8 +22,12 @@ const sql = `
     TerminalOrders AS (
         SELECT DISTINCT entity_id AS order_id FROM his_db.wc_webhook_logs
         WHERE webhook_type = 'order' AND success = true
-          AND webhook_event IN ('order.nv-pending-pickup', 'order.cancelled', 'order.refunded')
+          AND webhook_event IN ('order.nv-pending-pickup', 'order.cancelled', 'order.refunded', 'order.manual_resolve', 'order.manual_resolved')
           AND created_at >= $1::timestamptz
+        UNION
+        SELECT DISTINCT source_id AS order_id FROM his_db.stock_transactions
+        WHERE source_type = 'order'
+          AND (source_event = 'admin.manual_resolve' OR transaction_type IN ('order_nv_pending_pickup', 'order_cancelled', 'order_refunded'))
     ),
     ActiveOrders AS (
         SELECT oe.* FROM OrderEvents oe
