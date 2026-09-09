@@ -30,34 +30,58 @@ export async function PUT(
         }
         const skuBefore = skuResult.rows[0];
 
+        // Safely parse low stock threshold
+        let parsedLowStockThreshold: number | null | undefined = undefined;
+        if (lowStockThreshold !== undefined) {
+            if (lowStockThreshold === null || lowStockThreshold === '' || isNaN(Number(lowStockThreshold))) {
+                parsedLowStockThreshold = null;
+            } else {
+                parsedLowStockThreshold = Math.max(0, Math.floor(Number(lowStockThreshold)));
+            }
+        }
+
+        // Safely parse WooCommerce product ID
+        let parsedWcProductId: number | null | undefined = undefined;
+        if (woocommerceProductId !== undefined) {
+            if (woocommerceProductId === null || woocommerceProductId === '' || isNaN(Number(woocommerceProductId))) {
+                parsedWcProductId = null;
+            } else {
+                parsedWcProductId = Math.floor(Number(woocommerceProductId));
+            }
+        }
+
         // Update SKU
         const updatedSku = await updateSingleSku(id, {
             name,
             description,
-            woocommerceProductId,
+            woocommerceProductId: parsedWcProductId,
             hidden,
-            lowStockThreshold: lowStockThreshold !== undefined ? (lowStockThreshold === '' ? null : parseInt(lowStockThreshold)) : undefined,
+            lowStockThreshold: parsedLowStockThreshold,
             emailAlertsEnabled
         });
 
-        // Log activity
-        await logActivity({
-            userId: session.user.id,
-            action: 'sku_updated',
-            entityType: 'single_sku',
-            entityId: id,
-            details: {
-                sku: updatedSku.sku,
-                before: { name: skuBefore.name, hidden: skuBefore.hidden || false },
-                after: { name: updatedSku.name, hidden: updatedSku.hidden || false }
-            },
-            success: true
-        });
+        // Log activity (non-blocking)
+        try {
+            await logActivity({
+                userId: session.user.id,
+                action: 'sku_updated',
+                entityType: 'single_sku',
+                entityId: id,
+                details: {
+                    sku: updatedSku.sku,
+                    before: { name: skuBefore.name, hidden: skuBefore.hidden || false },
+                    after: { name: updatedSku.name, hidden: updatedSku.hidden || false }
+                },
+                success: true
+            });
+        } catch (logErr) {
+            console.warn('⚠️ Failed to log SKU update activity:', logErr);
+        }
 
         return NextResponse.json({ success: true, sku: updatedSku });
     } catch (error: any) {
         console.error('Error updating single SKU:', error);
-        return NextResponse.json({ error: 'Internal server error', details: error.message }, { status: 500 });
+        return NextResponse.json({ error: error.message || 'Internal server error', details: error.message }, { status: 500 });
     }
 }
 

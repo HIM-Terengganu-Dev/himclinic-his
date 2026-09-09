@@ -195,7 +195,7 @@ export async function createComboSku(data: {
 export async function updateSingleSku(id: number, updates: {
     name?: string;
     description?: string;
-    woocommerceProductId?: number;
+    woocommerceProductId?: number | null;
     hidden?: boolean;
     lowStockThreshold?: number | null;
     emailAlertsEnabled?: boolean;
@@ -214,7 +214,10 @@ export async function updateSingleSku(id: number, updates: {
     }
     if (updates.woocommerceProductId !== undefined) {
         fields.push(`woocommerce_product_id = $${paramIndex++}`);
-        values.push(updates.woocommerceProductId);
+        const val = updates.woocommerceProductId === null || (updates.woocommerceProductId as any) === '' || isNaN(Number(updates.woocommerceProductId))
+            ? null
+            : Math.floor(Number(updates.woocommerceProductId));
+        values.push(val);
     }
     if (updates.hidden !== undefined) {
         fields.push(`hidden = $${paramIndex++}`);
@@ -222,7 +225,10 @@ export async function updateSingleSku(id: number, updates: {
     }
     if (updates.lowStockThreshold !== undefined) {
         fields.push(`low_stock_threshold = $${paramIndex++}`);
-        values.push(updates.lowStockThreshold);
+        const val = updates.lowStockThreshold === null || (updates.lowStockThreshold as any) === '' || isNaN(Number(updates.lowStockThreshold))
+            ? null
+            : Math.max(0, Math.floor(Number(updates.lowStockThreshold)));
+        values.push(val);
     }
     if (updates.emailAlertsEnabled !== undefined) {
         fields.push(`email_alerts_enabled = $${paramIndex++}`);
@@ -245,7 +251,7 @@ export async function updateSingleSku(id: number, updates: {
 export async function updateComboSku(id: number, updates: {
     name?: string;
     description?: string;
-    woocommerceProductId?: number;
+    woocommerceProductId?: number | null;
     components?: any;
     hidden?: boolean;
     lowStockThreshold?: number | null;
@@ -265,7 +271,10 @@ export async function updateComboSku(id: number, updates: {
     }
     if (updates.woocommerceProductId !== undefined) {
         fields.push(`woocommerce_product_id = $${paramIndex++}`);
-        values.push(updates.woocommerceProductId);
+        const val = updates.woocommerceProductId === null || (updates.woocommerceProductId as any) === '' || isNaN(Number(updates.woocommerceProductId))
+            ? null
+            : Math.floor(Number(updates.woocommerceProductId));
+        values.push(val);
     }
     if (updates.components !== undefined) {
         fields.push(`components = $${paramIndex++}`);
@@ -277,7 +286,10 @@ export async function updateComboSku(id: number, updates: {
     }
     if (updates.lowStockThreshold !== undefined) {
         fields.push(`low_stock_threshold = $${paramIndex++}`);
-        values.push(updates.lowStockThreshold);
+        const val = updates.lowStockThreshold === null || (updates.lowStockThreshold as any) === '' || isNaN(Number(updates.lowStockThreshold))
+            ? null
+            : Math.max(0, Math.floor(Number(updates.lowStockThreshold)));
+        values.push(val);
     }
     if (updates.emailAlertsEnabled !== undefined) {
         fields.push(`email_alerts_enabled = $${paramIndex++}`);

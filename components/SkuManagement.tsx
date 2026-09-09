@@ -415,7 +415,9 @@ export default function SkuManagement() {
                     name: editComboName.trim(),
                     description: editComboDescription.trim(),
                     components: validComponents,
-                    lowStockThreshold: editComboThreshold === '' ? null : parseInt(editComboThreshold),
+                    lowStockThreshold: !editComboThreshold || editComboThreshold.trim() === '' || isNaN(Number(editComboThreshold))
+                        ? null
+                        : Math.max(0, Math.floor(Number(editComboThreshold))),
                     emailAlertsEnabled: editComboEmailAlerts
                 })
             });
@@ -432,7 +434,7 @@ export default function SkuManagement() {
                 fetchSkus();
                 setTimeout(() => setSuccess(null), 4000);
             } else {
-                setModalError(data.error || 'Failed to update combo SKU');
+                setModalError(data.details ? `${data.error}: ${data.details}` : (data.error || 'Failed to update combo SKU'));
             }
         } catch (err: any) {
             console.error('Error saving combo SKU components:', err);
@@ -454,7 +456,9 @@ export default function SkuManagement() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    lowStockThreshold: editLowThreshold === '' ? null : parseInt(editLowThreshold),
+                    lowStockThreshold: !editLowThreshold || editLowThreshold.trim() === '' || isNaN(Number(editLowThreshold))
+                        ? null
+                        : Math.max(0, Math.floor(Number(editLowThreshold))),
                     emailAlertsEnabled: editEmailAlerts
                 })
             });
@@ -467,7 +471,7 @@ export default function SkuManagement() {
                 setShowThresholdInput(null); // Hide the input field
                 setTimeout(() => setSuccess(null), 3000);
             } else {
-                setError(data.error || 'Failed to update thresholds');
+                setError(data.details ? `${data.error}: ${data.details}` : (data.error || 'Failed to update thresholds'));
                 setSuccess(null);
             }
         } catch (err: any) {

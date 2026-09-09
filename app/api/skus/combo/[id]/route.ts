@@ -68,14 +68,34 @@ export async function PUT(
             }
         }
 
+        // Safely parse low stock threshold
+        let parsedLowStockThreshold: number | null | undefined = undefined;
+        if (lowStockThreshold !== undefined) {
+            if (lowStockThreshold === null || lowStockThreshold === '' || isNaN(Number(lowStockThreshold))) {
+                parsedLowStockThreshold = null;
+            } else {
+                parsedLowStockThreshold = Math.max(0, Math.floor(Number(lowStockThreshold)));
+            }
+        }
+
+        // Safely parse WooCommerce product ID
+        let parsedWcProductId: number | null | undefined = undefined;
+        if (woocommerceProductId !== undefined) {
+            if (woocommerceProductId === null || woocommerceProductId === '' || isNaN(Number(woocommerceProductId))) {
+                parsedWcProductId = null;
+            } else {
+                parsedWcProductId = Math.floor(Number(woocommerceProductId));
+            }
+        }
+
         // Update SKU
         const updatedSku = await updateComboSku(id, {
             name,
             description,
-            woocommerceProductId,
+            woocommerceProductId: parsedWcProductId,
             components: validatedComponents,
             hidden,
-            lowStockThreshold: lowStockThreshold !== undefined ? (lowStockThreshold === '' ? null : parseInt(lowStockThreshold)) : undefined,
+            lowStockThreshold: parsedLowStockThreshold,
             emailAlertsEnabled
         });
 
@@ -108,38 +128,42 @@ export async function PUT(
             }
         }
 
-        // Log activity
-        await logActivity({
-            userId: session.user.id,
-            action: 'sku_updated',
-            entityType: 'combo_sku',
-            entityId: id,
-            details: {
-                sku: updatedSku.sku,
-                before: {
-                    name: skuBefore.name,
-                    hidden: skuBefore.hidden || false,
-                    components: skuBefore.components,
-                    low_stock_threshold: skuBefore.low_stock_threshold,
-                    email_alerts_enabled: skuBefore.email_alerts_enabled
+        // Log activity (non-blocking, don't crash main update)
+        try {
+            await logActivity({
+                userId: session.user.id,
+                action: 'sku_updated',
+                entityType: 'combo_sku',
+                entityId: id,
+                details: {
+                    sku: updatedSku.sku,
+                    before: {
+                        name: skuBefore.name,
+                        hidden: skuBefore.hidden || false,
+                        components: skuBefore.components,
+                        low_stock_threshold: skuBefore.low_stock_threshold,
+                        email_alerts_enabled: skuBefore.email_alerts_enabled
+                    },
+                    after: {
+                        name: updatedSku.name,
+                        hidden: updatedSku.hidden || false,
+                        components: updatedSku.components,
+                        low_stock_threshold: updatedSku.low_stock_threshold,
+                        email_alerts_enabled: updatedSku.email_alerts_enabled
+                    },
+                    wcSyncSuccess,
+                    wcSyncError
                 },
-                after: {
-                    name: updatedSku.name,
-                    hidden: updatedSku.hidden || false,
-                    components: updatedSku.components,
-                    low_stock_threshold: updatedSku.low_stock_threshold,
-                    email_alerts_enabled: updatedSku.email_alerts_enabled
-                },
-                wcSyncSuccess,
-                wcSyncError
-            },
-            success: true
-        });
+                success: true
+            });
+        } catch (logErr) {
+            console.warn('⚠️ Failed to log SKU update activity:', logErr);
+        }
 
         return NextResponse.json({ success: true, sku: updatedSku, wcSynced: wcSyncSuccess });
     } catch (error: any) {
         console.error('Error updating combo SKU:', error);
-        return NextResponse.json({ error: 'Internal server error', details: error.message }, { status: 500 });
+        return NextResponse.json({ error: error.message || 'Internal server error', details: error.message }, { status: 500 });
     }
 }
 
