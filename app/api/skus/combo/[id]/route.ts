@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdminOrDev } from '@/lib/auth/middleware';
 import { query } from '@/lib/db/connection';
-import { updateComboSku, deleteComboSku } from '@/lib/db/queries';
+import { updateComboSku, deleteComboSku, getSingleSkuByCode } from '@/lib/db/queries';
 import { logActivity } from '@/lib/db/queries';
-import { deleteProduct } from '@/lib/services/woocommerce';
+import { deleteProduct, updateProduct, syncStockToWooCommerce } from '@/lib/services/woocommerce';
 
 export async function PUT(
     req: NextRequest,
@@ -30,16 +30,83 @@ export async function PUT(
         }
         const skuBefore = skuResult.rows[0];
 
+        // Validate components if provided
+        let validatedComponents: Array<{ sku: string; quantity: number }> | undefined = undefined;
+        if (components !== undefined) {
+            if (!Array.isArray(components) || components.length === 0) {
+                return NextResponse.json({ error: 'At least one component is required for a combo SKU' }, { status: 400 });
+            }
+
+            validatedComponents = [];
+            for (const comp of components) {
+                if (!comp || !comp.sku || typeof comp.sku !== 'string' || !comp.sku.trim()) {
+                    return NextResponse.json({ error: 'All components must have a valid SKU code' }, { status: 400 });
+                }
+                const trimmedSku = comp.sku.trim();
+                const qty = parseInt(comp.quantity);
+                if (isNaN(qty) || qty <= 0) {
+                    return NextResponse.json({ error: `Invalid quantity for component "${trimmedSku}". Must be at least 1.` }, { status: 400 });
+                }
+
+                // Verify component SKU exists in single_skus
+                const singleSku = await getSingleSkuByCode(trimmedSku);
+                if (!singleSku) {
+                    return NextResponse.json({ error: `Component SKU "${trimmedSku}" does not exist in single SKUs.` }, { status: 400 });
+                }
+
+                // Merge duplicates if same SKU was added multiple times
+                const existingIndex = validatedComponents.findIndex(c => c.sku === trimmedSku);
+                if (existingIndex >= 0) {
+                    validatedComponents[existingIndex].quantity += qty;
+                } else {
+                    validatedComponents.push({ sku: trimmedSku, quantity: qty });
+                }
+            }
+
+            if (validatedComponents.length === 0) {
+                return NextResponse.json({ error: 'At least one valid component is required' }, { status: 400 });
+            }
+        }
+
         // Update SKU
         const updatedSku = await updateComboSku(id, {
             name,
             description,
             woocommerceProductId,
-            components,
+            components: validatedComponents,
             hidden,
             lowStockThreshold: lowStockThreshold !== undefined ? (lowStockThreshold === '' ? null : parseInt(lowStockThreshold)) : undefined,
             emailAlertsEnabled
         });
+
+        // Sync stock to WooCommerce if components changed
+        let wcSyncSuccess = false;
+        let wcSyncError: string | null = null;
+        if (validatedComponents !== undefined) {
+            try {
+                wcSyncSuccess = await syncStockToWooCommerce(updatedSku.sku);
+                console.log(`✅ Synced updated combo SKU ${updatedSku.sku} stock to WooCommerce: ${wcSyncSuccess}`);
+            } catch (syncErr: any) {
+                console.warn(`⚠️ Failed to sync combo SKU ${updatedSku.sku} to WooCommerce:`, syncErr);
+                wcSyncError = syncErr.message || 'WooCommerce stock sync failed';
+            }
+        }
+
+        // Sync name/description to WooCommerce if product ID exists and fields changed
+        const wcProductId = updatedSku.woocommerce_product_id;
+        if (wcProductId && (name !== undefined || description !== undefined)) {
+            try {
+                const wcUpdate: any = {};
+                if (name !== undefined && name.trim()) wcUpdate.name = name.trim();
+                if (description !== undefined) wcUpdate.description = description;
+                if (Object.keys(wcUpdate).length > 0) {
+                    await updateProduct(wcProductId, wcUpdate);
+                    console.log(`✅ Updated WooCommerce product ${wcProductId} metadata for combo SKU ${updatedSku.sku}`);
+                }
+            } catch (wcMetaErr) {
+                console.warn(`⚠️ Could not sync metadata to WooCommerce product ${wcProductId}:`, wcMetaErr);
+            }
+        }
 
         // Log activity
         await logActivity({
@@ -49,13 +116,27 @@ export async function PUT(
             entityId: id,
             details: {
                 sku: updatedSku.sku,
-                before: { name: skuBefore.name, hidden: skuBefore.hidden || false },
-                after: { name: updatedSku.name, hidden: updatedSku.hidden || false }
+                before: {
+                    name: skuBefore.name,
+                    hidden: skuBefore.hidden || false,
+                    components: skuBefore.components,
+                    low_stock_threshold: skuBefore.low_stock_threshold,
+                    email_alerts_enabled: skuBefore.email_alerts_enabled
+                },
+                after: {
+                    name: updatedSku.name,
+                    hidden: updatedSku.hidden || false,
+                    components: updatedSku.components,
+                    low_stock_threshold: updatedSku.low_stock_threshold,
+                    email_alerts_enabled: updatedSku.email_alerts_enabled
+                },
+                wcSyncSuccess,
+                wcSyncError
             },
             success: true
         });
 
-        return NextResponse.json({ success: true, sku: updatedSku });
+        return NextResponse.json({ success: true, sku: updatedSku, wcSynced: wcSyncSuccess });
     } catch (error: any) {
         console.error('Error updating combo SKU:', error);
         return NextResponse.json({ error: 'Internal server error', details: error.message }, { status: 500 });

@@ -40,6 +40,9 @@ next-env.d.ts
 /backups/
 *.dump
 
+# codegraph
+.codegraph/
+
 
 
 

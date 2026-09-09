@@ -63,6 +63,22 @@ export async function updateProductStock(
 }
 
 /**
+ * Update product details (WRITE access)
+ */
+export async function updateProduct(
+  productId: number,
+  data: any
+): Promise<WooCommerceProduct> {
+  try {
+    const response = await wooCommerce.put(`products/${productId}`, data);
+    return response.data;
+  } catch (error) {
+    console.error(`Error updating product ${productId}:`, error);
+    throw error;
+  }
+}
+
+/**
  * Create a new product (WRITE access)
  */
 export async function createProduct(data: any): Promise<WooCommerceProduct> {

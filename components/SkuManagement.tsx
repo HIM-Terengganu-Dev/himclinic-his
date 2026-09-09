@@ -42,6 +42,16 @@ export default function SkuManagement() {
     const [editEmailAlerts, setEditEmailAlerts] = useState<boolean>(false);
     const [showCreateForm, setShowCreateForm] = useState(false);
     const [showThresholdInput, setShowThresholdInput] = useState<number | null>(null); // Store the ID of the SKU being edited
+
+    // Edit Combo SKU Modal State
+    const [editingComboSku, setEditingComboSku] = useState<ComboSku | null>(null);
+    const [editComboName, setEditComboName] = useState('');
+    const [editComboDescription, setEditComboDescription] = useState('');
+    const [editComboComponents, setEditComboComponents] = useState<{ sku: string; quantity: number }[]>([]);
+    const [editComboThreshold, setEditComboThreshold] = useState('');
+    const [editComboEmailAlerts, setEditComboEmailAlerts] = useState(false);
+    const [modalLoading, setModalLoading] = useState(false);
+    const [modalError, setModalError] = useState<string | null>(null);
     
     // Refs for scroll synchronization
     const topScrollRef = useRef<HTMLDivElement>(null);
@@ -56,6 +66,13 @@ export default function SkuManagement() {
     // Combo Form State
     const [components, setComponents] = useState<{ sku: string; quantity: number }[]>([{ sku: '', quantity: 1 }]);
 
+    // Quick lookup map for single SKU details
+    const singleSkuMap = React.useMemo(() => {
+        const map = new Map<string, SingleSku>();
+        singleSkus.forEach(s => map.set(s.sku, s));
+        return map;
+    }, [singleSkus]);
+
     const fetchSkus = async () => {
         setLoading(true);
         try {
@@ -65,18 +82,17 @@ export default function SkuManagement() {
                 const data = await res.json();
                 if (data.skus) setSingleSkus(data.skus);
             } else {
-                const res = await fetchWithRole('/api/skus/combo');
-                if (!res.ok) throw new Error(`Failed to fetch combo SKUs: ${res.status}`);
-                const data = await res.json();
-                if (data.skus) setComboSkus(data.skus);
+                const [resCombo, resSingle] = await Promise.all([
+                    fetchWithRole('/api/skus/combo'),
+                    fetchWithRole('/api/skus/single')
+                ]);
+                if (!resCombo.ok) throw new Error(`Failed to fetch combo SKUs: ${resCombo.status}`);
+                const dataCombo = await resCombo.json();
+                if (dataCombo.skus) setComboSkus(dataCombo.skus);
 
-                // Also fetch single SKUs for component selector if empty
-                if (singleSkus.length === 0) {
-                    const resSingle = await fetchWithRole('/api/skus/single');
-                    if (resSingle.ok) {
-                        const dataSingle = await resSingle.json();
-                        if (dataSingle.skus) setSingleSkus(dataSingle.skus);
-                    }
+                if (resSingle.ok) {
+                    const dataSingle = await resSingle.json();
+                    if (dataSingle.skus) setSingleSkus(dataSingle.skus);
                 }
             }
         } catch (error) {
@@ -301,6 +317,129 @@ export default function SkuManagement() {
         setEditLowThreshold('');
         setEditEmailAlerts(false);
         setShowThresholdInput(null); // Hide the input field
+    };
+
+    // Open Edit Combo SKU Modal
+    const openEditComboModal = async (skuItem: ComboSku) => {
+        // Ensure single SKUs are fresh for the dropdown
+        if (singleSkus.length === 0) {
+            try {
+                const resSingle = await fetchWithRole('/api/skus/single');
+                if (resSingle.ok) {
+                    const dataSingle = await resSingle.json();
+                    if (dataSingle.skus) setSingleSkus(dataSingle.skus);
+                }
+            } catch (err) {
+                console.error('Error fetching single SKUs for combo editing:', err);
+            }
+        }
+
+        setEditingComboSku(skuItem);
+        setEditComboName(skuItem.name || '');
+        setEditComboDescription(skuItem.description || '');
+        setEditComboThreshold(skuItem.low_stock_threshold !== null && skuItem.low_stock_threshold !== undefined ? skuItem.low_stock_threshold.toString() : '');
+        setEditComboEmailAlerts(skuItem.email_alerts_enabled || false);
+        setModalError(null);
+
+        // Normalize components
+        let rawComps: any = skuItem.components;
+        if (typeof rawComps === 'string') {
+            try {
+                rawComps = JSON.parse(rawComps);
+            } catch {
+                rawComps = [];
+            }
+        }
+        if (Array.isArray(rawComps) && rawComps.length > 0) {
+            setEditComboComponents(rawComps.map((c: any) => ({
+                sku: c.sku || '',
+                quantity: Number(c.quantity) || 1
+            })));
+        } else {
+            setEditComboComponents([{ sku: '', quantity: 1 }]);
+        }
+    };
+
+    const closeEditComboModal = () => {
+        setEditingComboSku(null);
+        setModalError(null);
+        setModalLoading(false);
+    };
+
+    const addEditComboComponentRow = () => {
+        setEditComboComponents(prev => [...prev, { sku: '', quantity: 1 }]);
+    };
+
+    const updateEditComboComponent = (index: number, field: 'sku' | 'quantity', value: any) => {
+        setEditComboComponents(prev => {
+            const updated = [...prev];
+            updated[index] = { ...updated[index], [field]: value };
+            return updated;
+        });
+    };
+
+    const removeEditComboComponentRow = (index: number) => {
+        setEditComboComponents(prev => {
+            if (prev.length <= 1) return prev;
+            const updated = [...prev];
+            updated.splice(index, 1);
+            return updated;
+        });
+    };
+
+    const handleSaveComboModal = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!editingComboSku) return;
+
+        // Validation
+        const validComponents = editComboComponents.filter(c => c.sku && c.sku.trim() && Number(c.quantity) > 0);
+        if (validComponents.length === 0) {
+            setModalError('Please specify at least one valid component SKU with quantity >= 1.');
+            return;
+        }
+
+        const hasEmptySku = editComboComponents.some(c => !c.sku || !c.sku.trim());
+        if (hasEmptySku) {
+            setModalError('Please select a single SKU for every component row or remove unused rows.');
+            return;
+        }
+
+        setModalLoading(true);
+        setModalError(null);
+
+        try {
+            const res = await fetchWithRole(`/api/skus/combo/${editingComboSku.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: editComboName.trim(),
+                    description: editComboDescription.trim(),
+                    components: validComponents,
+                    lowStockThreshold: editComboThreshold === '' ? null : parseInt(editComboThreshold),
+                    emailAlertsEnabled: editComboEmailAlerts
+                })
+            });
+
+            const data = await res.json();
+            if (data.success) {
+                setSuccess(
+                    data.wcSynced
+                        ? `Combo SKU "${editingComboSku.sku}" components updated successfully and synced to WooCommerce!`
+                        : `Combo SKU "${editingComboSku.sku}" components updated successfully!`
+                );
+                setError(null);
+                closeEditComboModal();
+                fetchSkus();
+                setTimeout(() => setSuccess(null), 4000);
+            } else {
+                setModalError(data.error || 'Failed to update combo SKU');
+            }
+        } catch (err: any) {
+            console.error('Error saving combo SKU components:', err);
+            setModalError('Failed to save combo SKU: ' + (err.message || 'Unknown error'));
+        } finally {
+            setModalLoading(false);
+        }
     };
 
     const handleSaveThresholds = async () => {
@@ -669,86 +808,32 @@ export default function SkuManagement() {
                                     ) : (
                                         comboSkus.map((skuItem) => (
                                             <tr key={skuItem.id} className={skuItem.hidden ? 'opacity-50 bg-gray-50' : ''}>
-                                                <td className="px-4 py-4 whitespace-nowrap min-w-[250px]">
-                                                    <div className="flex flex-col gap-2">
-                                                        <div className="flex items-center justify-between gap-2">
-                                                            <span className="text-sm font-medium text-gray-900 flex-shrink-0">{skuItem.sku}</span>
-                                                            <div className="flex gap-2 flex-shrink-0">
-                                                                {editingId === skuItem.id && editingType === 'combo' ? (
-                                                                    <>
-                                                                        <button
-                                                                            onClick={handleSaveThresholds}
-                                                                            disabled={loading}
-                                                                            className="text-green-600 hover:text-green-900"
-                                                                            title="Save"
-                                                                        >
-                                                                            <Save className="w-4 h-4" />
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={handleCancelEdit}
-                                                                            className="text-gray-600 hover:text-gray-900"
-                                                                            title="Cancel"
-                                                                        >
-                                                                            <X className="w-4 h-4" />
-                                                                        </button>
-                                                                    </>
-                                                                ) : (
-                                                                    <>
-                                                                        <button
-                                                                            onClick={() => handleEditThresholds(skuItem, 'combo')}
-                                                                            className="text-purple-600 hover:text-purple-900"
-                                                                            title="Edit stock thresholds"
-                                                                        >
-                                                                            <Edit2 className="w-4 h-4" />
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'combo')}
-                                                                            className="text-blue-600 hover:text-blue-900"
-                                                                            title={skuItem.hidden ? 'Show in dashboard' : 'Hide from dashboard'}
-                                                                        >
-                                                                            {skuItem.hidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => handleDelete(skuItem.id, 'combo')}
-                                                                            className="text-red-600 hover:text-red-900"
-                                                                            title="Delete SKU"
-                                                                        >
-                                                                            <Trash2 className="w-4 h-4" />
-                                                                        </button>
-                                                                    </>
-                                                                )}
-                                                            </div>
+                                                <td className="px-4 py-4 whitespace-nowrap min-w-[200px]">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <span className="text-sm font-medium text-gray-900 flex-shrink-0">{skuItem.sku}</span>
+                                                        <div className="flex gap-2 flex-shrink-0">
+                                                            <button
+                                                                onClick={() => openEditComboModal(skuItem)}
+                                                                className="text-purple-600 hover:text-purple-900"
+                                                                title="Edit SKU details & components"
+                                                            >
+                                                                <Edit2 className="w-4 h-4" />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleToggleHidden(skuItem.id, skuItem.hidden || false, 'combo')}
+                                                                className="text-blue-600 hover:text-blue-900"
+                                                                title={skuItem.hidden ? 'Show in dashboard' : 'Hide from dashboard'}
+                                                            >
+                                                                {skuItem.hidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleDelete(skuItem.id, 'combo')}
+                                                                className="text-red-600 hover:text-red-900"
+                                                                title="Delete SKU"
+                                                            >
+                                                                <Trash2 className="w-4 h-4" />
+                                                            </button>
                                                         </div>
-                                                        {editingId === skuItem.id && editingType === 'combo' && (
-                                                            <div className="bg-gray-50 p-3 rounded border border-gray-200 space-y-3">
-                                                                <div className="flex items-center gap-2">
-                                                                    <label className="text-xs text-gray-600 whitespace-nowrap font-medium">Low Stock Threshold:</label>
-                                                                    <input
-                                                                        type="number"
-                                                                        min="0"
-                                                                        value={editLowThreshold}
-                                                                        onChange={(e) => setEditLowThreshold(e.target.value)}
-                                                                        className="w-24 px-2 py-1 border border-gray-300 rounded text-sm"
-                                                                        placeholder="e.g. 10"
-                                                                        autoFocus
-                                                                    />
-                                                                    <span className="text-xs text-gray-400">Alert when stock ≤ this</span>
-                                                                </div>
-                                                                <div className="flex items-center gap-2">
-                                                                    <label className="text-xs text-gray-600 whitespace-nowrap font-medium">Email Alerts:</label>
-                                                                    <label className="relative inline-flex items-center cursor-pointer">
-                                                                        <input
-                                                                            type="checkbox"
-                                                                            checked={editEmailAlerts}
-                                                                            onChange={(e) => setEditEmailAlerts(e.target.checked)}
-                                                                            className="sr-only peer"
-                                                                        />
-                                                                        <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
-                                                                    </label>
-                                                                    <span className="text-xs text-gray-400">{editEmailAlerts ? 'Enabled' : 'Disabled'}</span>
-                                                                </div>
-                                                            </div>
-                                                        )}
                                                     </div>
                                                 </td>
                                                 <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{skuItem.name}</td>
@@ -771,33 +856,53 @@ export default function SkuManagement() {
                                                     </div>
                                                 </td>
                                                 <td className="px-4 py-4 whitespace-nowrap">
-                                                    {editingId === skuItem.id && editingType === 'combo' ? (
-                                                        <label className="relative inline-flex items-center cursor-pointer">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={editEmailAlerts}
-                                                                onChange={(e) => setEditEmailAlerts(e.target.checked)}
-                                                                className="sr-only peer"
-                                                            />
-                                                            <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
-                                                        </label>
-                                                    ) : (
-                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                                                            skuItem.email_alerts_enabled 
-                                                                ? 'bg-blue-100 text-blue-700' 
-                                                                : 'bg-gray-100 text-gray-600'
-                                                        }`}>
-                                                            {skuItem.email_alerts_enabled ? 'Enabled' : 'Disabled'}
-                                                        </span>
-                                                    )}
+                                                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                                        skuItem.email_alerts_enabled 
+                                                            ? 'bg-blue-100 text-blue-700' 
+                                                            : 'bg-gray-100 text-gray-600'
+                                                    }`}>
+                                                        {skuItem.email_alerts_enabled ? 'Enabled' : 'Disabled'}
+                                                    </span>
                                                 </td>
                                                 <td className="px-4 py-4 text-sm text-gray-500">
-                                                    <div className="flex flex-col gap-1">
-                                                        {skuItem.components.map((c, i) => (
-                                                            <span key={i} className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
-                                                                {c.quantity}x {c.sku}
-                                                            </span>
-                                                        ))}
+                                                    <div className="flex flex-col gap-1.5">
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {(() => {
+                                                                const comps = Array.isArray(skuItem.components) 
+                                                                    ? skuItem.components 
+                                                                    : (typeof skuItem.components === 'string' ? JSON.parse(skuItem.components || '[]') : []);
+                                                                if (!comps || comps.length === 0) {
+                                                                    return <span className="text-xs text-amber-600 italic">No components defined</span>;
+                                                                }
+                                                                return comps.map((c: any, i: number) => {
+                                                                    const singleInfo = singleSkuMap.get(c.sku);
+                                                                    return (
+                                                                        <span
+                                                                            key={i}
+                                                                            className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-800 border border-blue-100"
+                                                                            title={singleInfo ? `${singleInfo.name} (${c.sku})` : c.sku}
+                                                                        >
+                                                                            <span className="font-bold mr-1">{c.quantity}x</span>
+                                                                            <span>{c.sku}</span>
+                                                                            {singleInfo && (
+                                                                                <span className="text-blue-500 ml-1 text-[10px] font-normal">
+                                                                                    ({singleInfo.name})
+                                                                                </span>
+                                                                            )}
+                                                                        </span>
+                                                                    );
+                                                                });
+                                                            })()}
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => openEditComboModal(skuItem)}
+                                                            className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium w-fit hover:underline pt-0.5"
+                                                            title="Edit component content for this combo SKU"
+                                                        >
+                                                            <Edit2 size={12} />
+                                                            <span>Edit Components</span>
+                                                        </button>
                                                     </div>
                                                 </td>
                                             </tr>
@@ -815,6 +920,228 @@ export default function SkuManagement() {
                     </div>
                 </div>
             </div>
+
+            {/* Edit Combo SKU Modal */}
+            {editingComboSku && (
+                <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 my-8">
+                        {/* Modal Header */}
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gray-50/80">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 bg-blue-100 text-blue-700 rounded-lg">
+                                    <Layers size={20} />
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-bold text-gray-900">
+                                        Edit Combo SKU: <span className="font-mono text-blue-600">{editingComboSku.sku}</span>
+                                    </h3>
+                                    <p className="text-xs text-gray-500">Edit components content, stock thresholds, and details</p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={closeEditComboModal}
+                                disabled={modalLoading}
+                                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+
+                        {/* Modal Body */}
+                        <form onSubmit={handleSaveComboModal} className="p-6 space-y-5 max-h-[calc(85vh-120px)] overflow-y-auto">
+                            {modalError && (
+                                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                                    {modalError}
+                                </div>
+                            )}
+
+                            {/* SKU Code & WC Product ID Badges */}
+                            <div className="grid grid-cols-2 gap-4 bg-blue-50/50 p-3 rounded-lg border border-blue-100 text-sm">
+                                <div>
+                                    <span className="text-xs text-gray-500 font-medium block">SKU Code (Read-only)</span>
+                                    <span className="font-semibold text-gray-900 font-mono">{editingComboSku.sku}</span>
+                                </div>
+                                <div>
+                                    <span className="text-xs text-gray-500 font-medium block">WooCommerce Product ID</span>
+                                    <span className="font-semibold text-gray-900">
+                                        {editingComboSku.woocommerce_product_id ? (
+                                            <span className="text-green-700 font-mono">#{editingComboSku.woocommerce_product_id} (Connected)</span>
+                                        ) : (
+                                            <span className="text-gray-400 italic">Not connected</span>
+                                        )}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Product Name */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Product Name <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    value={editComboName}
+                                    onChange={(e) => setEditComboName(e.target.value)}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                                    required
+                                />
+                            </div>
+
+                            {/* Components Content Section */}
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <label className="block text-sm font-semibold text-gray-900">
+                                            Bundle Components ({editComboComponents.length}) <span className="text-red-500">*</span>
+                                        </label>
+                                        <p className="text-xs text-gray-500">
+                                            Select single SKUs and set the quantity required to make one unit of this combo.
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={addEditComboComponentRow}
+                                        className="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-200 shadow-sm"
+                                    >
+                                        <Plus size={14} /> Add Component
+                                    </button>
+                                </div>
+
+                                <div className="space-y-2 border border-gray-200 rounded-lg p-3 bg-gray-50/70 max-h-64 overflow-y-auto">
+                                    {editComboComponents.map((comp, idx) => (
+                                        <div key={idx} className="flex gap-2 items-center bg-white p-2.5 rounded-lg border border-gray-200 shadow-sm">
+                                            <div className="flex-1">
+                                                <select
+                                                    value={comp.sku}
+                                                    onChange={(e) => updateEditComboComponent(idx, 'sku', e.target.value)}
+                                                    className="w-full text-sm border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                                    required
+                                                >
+                                                    <option value="">Select Single SKU</option>
+                                                    {singleSkus.map(s => (
+                                                        <option key={s.id} value={s.sku}>
+                                                            {s.name} ({s.sku})
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div className="w-28">
+                                                <div className="relative flex items-center">
+                                                    <input
+                                                        type="number"
+                                                        min="1"
+                                                        value={comp.quantity}
+                                                        onChange={(e) => updateEditComboComponent(idx, 'quantity', parseInt(e.target.value) || 1)}
+                                                        className="w-full text-sm border border-gray-300 rounded-lg p-2 pr-8 focus:ring-2 focus:ring-blue-500 focus:border-transparent font-medium"
+                                                        required
+                                                        title="Quantity per combo"
+                                                    />
+                                                    <span className="absolute right-2 text-xs text-gray-400 pointer-events-none">qty</span>
+                                                </div>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => removeEditComboComponentRow(idx)}
+                                                disabled={editComboComponents.length <= 1}
+                                                className="p-2 text-red-500 hover:text-red-700 disabled:opacity-30 disabled:hover:text-red-500 rounded-lg hover:bg-red-50 transition-colors"
+                                                title={editComboComponents.length <= 1 ? "At least 1 component is required" : "Remove component row"}
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="p-2.5 bg-blue-50/70 border border-blue-200/60 rounded-lg text-xs text-blue-800 space-y-1">
+                                    <p className="font-medium">⚡ Automatic Synchronization:</p>
+                                    <p className="text-blue-700">
+                                        Saving will update HIS component breakdown, automatically recalculate available bundle inventory from component stock, and immediately sync the updated available stock to WooCommerce.
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Stock Threshold & Email Alerts */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-gray-200">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        Low Stock Threshold
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        value={editComboThreshold}
+                                        onChange={(e) => setEditComboThreshold(e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                                        placeholder="e.g. 10 (blank for none)"
+                                    />
+                                    <p className="text-xs text-gray-500 mt-1">Alert when available combos ≤ this count</p>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        Email Alerts
+                                    </label>
+                                    <div className="flex items-center gap-3 mt-2">
+                                        <label className="relative inline-flex items-center cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={editComboEmailAlerts}
+                                                onChange={(e) => setEditComboEmailAlerts(e.target.checked)}
+                                                className="sr-only peer"
+                                            />
+                                            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                                        </label>
+                                        <span className="text-sm text-gray-700 font-medium">
+                                            {editComboEmailAlerts ? 'Alerts Enabled' : 'Alerts Disabled'}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Description */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Description (Optional)</label>
+                                <textarea
+                                    value={editComboDescription}
+                                    onChange={(e) => setEditComboDescription(e.target.value)}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                                    rows={2}
+                                    placeholder="Optional description for this combo..."
+                                />
+                            </div>
+
+                            {/* Modal Footer */}
+                            <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
+                                <button
+                                    type="button"
+                                    onClick={closeEditComboModal}
+                                    disabled={modalLoading}
+                                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={modalLoading}
+                                    className="flex items-center gap-2 px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors text-sm font-semibold shadow-sm"
+                                >
+                                    {modalLoading ? (
+                                        <>
+                                            <RefreshCw size={16} className="animate-spin" />
+                                            Saving & Syncing...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Save size={16} />
+                                            Save Changes
+                                        </>
+                                    )}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
