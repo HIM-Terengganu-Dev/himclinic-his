@@ -1,4 +1,14 @@
-import { Pool } from 'pg';
+import pg, { Pool, types } from 'pg';
+
+// Set type parser for TIMESTAMP without time zone (OID 1114)
+// Since PostgreSQL sessions run with timezone = 'Asia/Kuala_Lumpur',
+// timestamps without timezone stored in the DB are in GMT+8.
+// When Node runs in UTC (e.g. Vercel), default pg parsing treats them as UTC,
+// causing an 8-hour shift relative to timestamptz columns (like wc_webhook_logs.created_at).
+// Parsing with +08:00 ensures consistent UTC timestamps everywhere (local & Vercel).
+types.setTypeParser(1114, (stringValue: string) => {
+    return new Date(stringValue.replace(' ', 'T') + '+08:00');
+});
 
 // Create a connection pool to the database
 // DATABASE_URL is required for authentication to work

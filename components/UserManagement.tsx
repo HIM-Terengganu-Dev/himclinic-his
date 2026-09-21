@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Users, Plus, Trash2, Edit2, Save, X, Mail, User, Shield, Clock, Calendar } from 'lucide-react';
 import { fetchWithRole } from '@/lib/utils/fetchWithRole';
-import { format } from 'date-fns';
+import { formatDateTimeGMT8 } from '@/lib/utils/date';
 
 interface User {
     id: number;
@@ -173,7 +173,7 @@ export default function UserManagement() {
     const formatDate = (dateString: string | null) => {
         if (!dateString) return 'Never';
         try {
-            return format(new Date(dateString), 'MMM dd, yyyy HH:mm');
+            return formatDateTimeGMT8(dateString);
         } catch {
             return 'Invalid date';
         }

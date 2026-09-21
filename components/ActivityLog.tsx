@@ -104,7 +104,7 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
         // Time matching strategy:
         // - nv-pending-pickup and cancelled: type-only match (NinjaVan timezone is unreliable)
         // - processing, pending-consult, pending-review: match within ±2 minutes of the webhook log
-        //   This prevents ghost retry transactions from being attributed to the wrong webhook event
+        //   Also tolerate ±8 hour timezone shift between server UTC vs local GMT+8 timestamp storage
         const isTimezoneUnreliable = eventType.toLowerCase().includes('nv-pending-pickup') ||
             eventType.toLowerCase().includes('cancelled');
 
@@ -114,10 +114,10 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
             timeMatches = true;
         } else {
             // For processing / pending-consult / pending-review: use a ±2 minute window
-            // so that each webhook log entry only shows its OWN transactions, not retry replays
+            // Allow normal 2-minute window, OR 8-hour timezone offset ± 2-minute window
             const deductionTime = new Date(deduction.createdAt).getTime();
             const timeDiff = Math.abs(deductionTime - logTime);
-            timeMatches = timeDiff < 120000; // 2 minutes
+            timeMatches = timeDiff < 120000 || Math.abs(timeDiff - 8 * 60 * 60 * 1000) < 120000;
         }
 
         const matches = timeMatches && typeMatches;
@@ -178,6 +178,21 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
             // So we don't slice here - we keep all matching deductions
             // They should all have the same timestamp (created at the same time for the same order)
             console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple nv-pending-pickup transactions found (${deductions.length}), showing all component deductions`);
+        }
+    }
+
+    // If time match yielded 0 results, fall back to type-only match within dbDeductions
+    // to ensure real database transactions for this order are not discarded
+    if (deductions.length === 0 && dbDeductions.length > 0) {
+        const normalizeType = (t: string) => (t || '').toLowerCase().replace(/^order[._-]?/i, '').replace(/[_-]/g, '_').trim();
+        const targetType = normalizeType(expectedTransactionType || eventType);
+        const typeOnlyMatches = dbDeductions.filter((d: any) => {
+            const txType = normalizeType(d.transactionType || d.sourceEvent || '');
+            return txType === targetType || (targetType.includes('processing') && txType.includes('processing'));
+        });
+        if (typeOnlyMatches.length > 0) {
+            console.log(`[ComponentDeductionsCell] Order #${orderId}: time matching yielded 0, falling back to ${typeOnlyMatches.length} type-matched dbDeductions`);
+            deductions = typeOnlyMatches;
         }
     }
 
@@ -391,6 +406,15 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                                 </span>
                             </div>
                         ))}
+                    </div>
+                ) : (deduction.deductedQty || deduction.quantity) ? (
+                    <div className="mt-1 space-y-1">
+                        <div className="whitespace-nowrap">
+                            <span className="text-gray-500">Deducted: </span>
+                            <span className="font-medium text-blue-600">
+                                -{deduction.deductedQty || deduction.quantity}
+                            </span>
+                        </div>
                     </div>
                 ) : (
                     <div className="text-gray-400 text-xs italic">No changes</div>
