@@ -2,9 +2,10 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSession, signOut } from 'next-auth/react';
-import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, CheckCircle, ArrowLeftCircle, Shield, FlaskConical } from 'lucide-react';
+import { Package, RefreshCw, AlertTriangle, Bell, TrendingUp, History, Settings, LogOut, User, CheckCircle, ArrowLeftCircle, Shield, FlaskConical, Calculator } from 'lucide-react';
 import InventoryDashboard from '@/components/InventoryDashboard';
 import ProcurementUpdate from '@/components/ProcurementUpdate';
+import StockForecasting from '@/components/StockForecasting';
 import ReturnRefund from '@/components/ReturnRefund';
 import ActivityLog from '@/components/ActivityLog';
 import AdminAccess from '@/components/AdminAccess';
@@ -14,7 +15,7 @@ import { InventoryStock, ComboAvailability } from '@/types/inventory';
 
 export default function Home() {
   const { data: session, status } = useSession();
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'procurement' | 'return-refund' | 'activity' | 'admin' | 'test'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'forecasting' | 'procurement' | 'return-refund' | 'activity' | 'admin' | 'test'>('dashboard');
   const [switchedRole, setSwitchedRole] = useState<string | null>(null);
   const [showRoleMenu, setShowRoleMenu] = useState(false);
   const roleMenuRef = useRef<HTMLDivElement>(null);
@@ -349,6 +350,19 @@ export default function Home() {
                 {activeTab === 'dashboard' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
               </button>
 
+              {/* Forecasting & Ordering Tab */}
+              <button
+                onClick={() => setActiveTab('forecasting')}
+                className={`flex items-center gap-2 px-6 py-4 text-sm font-semibold transition-all relative ${activeTab === 'forecasting'
+                  ? 'text-blue-600 bg-blue-50/50'
+                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+              >
+                <Calculator size={18} />
+                Stock Forecast & Ordering
+                {activeTab === 'forecasting' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600" />}
+              </button>
+
               {/* Procurement tab - visible to all authenticated users */}
               <button
                 onClick={() => setActiveTab('procurement')}
@@ -440,6 +454,10 @@ export default function Home() {
                   />
                 </div>
               </div>
+            )}
+
+            {activeTab === 'forecasting' && (
+              <StockForecasting onNavigateToProcurement={() => setActiveTab('procurement')} />
             )}
 
             {activeTab === 'procurement' && (

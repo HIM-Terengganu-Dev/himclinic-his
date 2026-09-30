@@ -2211,3 +2211,6 @@ export async function resolveOrderManually(
 
 // Export low stock functions
 export * from './queries_low_stock';
+
+// Export forecasting and stock order planning functions
+export * from './queries_forecasting';

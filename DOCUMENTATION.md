@@ -78,7 +78,26 @@ The HIM Clinic Inventory Management System is a web-based application that helps
 
 ---
 
-### 2. SKU Management
+### 2. Stock Forecast & Ordering (Demand Intelligence)
+**Purpose:** Calculate exact stock order quantities and predict stockouts based on real sales velocity.
+
+**What you see:**
+- **Critical Stockout Alerts** - Products that will run out before supplier shipments arrive (< lead time)
+- **Reorder Point (ROP)** - Trigger levels factoring in supplier lead time + safety stock buffer
+- **Days of Stock Remaining** - Live consumption burn rate with estimated stockout date
+- **Best Order Quantity (ROQ)** - Formula-driven replenishment target:
+  `ROQ = (Lead Time Demand + Safety Buffer + Target Cycle Days) - Available Stock`
+- **Consumption Trend & History** - 7d/14d/30d/60d velocity, trend arrows, and monthly volume breakdown
+
+**Key Actions:**
+- Simulate different lead times, safety buffer days, target cycle coverage, and marketing surge %
+- One-click copy formatted Purchase Order for suppliers/WhatsApp
+- Export complete ordering sheet as CSV
+- Direct link to Procurement Stock Update to record incoming orders
+
+---
+
+### 3. SKU Management
 **Purpose:** Create and manage products
 
 **Single SKU:**
@@ -319,6 +338,7 @@ User Action / WooCommerce Event
 
 ### API Endpoints
 - `/api/inventory` - Get current stock
+- `/api/forecasting` - Demand forecasting and replenishment calculations
 - `/api/skus/*` - SKU management
 - `/api/procurement/update` - Stock updates
 - `/api/webhooks/*` - WooCommerce webhooks
