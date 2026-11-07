@@ -122,6 +122,55 @@ async function filterValidLineItems(allLineItems: any[], orderId: number, includ
     return { validLineItems, skippedItems };
 }
 
+/**
+ * Single SKUs that are deferred (only deduct on processing unless accompanied by other meds).
+ * Includes HIM Coffee, HER Coffee, coffee cups, books, and Tra/10tab.
+ */
+function isDeferredAloneSku(sku: string): boolean {
+    const s = (sku || '').trim().toLowerCase();
+    return s === 'him1' || s === 'her1' || s === 'himsp' || s === 'cofcup' ||
+           s === 'buku/bk' || s === 'buku/sm' || s === 'bkbk' ||
+           s === 'tra/10tab';
+}
+
+/**
+ * Checks whether an order contains any medication line items or combo components.
+ * Medication items (Tad20, Tad5, Spe, Pri, Via100, Iqn50, Iqn100, Spu1, etc.)
+ * trigger earlier deduction (pending consult/pending review) for all items in the order.
+ */
+function checkOrderHasMedication(
+    lineItems: any[],
+    singleSkuMap: Map<string, any>,
+    comboSkuMap: Map<string, any>
+): boolean {
+    for (const item of lineItems) {
+        if (!item.sku) continue;
+        const sku = item.sku.trim();
+
+        // 1. Direct single SKU
+        if (singleSkuMap.has(sku)) {
+            if (!isDeferredAloneSku(sku)) {
+                return true;
+            }
+        }
+        // 2. Combo SKU
+        else if (comboSkuMap.has(sku)) {
+            const combo = comboSkuMap.get(sku);
+            if (!combo) continue;
+            const components = Array.isArray(combo.components)
+                ? combo.components
+                : JSON.parse(combo.components || '[]');
+
+            for (const comp of components) {
+                if (comp.sku && !isDeferredAloneSku(comp.sku)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 export async function POST(request: Request) {
     console.log("!!! WEBHOOK HIT !!! Method:", request.method);
     try {
@@ -245,6 +294,20 @@ export async function POST(request: Request) {
         // Handle order cancellation: restore stock
         // Note: refunded orders do NOT automatically restore stock - staff must manually QC returned items first
         if (status === 'cancelled') {
+            // Guard: Check if cancellation was already processed for this order
+            const existingCancelledTx = await getStockTransactions({
+                sourceId: orderId,
+                transactionType: 'order_cancelled',
+                limit: 1
+            });
+            if (existingCancelledTx.length > 0) {
+                console.log(`⏭️ Order #${orderId} already cancelled - skipping duplicate cancellation webhook`);
+                return NextResponse.json({
+                    success: true,
+                    message: `Order #${orderId} cancellation already processed`
+                });
+            }
+
             // IMPORTANT: Check current status first to determine what stage the order is in
             // If order went: pending → processing → nv-pending-pickup → cancelled,
             // we should NOT try to remove from pending (it's already past that stage)
@@ -335,31 +398,26 @@ export async function POST(request: Request) {
                 }
             } else {
                 // Order was already processed and not cancelled
-                // BUT: Check if there's a pending transaction - if so, processing is valid (moving from pending to processing)
+                // Only allow reprocessing if the order was moved back to pending AFTER the previous processing
                 const pendingConsultLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-consult');
                 const pendingReviewLog = await getWcWebhookLogByOrderId(orderId, 'order.pending-review');
-                const hasPendingLog = pendingConsultLog || pendingReviewLog;
+                const latestPendingLog = pendingConsultLog && pendingReviewLog
+                    ? (new Date(pendingConsultLog.created_at).getTime() > new Date(pendingReviewLog.created_at).getTime() ? pendingConsultLog : pendingReviewLog)
+                    : (pendingConsultLog || pendingReviewLog);
 
-                if (hasPendingLog) {
-                    // Order has a pending log — but only allow reprocessing if pending stock is STILL > 0.
-                    // If pending stock already moved to processing (e.g. a previous processing webhook did it),
-                    // this is a true duplicate and must be skipped to prevent inflating processing counts.
-                    // Note: allLineItems is declared later, so we extract the first SKU from the pending log's details.
-                    const pendingAffectedSkus: string[] = (hasPendingLog as any)?.affected_skus ?? [];
-                    const firstSku: string | undefined = Array.isArray(pendingAffectedSkus) && pendingAffectedSkus.length > 0
-                        ? pendingAffectedSkus[0]
-                        : undefined;
-                    let hasPendingStockRemaining = false;
-                    if (firstSku) {
-                        const liveState = await getCurrentStockState(firstSku);
-                        hasPendingStockRemaining = ((liveState?.pendingConsult ?? 0) > 0) || ((liveState?.pendingReview ?? 0) > 0);
-                    }
+                const processingTime = new Date(previousProcessingLog.created_at).getTime();
+                const pendingTime = latestPendingLog ? new Date(latestPendingLog.created_at).getTime() : 0;
+
+                if (latestPendingLog && pendingTime > processingTime) {
+                    // Order was moved to pending AFTER the previous processing.
+                    // Verify that THIS SPECIFIC ORDER still holds pending stock:
+                    const pendingStockForOrder = await getPendingStockByOrderFromTransactions(orderId);
+                    const hasPendingStockRemaining = pendingStockForOrder.some(item => item.quantity > 0);
+
                     if (hasPendingStockRemaining) {
-                        // Real pending stock exists — moving from pending to processing is valid
-                        console.log(`✅ Order #${orderId} has pending stock remaining - allowing processing (moving from pending to processing)`);
+                        console.log(`✅ Order #${orderId} was moved back to pending after previous processing and has pending stock remaining - allowing processing`);
                     } else {
-                        // Pending log exists but no actual pending stock left → true duplicate, skip
-                        console.log(`⏭️ Order #${orderId} pending log exists but no pending stock remaining - skipping duplicate processing to prevent double deduction`);
+                        console.log(`⏭️ Order #${orderId} has no pending stock remaining - skipping duplicate processing to prevent double deduction`);
                         return NextResponse.json({
                             success: true,
                             message: `Order #${orderId} was already processed - skipping duplicate processing to prevent double stock deduction`,
@@ -367,8 +425,9 @@ export async function POST(request: Request) {
                         });
                     }
                 } else {
-                    // Order was already processed, not cancelled, and no pending - skip to prevent double deduction
-                    console.log(`⏭️ Order #${orderId} was already processed successfully - skipping duplicate processing to prevent double deduction`);
+                    // Order was already processed, not cancelled, and no subsequent pending status.
+                    // This is a duplicate/replay webhook from WooCommerce.
+                    console.log(`⏭️ Order #${orderId} was already processed successfully (pending was prior to processing or absent) - skipping duplicate processing to prevent double deduction`);
                     return NextResponse.json({
                         success: true,
                         message: `Order #${orderId} was already processed - skipping duplicate processing to prevent double stock deduction`,
@@ -535,6 +594,29 @@ export async function POST(request: Request) {
                 const isComboComponent = isComboComponentMap.get(sku) || false;
 
                 try {
+                    // Defense in depth: Check if this order already has an active processing transaction for this SKU
+                    const existingProcessingTransactions = await getStockTransactions({
+                        sku,
+                        sourceId: orderId,
+                        transactionType: 'order_processing',
+                        limit: 1
+                    });
+                    if (existingProcessingTransactions.length > 0) {
+                        const cancellationTransactions = await getStockTransactions({
+                            sku,
+                            sourceId: orderId,
+                            transactionType: 'order_cancelled',
+                            limit: 1
+                        });
+                        const wasCancelledAfter = cancellationTransactions.length > 0 &&
+                            new Date(cancellationTransactions[0].created_at).getTime() > new Date(existingProcessingTransactions[0].created_at).getTime();
+
+                        if (!wasCancelledAfter) {
+                            console.log(`⏭️ SKU ${sku} for Order #${orderId} already has an active processing transaction - skipping duplicate processing`);
+                            continue;
+                        }
+                    }
+
                     // Get current stock state from transactions
                     const currentState = await getCurrentStockState(sku);
 
@@ -543,17 +625,17 @@ export async function POST(request: Request) {
                     const inWarehouseAfter = inWarehouseBefore; // No change to in_warehouse
 
                     // Check if there's a pending transaction for this order/SKU
+                    // Sum across all matching transactions (an order may have both a single SKU
+                    // and a combo component of the same SKU, producing multiple pending rows)
                     const pendingConsultTransactions = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: 'order_pending_consult',
-                        limit: 1
+                        transactionType: 'order_pending_consult'
                     });
                     const pendingReviewTransactions = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: 'order_pending_review',
-                        limit: 1
+                        transactionType: 'order_pending_review'
                     });
 
                     const wasFromPendingConsult = pendingConsultTransactions.length > 0;
@@ -563,10 +645,14 @@ export async function POST(request: Request) {
                     let pendingConsultQty = 0;
                     let pendingReviewQty = 0;
                     if (wasFromPendingConsult) {
-                        pendingConsultQty = pendingConsultTransactions[0].pending_consult_after - pendingConsultTransactions[0].pending_consult_before;
+                        pendingConsultQty = Math.max(0, pendingConsultTransactions.reduce((sum: number, tx: any) => {
+                            return sum + ((tx.pending_consult_after || 0) - (tx.pending_consult_before || 0));
+                        }, 0));
                     }
                     if (wasFromPendingReview) {
-                        pendingReviewQty = pendingReviewTransactions[0].pending_review_after - pendingReviewTransactions[0].pending_review_before;
+                        pendingReviewQty = Math.max(0, pendingReviewTransactions.reduce((sum: number, tx: any) => {
+                            return sum + ((tx.pending_review_after || 0) - (tx.pending_review_before || 0));
+                        }, 0));
                     }
                     const totalPendingQty = pendingConsultQty + pendingReviewQty;
 
@@ -878,8 +964,38 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
         // Step 1: Remove from pending (both single SKU and combo components)
         // NEW BEHAVIOR: Do NOT restore to in_warehouse (pending doesn't deduct from in_warehouse)
         // When pending → cancelled: Remove from pending only, no in_warehouse restoration
-        const restoredComponentStocks: Array<{ sku: string; previousStock: number; newStock: number; restoredQty: number }> = [];
-        const restoredSingleSkus: Array<{ sku: string; previousStock: number; newStock: number; restoredQty: number }> = [];
+        const restoredComponentStocks: Array<{
+            sku: string;
+            previousStock: number;
+            newStock: number;
+            restoredQty: number;
+            inWarehouseBefore?: number;
+            inWarehouseAfter?: number;
+            pendingConsultBefore?: number;
+            pendingConsultAfter?: number;
+            pendingReviewBefore?: number;
+            pendingReviewAfter?: number;
+            processingBefore?: number;
+            processingAfter?: number;
+            availableForPurchaseBefore?: number;
+            availableForPurchaseAfter?: number;
+        }> = [];
+        const restoredSingleSkus: Array<{
+            sku: string;
+            previousStock: number;
+            newStock: number;
+            restoredQty: number;
+            inWarehouseBefore?: number;
+            inWarehouseAfter?: number;
+            pendingConsultBefore?: number;
+            pendingConsultAfter?: number;
+            pendingReviewBefore?: number;
+            pendingReviewAfter?: number;
+            processingBefore?: number;
+            processingAfter?: number;
+            availableForPurchaseBefore?: number;
+            availableForPurchaseAfter?: number;
+        }> = [];
 
         // Step 1a: Remove single SKU from pending (direct orders)
         if (directSingleSkus.size > 0) {
@@ -979,6 +1095,16 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                         sku,
                         previousStock: inWarehouseBefore,
                         newStock: inWarehouseAfter,
+                        inWarehouseBefore,
+                        inWarehouseAfter,
+                        pendingConsultBefore,
+                        pendingConsultAfter,
+                        pendingReviewBefore,
+                        pendingReviewAfter,
+                        processingBefore,
+                        processingAfter,
+                        availableForPurchaseBefore: Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore),
+                        availableForPurchaseAfter: availableAfter,
                         restoredQty: 0 // No restoration, just removal from pending
                     });
 
@@ -1044,16 +1170,17 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                         limit: 1
                     });
 
-                    if (pendingTransactions.length > 0) {
-                        const pendingQty = previousStatus === 'pending-consult'
-                            ? (pendingTransactions[0].pending_consult_after - pendingTransactions[0].pending_consult_before)
-                            : (pendingTransactions[0].pending_review_after - pendingTransactions[0].pending_review_before);
+                    if (pendingTransactions.length === 0) continue;
 
-                        if (previousStatus === 'pending-consult') {
-                            pendingConsultAfter = Math.max(0, pendingConsultBefore - pendingQty);
-                        } else {
-                            pendingReviewAfter = Math.max(0, pendingReviewBefore - pendingQty);
-                        }
+                    const pendingQty = previousStatus === 'pending-consult'
+                        ? (pendingTransactions[0].pending_consult_after - pendingTransactions[0].pending_consult_before)
+                        : (pendingTransactions[0].pending_review_after - pendingTransactions[0].pending_review_before);
+                    if (pendingQty <= 0) continue;
+
+                    if (previousStatus === 'pending-consult') {
+                        pendingConsultAfter = Math.max(0, pendingConsultBefore - pendingQty);
+                    } else {
+                        pendingReviewAfter = Math.max(0, pendingReviewBefore - pendingQty);
                     }
 
                     // Calculate available_for_purchase
@@ -1108,6 +1235,16 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                         sku,
                         previousStock: inWarehouseBefore,
                         newStock: inWarehouseAfter,
+                        inWarehouseBefore,
+                        inWarehouseAfter,
+                        pendingConsultBefore,
+                        pendingConsultAfter,
+                        pendingReviewBefore,
+                        pendingReviewAfter,
+                        processingBefore,
+                        processingAfter,
+                        availableForPurchaseBefore: Math.max(0, inWarehouseBefore - pendingConsultBefore - pendingReviewBefore - processingBefore),
+                        availableForPurchaseAfter: availableAfter,
                         restoredQty: 0 // No restoration, just removal from pending
                     });
 
@@ -1276,6 +1413,16 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                             sku: r.sku,
                             previousStock: r.previousStock,
                             newStock: r.newStock,
+                            inWarehouseBefore: r.inWarehouseBefore,
+                            inWarehouseAfter: r.inWarehouseAfter,
+                            pendingConsultBefore: r.pendingConsultBefore,
+                            pendingConsultAfter: r.pendingConsultAfter,
+                            pendingReviewBefore: r.pendingReviewBefore,
+                            pendingReviewAfter: r.pendingReviewAfter,
+                            processingBefore: r.processingBefore,
+                            processingAfter: r.processingAfter,
+                            availableForPurchaseBefore: r.availableForPurchaseBefore,
+                            availableForPurchaseAfter: r.availableForPurchaseAfter,
                             restoredQty: r.restoredQty,
                             changeMadeBy: 'HIS' // HIS restored single SKU stocks
                         })),
@@ -1283,8 +1430,54 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                             sku: r.sku,
                             previousStock: r.previousStock,
                             newStock: r.newStock,
+                            inWarehouseBefore: r.inWarehouseBefore,
+                            inWarehouseAfter: r.inWarehouseAfter,
+                            pendingConsultBefore: r.pendingConsultBefore,
+                            pendingConsultAfter: r.pendingConsultAfter,
+                            pendingReviewBefore: r.pendingReviewBefore,
+                            pendingReviewAfter: r.pendingReviewAfter,
+                            processingBefore: r.processingBefore,
+                            processingAfter: r.processingAfter,
+                            availableForPurchaseBefore: r.availableForPurchaseBefore,
+                            availableForPurchaseAfter: r.availableForPurchaseAfter,
                             restoredQty: r.restoredQty,
                             changeMadeBy: 'HIS' // HIS restored combo component stocks
+                        }))
+                    ],
+                    componentDeductions: [
+                        ...restoredSingleSkus.map(r => ({
+                            sku: r.sku,
+                            transactionType: 'order_cancelled',
+                            sourceEvent: `order.${payload.status}`,
+                            inWarehouseBefore: r.inWarehouseBefore,
+                            inWarehouseAfter: r.inWarehouseAfter,
+                            pendingConsultBefore: r.pendingConsultBefore,
+                            pendingConsultAfter: r.pendingConsultAfter,
+                            pendingReviewBefore: r.pendingReviewBefore,
+                            pendingReviewAfter: r.pendingReviewAfter,
+                            processingBefore: r.processingBefore,
+                            processingAfter: r.processingAfter,
+                            availableForPurchaseBefore: r.availableForPurchaseBefore,
+                            availableForPurchaseAfter: r.availableForPurchaseAfter,
+                            restoredQty: r.restoredQty,
+                            changeMadeBy: 'HIS'
+                        })),
+                        ...restoredComponentStocks.map(r => ({
+                            sku: r.sku,
+                            transactionType: 'order_cancelled',
+                            sourceEvent: `order.${payload.status}`,
+                            inWarehouseBefore: r.inWarehouseBefore,
+                            inWarehouseAfter: r.inWarehouseAfter,
+                            pendingConsultBefore: r.pendingConsultBefore,
+                            pendingConsultAfter: r.pendingConsultAfter,
+                            pendingReviewBefore: r.pendingReviewBefore,
+                            pendingReviewAfter: r.pendingReviewAfter,
+                            processingBefore: r.processingBefore,
+                            processingAfter: r.processingAfter,
+                            availableForPurchaseBefore: r.availableForPurchaseBefore,
+                            availableForPurchaseAfter: r.availableForPurchaseAfter,
+                            restoredQty: r.restoredQty,
+                            changeMadeBy: 'HIS'
                         }))
                     ],
                     comboSkusCancelled: comboSkusInOrder,
@@ -1463,6 +1656,12 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
         // If test environment, also include dummy SKUs
         await addDummySkusToMaps(singleSkuMap, comboSkuMap, isTestEnvironment);
 
+        // Check if order contains any medication items (Tad20, Tad5, Spe, Pri, etc.)
+        // If order contains meds, all items (including HIM Coffee and Tra/10tab) are deducted early in pending.
+        // If order contains NO meds, deferred items (HIM Coffee, Tra/10tab, books, cups) wait for processing.
+        const orderHasMedication = checkOrderHasMedication(lineItems, singleSkuMap, comboSkuMap);
+        console.log(`📋 Order #${orderId} contains medication items: ${orderHasMedication}`);
+
         // Track pending stock for both single SKU and combo SKU orders
         const pendingStockUpdates: Array<{ sku: string; quantity: number; wcStock: number; isCombo: boolean }> = [];
 
@@ -1477,6 +1676,12 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
 
             // Process single SKU orders
             if (singleSkuMap.has(sku)) {
+                // If single SKU is deferred alone (coffee, tra/10tab, merch) and no meds in order, defer deduction until processing
+                if (isDeferredAloneSku(sku) && !orderHasMedication) {
+                    console.log(`ℹ️ Single SKU ${sku} in Order #${orderId} deferred (no meds in order) - will deduct upon processing`);
+                    continue;
+                }
+
                 const singleSku = singleSkuMap.get(sku);
                 if (singleSku) {
                     try {
@@ -1588,6 +1793,12 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                                 continue;
                             }
 
+                            // If component SKU is deferred alone (coffee, tra/10tab, merch) and no meds in order, defer deduction until processing
+                            if (isDeferredAloneSku(comp.sku) && !orderHasMedication) {
+                                console.log(`ℹ️ Component SKU ${comp.sku} in combo ${sku} for Order #${orderId} deferred (no meds in order) - will deduct upon processing`);
+                                continue;
+                            }
+
                             const deductedQty = comp.quantity * quantity;
 
                             try {
@@ -1683,17 +1894,13 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
             }
         }
 
-        if (pendingStockUpdates.length === 0) {
-            return NextResponse.json({ success: true, message: 'No single SKUs found in order to track' });
-        }
-
         // Step 2: Recalculate and update combo SKU availability in WooCommerce
         // Find all combos that use the affected single SKUs (including those we just deducted/tracked)
         const affectedSingleSkus = new Set(pendingStockUpdates.map(u => u.sku));
-        const affectedCombos = allCombos.filter((c: any) => {
+        const affectedCombos = pendingStockUpdates.length > 0 ? allCombos.filter((c: any) => {
             const components = Array.isArray(c.components) ? c.components : JSON.parse(c.components || '[]');
             return components.some((comp: any) => affectedSingleSkus.has(comp.sku));
-        });
+        }) : [];
 
         const comboUpdates: Array<{ sku: string; previousStock?: number; newStock: number }> = [];
 
@@ -1800,7 +2007,9 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
                         wcStock: u.wcStock,
                         isCombo: u.isCombo
                     })),
-                    note: `Order moved to ${statusLabel} (${status}). System tracking pending stock (no in_warehouse deduction). Updated combo availability.`
+                    note: pendingStockUpdates.length > 0
+                        ? `Order moved to ${statusLabel} (${status}). System tracking pending stock (no in_warehouse deduction). Updated combo availability.`
+                        : `Order moved to ${statusLabel} (${status}). Order items are deferred until processing status (no meds in order).`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,
@@ -1812,7 +2021,9 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
 
         return NextResponse.json({
             success: true,
-            message: 'Pending consultation stock tracked and combo availability updated',
+            message: pendingStockUpdates.length > 0
+                ? 'Pending consultation stock tracked and combo availability updated'
+                : 'Order items deferred until processing status (no pending deduction)',
             pendingStockUpdates: pendingStockUpdates.length,
             comboUpdates: comboUpdates.length
         });

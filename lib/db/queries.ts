@@ -2021,14 +2021,26 @@ export async function resolveOrderManually(
         await client.query('BEGIN');
 
         // Get net held stock per SKU contributed by this specific order
-        // Summing deltas gives the exact quantity this specific order added to processing/pending counters
+        // Summing deltas gives the exact quantity this specific order added to processing/pending counters,
+        // while actual_order_qty captures the true physical order quantity (preventing over-deduction
+        // from in_warehouse if duplicate order_processing transactions inflated the processing counter).
         const orderTxRes = await client.query(`
             SELECT
                 sku,
                 MAX(single_sku_id) AS single_sku_id,
                 GREATEST(0, SUM(processing_after - processing_before)) AS order_processing,
                 GREATEST(0, SUM(pending_consult_after - pending_consult_before)) AS order_pending_consult,
-                GREATEST(0, SUM(pending_review_after - pending_review_before)) AS order_pending_review
+                GREATEST(0, SUM(pending_review_after - pending_review_before)) AS order_pending_review,
+                COALESCE(
+                    MAX(COALESCE((details->>'quantity')::int, (details->>'deductedQty')::int))
+                        FILTER (WHERE transaction_type = 'order_processing' AND (processing_after - processing_before) > 0),
+                    (ARRAY_AGG(processing_after - processing_before ORDER BY id ASC)
+                        FILTER (WHERE transaction_type = 'order_processing' AND (processing_after - processing_before) > 0))[1],
+                    SUM(COALESCE((details->>'quantity')::int, (details->>'deductedQty')::int, (pending_consult_after - pending_consult_before)))
+                        FILTER (WHERE transaction_type = 'order_pending_consult' AND (pending_consult_after - pending_consult_before) > 0),
+                    SUM(COALESCE((details->>'quantity')::int, (details->>'deductedQty')::int, (pending_review_after - pending_review_before)))
+                        FILTER (WHERE transaction_type = 'order_pending_review' AND (pending_review_after - pending_review_before) > 0)
+                ) AS actual_order_qty
             FROM his_db.stock_transactions
             WHERE source_id::text = $1::text
               AND source_type = 'order'
@@ -2041,6 +2053,7 @@ export async function resolveOrderManually(
             const orderProcessing = parseInt(row.order_processing || '0', 10);
             const orderPendingConsult = parseInt(row.order_pending_consult || '0', 10);
             const orderPendingReview = parseInt(row.order_pending_review || '0', 10);
+            const actualOrderQty = parseInt(row.actual_order_qty || '0', 10);
 
             // Skip if this order's transactions contributed nothing to held stock
             if (orderProcessing === 0 && orderPendingConsult === 0 && orderPendingReview === 0) continue;
@@ -2083,7 +2096,8 @@ export async function resolveOrderManually(
             let transactionType = 'order_nv_pending_pickup';
             
             if (resolutionType === 'nv-pending-pickup') {
-                quantityChange = -totalCleared;
+                const deductQty = actualOrderQty > 0 ? Math.min(totalCleared, actualOrderQty) : totalCleared;
+                quantityChange = -deductQty;
             } else if (resolutionType === 'cancelled') {
                 transactionType = 'order_cancelled';
                 quantityChange = 0; // in_warehouse is kept intact

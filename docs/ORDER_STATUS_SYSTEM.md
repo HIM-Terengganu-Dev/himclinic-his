@@ -142,22 +142,20 @@ CREATE TABLE stock_transactions (
 
 ## Webhook Events and Status Updates
 
-### `order.pending-consult`
-- Increments: `pending_consult_after = pending_consult_before + quantity`
-- Updates: `available_for_purchase` (recalculated)
-- Updates: `backorder` (if available = 0)
-
-### `order.pending-review`
-- Increments: `pending_review_after = pending_review_before + quantity`
-- Updates: `available_for_purchase` (recalculated)
+### `order.pending-consult` & `order.pending-review`
+- **Medications (Tad20, Tad5, Spe, Pri, Via100, Iqn, Spu1, etc.)**: Always deduct early (increment `pending_consult` or `pending_review`), recalculating `available_for_purchase`.
+- **HIM Coffee (`him1`, `him3`, `him9`, etc.) & Tra/10tab (`tra/10tab`, `tra/30tab`)**:
+  - If ordered **with other medications**: Deducted early in `pending-consult` / `pending-review` along with the medications.
+  - If ordered **alone (without other medications)**: Skipped during `pending-consult` / `pending-review`. Deduction is deferred until order status moves to `processing`.
+- Updates: `available_for_purchase` (recalculated for tracked items)
 - Updates: `backorder` (if available = 0)
 
 ### `order.processing`
 - If from pending: 
-  - Decrements: `pending_consult_after` or `pending_review_after`
-  - Increments: `processing_after = processing_before + quantity`
-- If direct:
-  - Increments: `processing_after = processing_before + quantity`
+  - For items previously tracked in pending: Decrements `pending_consult_after` or `pending_review_after` and increments `processing_after`.
+  - For items deferred during pending (e.g. HIM Coffee or Tra/10tab alone): Directly increments `processing_after = processing_before + quantity`.
+- If direct (no prior pending stage):
+  - Increments: `processing_after = processing_before + quantity` (all SKUs including Tad20, Coffee, Tra).
 - Updates: `available_for_purchase` (recalculated)
 - Updates: `backorder` (if available = 0)
 - **Does NOT** change `in_warehouse`

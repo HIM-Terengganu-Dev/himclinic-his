@@ -138,7 +138,28 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
     });
 
     // Fallback to webhook log data if database data not available
-    const webhookDeductions = logEntry.details?.componentDeductions || [];
+    const webhookDeductions = (logEntry.details?.componentDeductions && logEntry.details.componentDeductions.length > 0)
+        ? logEntry.details.componentDeductions
+        : (logEntry.details?.componentRestorations && Array.isArray(logEntry.details.componentRestorations))
+            ? logEntry.details.componentRestorations.map((r: any) => ({
+                sku: r.sku,
+                transactionType: 'order_cancelled',
+                sourceEvent: 'order.cancelled',
+                inWarehouseBefore: r.inWarehouseBefore ?? r.previousStock ?? 0,
+                inWarehouseAfter: r.inWarehouseAfter ?? r.newStock ?? 0,
+                processingBefore: r.processingBefore ?? 0,
+                processingAfter: r.processingAfter ?? 0,
+                pendingConsultBefore: r.pendingConsultBefore ?? 0,
+                pendingConsultAfter: r.pendingConsultAfter ?? 0,
+                pendingReviewBefore: r.pendingReviewBefore ?? 0,
+                pendingReviewAfter: r.pendingReviewAfter ?? 0,
+                availableForPurchaseBefore: r.availableForPurchaseBefore,
+                availableForPurchaseAfter: r.availableForPurchaseAfter,
+                previousStock: r.previousStock,
+                newStock: r.newStock,
+                quantity: r.restoredQty || 0
+            }))
+            : [];
 
     // No loose matching - we must match by transaction type exactly
     // This ensures we don't accidentally match transactions from different events or orders
@@ -153,8 +174,14 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
         deductions = deductions.sort((a: any, b: any) =>
             new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
         );
-        // Don't slice - keep all component deductions
-        console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple processing transactions found (${deductions.length}), showing all component deductions`);
+        // Deduplicate by SKU: keep only the first transaction per unique SKU
+        const seenSkus = new Set<string>();
+        deductions = deductions.filter((d: any) => {
+            if (seenSkus.has(d.sku)) return false;
+            seenSkus.add(d.sku);
+            return true;
+        });
+        console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple processing transactions found, showing unique component deductions (${deductions.length})`);
     } else if (eventType.toLowerCase().includes('nv-pending-pickup') && deductions.length > 1) {
         // For nv-pending-pickup, ensure we only show transactions that correspond to the first processing event
         // Find the first processing transaction timestamp
@@ -174,10 +201,14 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                 new Date(d.createdAt).getTime() >= new Date(firstProcessingTime).getTime()
             );
 
-            // For combo SKUs, we want to show ALL component deductions, not just the first one
-            // So we don't slice here - we keep all matching deductions
-            // They should all have the same timestamp (created at the same time for the same order)
-            console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple nv-pending-pickup transactions found (${deductions.length}), showing all component deductions`);
+            // Deduplicate by SKU: keep only the first transaction per unique SKU
+            const seenSkus = new Set<string>();
+            deductions = deductions.filter((d: any) => {
+                if (seenSkus.has(d.sku)) return false;
+                seenSkus.add(d.sku);
+                return true;
+            });
+            console.log(`[ComponentDeductionsCell] Order #${orderId}: Multiple nv-pending-pickup transactions found, showing unique component deductions (${deductions.length})`);
         }
     }
 
@@ -188,7 +219,9 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
         const targetType = normalizeType(expectedTransactionType || eventType);
         const typeOnlyMatches = dbDeductions.filter((d: any) => {
             const txType = normalizeType(d.transactionType || d.sourceEvent || '');
-            return txType === targetType || (targetType.includes('processing') && txType.includes('processing'));
+            return txType === targetType || 
+                (targetType.includes('processing') && txType.includes('processing')) ||
+                (targetType.includes('cancelled') && txType.includes('cancelled'));
         });
         if (typeOnlyMatches.length > 0) {
             console.log(`[ComponentDeductionsCell] Order #${orderId}: time matching yielded 0, falling back to ${typeOnlyMatches.length} type-matched dbDeductions`);
@@ -413,6 +446,15 @@ function ComponentDeductionsCell({ logEntry, activeTab, cachedDeductions, isLoad
                             <span className="text-gray-500">Deducted: </span>
                             <span className="font-medium text-blue-600">
                                 -{deduction.deductedQty || deduction.quantity}
+                            </span>
+                        </div>
+                    </div>
+                ) : isCancelled && (deduction.previousStock !== undefined && deduction.newStock !== undefined) ? (
+                    <div className="mt-1 space-y-1">
+                        <div className="whitespace-nowrap">
+                            <span className="text-gray-500">In Warehouse: </span>
+                            <span className="font-medium text-gray-900">
+                                {deduction.previousStock} → {deduction.newStock}
                             </span>
                         </div>
                     </div>
@@ -1434,39 +1476,23 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                             )}
                                                         </td>
                                                         <td className="px-6 py-4 min-w-[200px]">
-                                                            {/* Show component restorations for cancelled orders */}
-                                                            {logEntry.details?.componentRestorations && Array.isArray(logEntry.details.componentRestorations) && logEntry.details.componentRestorations.length > 0 ? (
-                                                                <div className="min-w-[200px]">
-                                                                    {logEntry.details.componentRestorations.map((restoration: any, restorationIdx: number) => (
-                                                                        <div key={restorationIdx} className="text-xs text-gray-600 mb-2">
-                                                                            <div className="font-mono">{restoration.sku}</div>
-                                                                            <div className="whitespace-nowrap">
-                                                                                <span className="text-gray-500">:{restoration.previousStock}</span>
-                                                                                <span className="text-gray-500">→</span>
-                                                                                <span className="text-green-600 font-medium">{restoration.newStock}</span>
-                                                                            </div>
+                                                            <ComponentDeductionsCell
+                                                                logEntry={logEntry}
+                                                                activeTab={activeTab}
+                                                                cachedDeductions={componentDeductionsCache[logEntry.entity_id]}
+                                                                isLoadingCache={isLoadingDeductionsCache}
+                                                            />
+                                                            {/* Display edge case warning note if present */}
+                                                            {logEntry.details?.isEdgeCase && logEntry.details?.note && (
+                                                                <div className="mt-3 pt-3 border-t border-red-200">
+                                                                    <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg p-3">
+                                                                        <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
+                                                                        <div className="flex-1">
+                                                                            <p className="text-xs font-semibold text-red-800 mb-1">⚠️ Edge Case Detected</p>
+                                                                            <p className="text-xs text-red-700">{logEntry.details.note}</p>
                                                                         </div>
-                                                                    ))}
-                                                                    {/* Display edge case warning note after restorations */}
-                                                                    {logEntry.details?.isEdgeCase && logEntry.details?.note && (
-                                                                        <div className="mt-3 pt-3 border-t border-red-200">
-                                                                            <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg p-3">
-                                                                                <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
-                                                                                <div className="flex-1">
-                                                                                    <p className="text-xs font-semibold text-red-800 mb-1">⚠️ Edge Case Detected</p>
-                                                                                    <p className="text-xs text-red-700">{logEntry.details.note}</p>
-                                                                                </div>
-                                                                            </div>
-                                                                        </div>
-                                                                    )}
+                                                                    </div>
                                                                 </div>
-                                                            ) : (
-                                                                <ComponentDeductionsCell
-                                                                    logEntry={logEntry}
-                                                                    activeTab={activeTab}
-                                                                    cachedDeductions={componentDeductionsCache[logEntry.entity_id]}
-                                                                    isLoadingCache={isLoadingDeductionsCache}
-                                                                />
                                                             )}
                                                         </td>
                                                         <td className="px-6 py-4">
