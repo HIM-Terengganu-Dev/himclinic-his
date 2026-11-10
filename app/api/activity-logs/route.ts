@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
         // Exclude test activities (dummy SKU reconciliations) for non-dev users
         const excludeTestActivities = effectiveRole !== 'dev';
 
-        const logs = await getActivityLogs({
+        const result = await getActivityLogs({
             userId,
             limit,
             offset,
@@ -48,7 +48,12 @@ export async function GET(req: NextRequest) {
             excludeTestActivities
         });
 
-        return NextResponse.json({ logs });
+        return NextResponse.json({
+            logs: result.rows,
+            total: result.total,
+            limit,
+            offset
+        });
     } catch (error) {
         console.error('Error fetching activity logs:', error);
         return NextResponse.json(

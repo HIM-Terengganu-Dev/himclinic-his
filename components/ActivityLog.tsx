@@ -581,6 +581,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const [comboSkus, setComboSkus] = useState<Array<{ sku: string; name: string; components?: any }>>([]);
     const [wcCurrentPage, setWcCurrentPage] = useState(1);
     const [wcTotalCount, setWcTotalCount] = useState(0);
+    const [manualCurrentPage, setManualCurrentPage] = useState(1);
+    const [manualTotalCount, setManualTotalCount] = useState(0);
     // Cache for component deductions: orderId -> deductions array
     const [componentDeductionsCache, setComponentDeductionsCache] = useState<Record<number, any[]>>({});
     const [isLoadingDeductionsCache, setIsLoadingDeductionsCache] = useState(false);
@@ -613,6 +615,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
         try {
             const queryParams = new URLSearchParams();
             if (limit) queryParams.append('limit', limit.toString());
+            const offset = (manualCurrentPage - 1) * (limit || 20);
+            queryParams.append('offset', offset.toString());
             if (filterType) {
                 // Handle filterType format: "procurement_update:add" or just "procurement_update"
                 if (filterType.includes(':')) {
@@ -631,7 +635,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
             if (!res.ok) throw new Error('Failed to fetch logs');
 
             const data = await res.json();
-            setLogs(data.logs);
+            setLogs(data.logs || []);
+            setManualTotalCount(data.total || 0);
         } catch (error) {
             console.error('Error fetching activity logs:', error);
         }
@@ -694,10 +699,11 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     const fetchLogs = async () => {
         try {
             setRefreshing(true);
-            await Promise.all([
-                fetchManualLogs(),
-                fetchWcWebhookLogs()
-            ]);
+            if (activeTab === 'manual') {
+                await fetchManualLogs();
+            } else {
+                await fetchWcWebhookLogs();
+            }
         } finally {
             setLoading(false);
             setRefreshing(false);
@@ -706,12 +712,13 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
 
     // Reset to page 1 when filters change
     useEffect(() => {
+        setManualCurrentPage(1);
         setWcCurrentPage(1);
     }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, filterOrderId, activeTab]);
 
     useEffect(() => {
         fetchLogs();
-    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, filterOrderId, activeTab, wcCurrentPage]);
+    }, [filterType, filterSku, filterDateFrom, filterDateTo, filterOrderStatus, filterOrderId, activeTab, manualCurrentPage, wcCurrentPage]);
 
     // Fetch component deductions from database for all order events (batch fetch for performance)
     useEffect(() => {
@@ -942,6 +949,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
     };
 
     const currentLogs = activeTab === 'manual' ? logs : wcLogs;
+    const currentPage = activeTab === 'manual' ? manualCurrentPage : wcCurrentPage;
+    const totalCount = activeTab === 'manual' ? manualTotalCount : wcTotalCount;
+    const setCurrentPage = activeTab === 'manual' ? setManualCurrentPage : setWcCurrentPage;
 
     return (
         <div className={`bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden ${compact ? '' : 'p-6'}`}>
@@ -1550,17 +1560,17 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                         </table>
                     </div>
 
-                    {/* Pagination controls for Orders tab */}
-                    {activeTab === 'orders' && wcTotalCount > (limit || 20) && (
+                    {/* Pagination controls */}
+                    {totalCount > (limit || 20) && (
                         <div className="mt-4 flex items-center justify-between border-t border-gray-200 pt-4">
                             <div className="text-sm text-gray-600">
-                                Showing {((wcCurrentPage - 1) * (limit || 20)) + 1} to {Math.min(wcCurrentPage * (limit || 20), wcTotalCount)} of {wcTotalCount} entries
+                                Showing {((currentPage - 1) * (limit || 20)) + 1} to {Math.min(currentPage * (limit || 20), totalCount)} of {totalCount} entries
                             </div>
                             <div className="flex items-center gap-2">
                                 <button
-                                    onClick={() => setWcCurrentPage(prev => Math.max(1, prev - 1))}
-                                    disabled={wcCurrentPage === 1}
-                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${wcCurrentPage === 1
+                                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                                    disabled={currentPage === 1}
+                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${currentPage === 1
                                         ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                                         : 'border-gray-300 text-gray-700 hover:bg-gray-50'
                                         }`}
@@ -1572,16 +1582,16 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 </button>
 
                                 <div className="flex items-center gap-1">
-                                    {Array.from({ length: Math.ceil(wcTotalCount / (limit || 20)) }, (_, i) => i + 1)
+                                    {Array.from({ length: Math.ceil(totalCount / (limit || 20)) }, (_, i) => i + 1)
                                         .filter(page => {
-                                            const totalPages = Math.ceil(wcTotalCount / (limit || 20));
+                                            const totalPages = Math.ceil(totalCount / (limit || 20));
                                             // Show first page, last page, current page, and pages around current
                                             return page === 1 ||
                                                 page === totalPages ||
-                                                (page >= wcCurrentPage - 1 && page <= wcCurrentPage + 1);
+                                                (page >= currentPage - 1 && page <= currentPage + 1);
                                         })
                                         .map((page, idx, arr) => {
-                                            const totalPages = Math.ceil(wcTotalCount / (limit || 20));
+                                            const totalPages = Math.ceil(totalCount / (limit || 20));
                                             const showEllipsisBefore = idx > 0 && arr[idx - 1] < page - 1;
                                             const showEllipsisAfter = idx < arr.length - 1 && arr[idx + 1] > page + 1;
 
@@ -1591,8 +1601,8 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                                         <span className="px-2 text-gray-400">...</span>
                                                     )}
                                                     <button
-                                                        onClick={() => setWcCurrentPage(page)}
-                                                        className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${wcCurrentPage === page
+                                                        onClick={() => setCurrentPage(page)}
+                                                        className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${currentPage === page
                                                             ? 'border-blue-500 bg-blue-50 text-blue-600'
                                                             : 'border-gray-300 text-gray-700 hover:bg-gray-50'
                                                             }`}
@@ -1608,9 +1618,9 @@ export default function ActivityLog({ limit = 20, compact = false }: { limit?: n
                                 </div>
 
                                 <button
-                                    onClick={() => setWcCurrentPage(prev => Math.min(Math.ceil(wcTotalCount / (limit || 20)), prev + 1))}
-                                    disabled={wcCurrentPage >= Math.ceil(wcTotalCount / (limit || 20))}
-                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${wcCurrentPage >= Math.ceil(wcTotalCount / (limit || 20))
+                                    onClick={() => setCurrentPage(prev => Math.min(Math.ceil(totalCount / (limit || 20)), prev + 1))}
+                                    disabled={currentPage >= Math.ceil(totalCount / (limit || 20))}
+                                    className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${currentPage >= Math.ceil(totalCount / (limit || 20))
                                         ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                                         : 'border-gray-300 text-gray-700 hover:bg-gray-50'
                                         }`}

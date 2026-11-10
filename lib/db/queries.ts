@@ -485,80 +485,101 @@ export async function getActivityLogs(filters: {
     dateTo?: string;
     excludeTestActivities?: boolean; // If true, exclude test activities (dummy SKU reconciliations)
 }) {
-    let sql = `
-    SELECT 
-        al.*, 
-        u.name as user_name, 
-        u.email as user_email,
-        ss.sku as affected_sku,
-        to_char(al.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
-    FROM "his_db".activity_logs al
-    LEFT JOIN "his_db".users u ON al.user_id = u.id
-    LEFT JOIN "his_db".procurement_updates pu ON al.entity_type = 'procurement_update' AND al.entity_id = pu.id
-    LEFT JOIN "his_db".single_skus ss ON pu.single_sku_id = ss.id
-    WHERE 1=1
-  `;
+    let whereClause = `WHERE 1=1`;
     const params: any[] = [];
     let pIdx = 1;
 
     if (filters.userId) {
-        sql += ` AND al.user_id = $${pIdx++}`;
+        whereClause += ` AND al.user_id = $${pIdx++}`;
         params.push(filters.userId);
     }
 
     if (filters.type) {
-        sql += ` AND al.action = $${pIdx++}`;
+        whereClause += ` AND al.action = $${pIdx++}`;
         params.push(filters.type);
     }
 
     if (filters.operation) {
-        sql += ` AND pu.operation = $${pIdx++}`;
+        whereClause += ` AND pu.operation = $${pIdx++}`;
         params.push(filters.operation);
     }
 
     if (filters.sku) {
-        sql += ` AND ss.sku = $${pIdx++}`;
+        whereClause += ` AND ss.sku = $${pIdx++}`;
         params.push(filters.sku);
     }
 
     if (filters.dateFrom) {
-        sql += ` AND al.created_at >= $${pIdx++}`;
+        whereClause += ` AND al.created_at >= $${pIdx++}`;
         params.push(filters.dateFrom);
     }
 
     if (filters.dateTo) {
-        sql += ` AND al.created_at <= $${pIdx++}`;
+        whereClause += ` AND al.created_at <= $${pIdx++}`;
         params.push(filters.dateTo);
     }
 
     // Filter out test activities (dummy SKU reconciliations) for non-dev users
     if (filters.excludeTestActivities) {
-        sql += ` AND (
+        whereClause += ` AND (
             ss.id IS NULL OR 
             LOWER(COALESCE(ss.description, '')) != 'dummy sku'
         )`;
     }
 
-    sql += ` ORDER BY al.created_at DESC`;
+    // Get total count matching filters
+    const countSql = `
+        SELECT COUNT(*) as total
+        FROM "his_db".activity_logs al
+        LEFT JOIN "his_db".users u ON al.user_id = u.id
+        LEFT JOIN "his_db".procurement_updates pu ON al.entity_type = 'procurement_update' AND al.entity_id = pu.id
+        LEFT JOIN "his_db".single_skus ss ON pu.single_sku_id = ss.id
+        ${whereClause}
+    `;
+    const countResult = await query(countSql, params);
+    const total = parseInt(countResult.rows[0]?.total || '0', 10);
+
+    let dataSql = `
+        SELECT 
+            al.*, 
+            u.name as user_name, 
+            u.email as user_email,
+            ss.sku as affected_sku,
+            to_char(al.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"+08:00"') as created_at_gmt8
+        FROM "his_db".activity_logs al
+        LEFT JOIN "his_db".users u ON al.user_id = u.id
+        LEFT JOIN "his_db".procurement_updates pu ON al.entity_type = 'procurement_update' AND al.entity_id = pu.id
+        LEFT JOIN "his_db".single_skus ss ON pu.single_sku_id = ss.id
+        ${whereClause}
+        ORDER BY al.created_at DESC
+    `;
+
+    const dataParams = [...params];
+    let dataPIdx = pIdx;
 
     if (filters.limit) {
-        sql += ` LIMIT $${pIdx++}`;
-        params.push(filters.limit);
+        dataSql += ` LIMIT $${dataPIdx++}`;
+        dataParams.push(filters.limit);
     }
 
     if (filters.offset) {
-        sql += ` OFFSET $${pIdx++}`;
-        params.push(filters.offset);
+        dataSql += ` OFFSET $${dataPIdx++}`;
+        dataParams.push(filters.offset);
     }
 
-    const result = await query(sql, params);
+    const result = await query(dataSql, dataParams);
     // Replace created_at with GMT+8 version if available
-    return result.rows.map(row => {
+    const rows = result.rows.map(row => {
         if (row.created_at_gmt8) {
             row.created_at = row.created_at_gmt8;
         }
         return row;
     });
+
+    return {
+        rows,
+        total
+    };
 }
 
 export async function logWcWebhook(data: {
