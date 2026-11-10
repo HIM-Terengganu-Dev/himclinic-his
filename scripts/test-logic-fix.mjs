@@ -103,4 +103,50 @@ console.log('✅ Test 9: Combo kom/spu+tra HAS meds -> Tra component deducted ea
 assert.strictEqual(checkOrderHasMedication([{ sku: 'tad20/4tab', quantity: 1 }], singleSkuMap, comboSkuMap), true, 'tad20/4tab alone IS a med');
 console.log('✅ Test 10: Tad20 alone IS a med -> deducted on pending consult/review');
 
-console.log('\n🎉 ALL 10 TESTS PASSED!');
+// Helper simulating downstream fallback decision for nv-in-transit / nv-out-delivery / completed
+function shouldTriggerNvPickupFallback({ status, hasPriorNvPickupLog, hasPriorNvPickupTx, currentHisStatus }) {
+    if (!['nv-in-transit', 'nv-out-delivery', 'completed'].includes(status)) return false;
+    if (hasPriorNvPickupLog || hasPriorNvPickupTx) return false;
+    return ['processing', 'pending-consult', 'pending-review'].includes(currentHisStatus);
+}
+
+// Test 11: Order in nv-in-transit that already passed nv-pending-pickup -> skip
+assert.strictEqual(
+    shouldTriggerNvPickupFallback({
+        status: 'nv-in-transit',
+        hasPriorNvPickupLog: true,
+        hasPriorNvPickupTx: true,
+        currentHisStatus: 'nv-pending-pickup'
+    }),
+    false,
+    'Already dispatched order must NOT re-trigger fallback'
+);
+console.log('✅ Test 11: nv-in-transit with prior nv-pending-pickup -> safely skipped');
+
+// Test 12: Order in nv-in-transit that skipped nv-pending-pickup while still processing in HIS -> fallback
+assert.strictEqual(
+    shouldTriggerNvPickupFallback({
+        status: 'nv-in-transit',
+        hasPriorNvPickupLog: false,
+        hasPriorNvPickupTx: false,
+        currentHisStatus: 'processing'
+    }),
+    true,
+    'Stuck processing order reaching nv-in-transit MUST trigger fallback'
+);
+console.log('✅ Test 12: nv-in-transit without prior nv-pending-pickup (HIS still processing) -> triggers fallback');
+
+// Test 13: Untracked order reaching completed with no HIS status -> skip
+assert.strictEqual(
+    shouldTriggerNvPickupFallback({
+        status: 'completed',
+        hasPriorNvPickupLog: false,
+        hasPriorNvPickupTx: false,
+        currentHisStatus: null
+    }),
+    false,
+    'Untracked order reaching completed must NOT trigger fallback'
+);
+console.log('✅ Test 13: Untracked order reaching completed (no HIS status) -> safely skipped');
+
+console.log('\n🎉 ALL 13 TESTS PASSED!');

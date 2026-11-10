@@ -340,6 +340,40 @@ export async function POST(request: Request) {
             return await handleNvPendingPickup(orderId, payload, request, isTestEnvironment);
         }
 
+        // Fallback for downstream NinjaVan / terminal shipping statuses ('nv-in-transit', 'nv-out-delivery', 'completed'):
+        // Normally an order passes through 'nv-pending-pickup' first. However, if 'nv-pending-pickup' was skipped
+        // in WooCommerce or its webhook was missed while the order is still holding stock in HIS
+        // ('processing', 'pending-consult', or 'pending-review'), process the dispatch deduction now.
+        if (status === 'nv-in-transit' || status === 'nv-out-delivery' || status === 'completed') {
+            const previousNvPickupLog = await getWcWebhookLogByOrderId(orderId, 'order.nv-pending-pickup');
+            if (previousNvPickupLog && previousNvPickupLog.success) {
+                return NextResponse.json({
+                    success: true,
+                    message: `Order status is ${status} (already processed at nv-pending-pickup), skipping stock update`
+                });
+            }
+
+            const existingNvPickupTx = await getStockTransactions({
+                sourceId: orderId,
+                transactionType: 'order_nv_pending_pickup',
+                limit: 1
+            });
+            if (existingNvPickupTx.length > 0) {
+                return NextResponse.json({
+                    success: true,
+                    message: `Order status is ${status} (stock already deducted at nv-pending-pickup), skipping stock update`
+                });
+            }
+
+            const currentStatus = await getOrderCurrentStatus(orderId);
+            if (currentStatus === 'processing' || currentStatus === 'pending-consult' || currentStatus === 'pending-review') {
+                console.warn(`⚠️ Order #${orderId} reached '${status}' in WooCommerce without a prior 'nv-pending-pickup' in HIS (current HIS status: '${currentStatus}'). Running nv-pending-pickup fallback deduction.`);
+                return await handleNvPendingPickup(orderId, payload, request, isTestEnvironment, status);
+            }
+
+            return NextResponse.json({ success: true, message: `Order status is ${status}, skipping stock update` });
+        }
+
         // Only process 'processing' status orders (paid orders that need stock deduction)
         if (status !== 'processing') {
             return NextResponse.json({ success: true, message: `Order status is ${status}, skipping stock update` });
@@ -1005,19 +1039,27 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                 const singleSku = singleSkuMap.get(sku);
                 if (!singleSku) continue;
 
-                // Get pending quantity for this order/SKU
+                // Get pending quantity for this order/SKU (sum direct single-SKU pending transactions)
                 const pendingTransactions = await getStockTransactions({
                     sku,
                     sourceId: orderId,
-                    transactionType: previousStatus === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review',
-                    limit: 1
+                    transactionType: previousStatus === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review'
                 });
 
                 if (pendingTransactions.length === 0) continue;
 
-                const pendingQty = previousStatus === 'pending-consult'
-                    ? (pendingTransactions[0].pending_consult_after - pendingTransactions[0].pending_consult_before)
-                    : (pendingTransactions[0].pending_review_after - pendingTransactions[0].pending_review_before);
+                const directPendingTxs = pendingTransactions.filter((tx: any) => {
+                    const d = typeof tx.details === 'string' ? JSON.parse(tx.details || '{}') : (tx.details || {});
+                    return d.isCombo !== true;
+                });
+                const txsToSum = directPendingTxs.length > 0 ? directPendingTxs : pendingTransactions;
+
+                const pendingQty = txsToSum.reduce((sum: number, tx: any) => {
+                    const delta = previousStatus === 'pending-consult'
+                        ? ((tx.pending_consult_after || 0) - (tx.pending_consult_before || 0))
+                        : ((tx.pending_review_after || 0) - (tx.pending_review_before || 0));
+                    return sum + Math.max(0, delta);
+                }, 0);
                 if (pendingQty <= 0) continue;
 
                 try {
@@ -1162,19 +1204,27 @@ async function handlePendingCancellation(orderId: number, payload: any, request?
                     let pendingReviewAfter = pendingReviewBefore;
                     const processingAfter = processingBefore; // No change to processing when cancelling from pending
 
-                    // Get pending quantity for this order/SKU
+                    // Get pending quantity for this order/SKU (sum combo-component pending transactions)
                     const pendingTransactions = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: previousStatus === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review',
-                        limit: 1
+                        transactionType: previousStatus === 'pending-consult' ? 'order_pending_consult' : 'order_pending_review'
                     });
 
                     if (pendingTransactions.length === 0) continue;
 
-                    const pendingQty = previousStatus === 'pending-consult'
-                        ? (pendingTransactions[0].pending_consult_after - pendingTransactions[0].pending_consult_before)
-                        : (pendingTransactions[0].pending_review_after - pendingTransactions[0].pending_review_before);
+                    const comboPendingTxs = pendingTransactions.filter((tx: any) => {
+                        const d = typeof tx.details === 'string' ? JSON.parse(tx.details || '{}') : (tx.details || {});
+                        return d.isCombo === true;
+                    });
+                    const txsToSum = comboPendingTxs.length > 0 ? comboPendingTxs : pendingTransactions;
+
+                    const pendingQty = txsToSum.reduce((sum: number, tx: any) => {
+                        const delta = previousStatus === 'pending-consult'
+                            ? ((tx.pending_consult_after || 0) - (tx.pending_consult_before || 0))
+                            : ((tx.pending_review_after || 0) - (tx.pending_review_before || 0));
+                        return sum + Math.max(0, delta);
+                    }, 0);
                     if (pendingQty <= 0) continue;
 
                     if (previousStatus === 'pending-consult') {
@@ -2039,9 +2089,9 @@ async function handlePendingStatus(orderId: number, payload: any, request: Reque
  * This is the ONLY webhook that deducts from in_warehouse
  * Also deducts from current status (processing, pending-consult, or pending-review)
  */
-async function handleNvPendingPickup(orderId: number, payload: any, request: Request, isTestEnvironment: boolean = false) {
+async function handleNvPendingPickup(orderId: number, payload: any, request: Request, isTestEnvironment: boolean = false, triggeredByStatus: string = 'nv-pending-pickup') {
     try {
-        console.log(`📦 Processing nv-pending-pickup for Order #${orderId} - deducting from in_warehouse and current status`);
+        console.log(`📦 Processing nv-pending-pickup (triggered by '${triggeredByStatus}') for Order #${orderId} - deducting from in_warehouse and current status`);
 
         // IDEMPOTENCY PROTECTION: Check if this order was already processed for nv-pending-pickup
         // Prevents double deduction if webhook fires multiple times
@@ -2364,6 +2414,7 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                 details: {
                     orderId,
                     status: 'nv-pending-pickup',
+                    triggeredByStatus,
                     previousStatus: currentStatus,
                     lineItems: lineItems.map((item: any) => ({
                         sku: item.sku,
@@ -2378,7 +2429,9 @@ async function handleNvPendingPickup(orderId: number, payload: any, request: Req
                         statusBefore: d.statusBefore,
                         statusAfter: d.statusAfter
                     })),
-                    note: `Order moved to nv-pending-pickup. Deducted from in_warehouse and ${currentStatus || 'processing'} status.`
+                    note: triggeredByStatus === 'nv-pending-pickup'
+                        ? `Order moved to nv-pending-pickup. Deducted from in_warehouse and ${currentStatus || 'processing'} status.`
+                        : `Order reached ${triggeredByStatus} without prior nv-pending-pickup. Fallback deducted from in_warehouse and ${currentStatus || 'processing'} status.`
                 },
                 ipAddress: Array.isArray(ipAddress) ? ipAddress[0] : ipAddress.split(',')[0].trim(),
                 userAgent,
@@ -2536,7 +2589,9 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
             const wcIdMap = new Map<string, number>();
 
             for (const restoration of componentRestorations) {
-                restorationMap.set(restoration.sku, (restorationMap.get(restoration.sku) || 0) + restoration.quantity);
+                // Use totalRestorations[sku] so if a SKU is both a combo component and a direct single SKU
+                // in the same order, the full combined quantity is restored (since Step 2 skips SKUs in componentRestorations).
+                restorationMap.set(restoration.sku, totalRestorations[restoration.sku] || ((restorationMap.get(restoration.sku) || 0) + restoration.quantity));
                 wcIdMap.set(restoration.sku, restoration.wcProductId);
             }
 
@@ -2575,21 +2630,22 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     const processingTx = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: 'order_processing',
-                        limit: 1
+                        transactionType: 'order_processing'
                     });
                     const pendingConsultTx = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: 'order_pending_consult',
-                        limit: 1
+                        transactionType: 'order_pending_consult'
                     });
                     const pendingReviewTx = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: 'order_pending_review',
-                        limit: 1
+                        transactionType: 'order_pending_review'
                     });
+
+                    const netProcessingForOrder = Math.max(0, processingTx.reduce((sum: number, tx: any) => sum + ((tx.processing_after || 0) - (tx.processing_before || 0)), 0));
+                    const netPendingConsultForOrder = Math.max(0, pendingConsultTx.reduce((sum: number, tx: any) => sum + ((tx.pending_consult_after || 0) - (tx.pending_consult_before || 0)), 0));
+                    const netPendingReviewForOrder = Math.max(0, pendingReviewTx.reduce((sum: number, tx: any) => sum + ((tx.pending_review_after || 0) - (tx.pending_review_before || 0)), 0));
 
                     // Determine which status has the quantity for this order
                     // Priority: nv-pending-pickup > processing > pending-consult > pending-review
@@ -2626,15 +2682,12 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                             // Direct nv-pending-pickup - only restore in_warehouse, no status restoration
                             console.log(`🔄 Restoring ${totalQty} to in_warehouse for ${sku} (cancelled from direct nv-pending-pickup, no status restoration)`);
                         }
-                    } else if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
-                        const qtyInProcessing = processingTx[0].processing_after - processingTx[0].processing_before;
-                        processingAfter = Math.max(0, processingBefore - qtyInProcessing);
-                    } else if (pendingConsultTx.length > 0 && pendingConsultTx[0].pending_consult_after > pendingConsultTx[0].pending_consult_before) {
-                        const qtyInPendingConsult = pendingConsultTx[0].pending_consult_after - pendingConsultTx[0].pending_consult_before;
-                        pendingConsultAfter = Math.max(0, pendingConsultBefore - qtyInPendingConsult);
-                    } else if (pendingReviewTx.length > 0 && pendingReviewTx[0].pending_review_after > pendingReviewTx[0].pending_review_before) {
-                        const qtyInPendingReview = pendingReviewTx[0].pending_review_after - pendingReviewTx[0].pending_review_before;
-                        pendingReviewAfter = Math.max(0, pendingReviewBefore - qtyInPendingReview);
+                    } else if (netProcessingForOrder > 0) {
+                        processingAfter = Math.max(0, processingBefore - netProcessingForOrder);
+                    } else if (netPendingConsultForOrder > 0) {
+                        pendingConsultAfter = Math.max(0, pendingConsultBefore - netPendingConsultForOrder);
+                    } else if (netPendingReviewForOrder > 0) {
+                        pendingReviewAfter = Math.max(0, pendingReviewBefore - netPendingReviewForOrder);
                     }
 
                     // Calculate available_for_purchase
@@ -2741,21 +2794,22 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                     const processingTx = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: 'order_processing',
-                        limit: 1
+                        transactionType: 'order_processing'
                     });
                     const pendingConsultTx = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: 'order_pending_consult',
-                        limit: 1
+                        transactionType: 'order_pending_consult'
                     });
                     const pendingReviewTx = await getStockTransactions({
                         sku,
                         sourceId: orderId,
-                        transactionType: 'order_pending_review',
-                        limit: 1
+                        transactionType: 'order_pending_review'
                     });
+
+                    const netProcessingForOrder = Math.max(0, processingTx.reduce((sum: number, tx: any) => sum + ((tx.processing_after || 0) - (tx.processing_before || 0)), 0));
+                    const netPendingConsultForOrder = Math.max(0, pendingConsultTx.reduce((sum: number, tx: any) => sum + ((tx.pending_consult_after || 0) - (tx.pending_consult_before || 0)), 0));
+                    const netPendingReviewForOrder = Math.max(0, pendingReviewTx.reduce((sum: number, tx: any) => sum + ((tx.pending_review_after || 0) - (tx.pending_review_before || 0)), 0));
 
                     // Determine which status has the quantity for this order
                     // Priority: nv-pending-pickup > processing > pending-consult > pending-review
@@ -2792,15 +2846,12 @@ async function handleOrderCancellation(orderId: number, payload: any, request?: 
                             // Direct nv-pending-pickup - only restore in_warehouse, no status restoration
                             console.log(`🔄 Restoring ${restoreQty} to in_warehouse for ${sku} (cancelled from direct nv-pending-pickup, no status restoration)`);
                         }
-                    } else if (processingTx.length > 0 && processingTx[0].processing_after > processingTx[0].processing_before) {
-                        const qtyInProcessing = processingTx[0].processing_after - processingTx[0].processing_before;
-                        processingAfter = Math.max(0, processingBefore - qtyInProcessing);
-                    } else if (pendingConsultTx.length > 0 && pendingConsultTx[0].pending_consult_after > pendingConsultTx[0].pending_consult_before) {
-                        const qtyInPendingConsult = pendingConsultTx[0].pending_consult_after - pendingConsultTx[0].pending_consult_before;
-                        pendingConsultAfter = Math.max(0, pendingConsultBefore - qtyInPendingConsult);
-                    } else if (pendingReviewTx.length > 0 && pendingReviewTx[0].pending_review_after > pendingReviewTx[0].pending_review_before) {
-                        const qtyInPendingReview = pendingReviewTx[0].pending_review_after - pendingReviewTx[0].pending_review_before;
-                        pendingReviewAfter = Math.max(0, pendingReviewBefore - qtyInPendingReview);
+                    } else if (netProcessingForOrder > 0) {
+                        processingAfter = Math.max(0, processingBefore - netProcessingForOrder);
+                    } else if (netPendingConsultForOrder > 0) {
+                        pendingConsultAfter = Math.max(0, pendingConsultBefore - netPendingConsultForOrder);
+                    } else if (netPendingReviewForOrder > 0) {
+                        pendingReviewAfter = Math.max(0, pendingReviewBefore - netPendingReviewForOrder);
                     }
 
                     // Calculate available_for_purchase

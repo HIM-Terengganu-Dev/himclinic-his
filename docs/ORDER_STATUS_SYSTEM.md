@@ -160,10 +160,11 @@ CREATE TABLE stock_transactions (
 - Updates: `backorder` (if available = 0)
 - **Does NOT** change `in_warehouse`
 
-### `order.nv-pending-pickup`
+### `order.nv-pending-pickup` (and Fallback on `nv-in-transit` / `nv-out-delivery` / `completed`)
 - Decrements: `in_warehouse_after = in_warehouse_before - quantity`
 - Decrements: Previous status (`processing`, `pending_consult`, or `pending_review`)
 - Updates: `available_for_purchase` (recalculated)
+- **Fallback Protection**: If an order in WooCommerce skips `nv-pending-pickup` (or its `nv-pending-pickup` webhook fails) and moves directly to `nv-in-transit`, `nv-out-delivery`, or `completed` while still in `processing`, `pending-consult`, or `pending-review` in HIS, the webhook handler automatically runs `handleNvPendingPickup` as a fallback so stock is properly deducted and the order does not remain stuck. If the order already passed `nv-pending-pickup`, subsequent downstream statuses are safely skipped.
 
 ### `order.cancelled`
 - If from `nv-pending-pickup` or `processing` (after 2026-01-01):
