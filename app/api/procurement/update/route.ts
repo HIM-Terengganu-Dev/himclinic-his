@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { NextResponse } from 'next/server';
 import {
   createProcurementUpdate,
@@ -19,13 +20,36 @@ export async function POST(request: Request) {
     const userId = session.user.id;
 
     const body = await request.json();
-    const { sku, quantity, operation, notes } = body;
+    const { sku, quantity, operation, notes, expiredDate } = body;
 
     if (!sku || quantity === undefined || !operation) {
       return NextResponse.json(
         { success: false, error: 'sku, quantity, and operation are required' },
         { status: 400 }
       );
+    }
+
+    // Expired date is required for Manual stock in (add operation)
+    let normalizedExpiredDate: string | undefined;
+    let batchId: string | undefined;
+    if (operation === 'add') {
+      const trimmedDate = typeof expiredDate === 'string' ? expiredDate.trim() : '';
+      if (!trimmedDate || !/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate) || isNaN(Date.parse(trimmedDate))) {
+        return NextResponse.json(
+          { success: false, error: 'Expired date is required for Manual stock in' },
+          { status: 400 }
+        );
+      }
+      normalizedExpiredDate = trimmedDate;
+      // Auto-generate Batch ID using Malaysia (GMT+8) date + 4-char unique hex suffix
+      const klDate = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kuala_Lumpur',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date()).replace(/-/g, '');
+      const suffix = crypto.randomBytes(2).toString('hex').toUpperCase();
+      batchId = `BATCH-${klDate}-${suffix}`;
     }
 
     // Notes are required for Reconciliation (set operation)
@@ -123,6 +147,8 @@ export async function POST(request: Request) {
           previousQuantity: currentState.inWarehouse, // Use in_warehouse
           newQuantity: newInWarehouse, // Use in_warehouse
           notes,
+          batchId,
+          expiredDate: normalizedExpiredDate,
           createdBy: userId
         });
         console.log(`✅ Successfully logged procurement update: ID=${procurementRecord.id}, Operation=${procurementRecord.operation}`);
@@ -166,6 +192,8 @@ export async function POST(request: Request) {
             operation,
             quantity,
             notes,
+            batchId: batchId || null,
+            expiredDate: normalizedExpiredDate || null,
             procurementUpdateId: procurementRecord.id,
             availableForPurchase: availableAfter,
             backorderDeducted: backorderBefore - backorderAfter
@@ -208,7 +236,9 @@ export async function POST(request: Request) {
         inventory: { [sku]: newInWarehouse }, // Partial update response
         reconciliationDetails, // Only present for reconciliation (set operation)
         availableForPurchase: availableAfter,
-        backorder: backorderAfter
+        backorder: backorderAfter,
+        batchId,
+        expiredDate: normalizedExpiredDate
       });
 
     } else {

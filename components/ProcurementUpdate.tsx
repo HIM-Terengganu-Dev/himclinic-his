@@ -22,6 +22,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
   const [selectedSku, setSelectedSku] = useState('');
   const [quantity, setQuantity] = useState('');
   const [operation, setOperation] = useState<'add' | 'subtract' | 'set'>('add');
+  const [expiredDate, setExpiredDate] = useState('');
   const [notes, setNotes] = useState('');
 
   const [updating, setUpdating] = useState(false);
@@ -66,6 +67,12 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
       return;
     }
 
+    // Expired date is required for Manual stock in (add operation)
+    if (operation === 'add' && !expiredDate) {
+      setError('Please select an expired date for Manual stock in');
+      return;
+    }
+
     // Notes are required for Reconciliation (set operation)
     if (operation === 'set' && !notes.trim()) {
       setError('Notes are required for Reconciliation');
@@ -84,7 +91,8 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
           sku: selectedSku,
           quantity: qty,
           operation,
-          notes // Included notes
+          notes, // Included notes
+          ...(operation === 'add' ? { expiredDate } : {}),
         }),
       });
 
@@ -94,6 +102,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
         setResult(data);
         onStockUpdated();
         setQuantity('');
+        setExpiredDate('');
         setNotes('');
       } else {
         setError(data.error || 'Failed to update stock');
@@ -144,6 +153,20 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
                   <span className="text-gray-700">{result.sku}</span>
                   <span className="text-lg font-bold text-green-600">{result.newLocalQuantity} units</span>
                 </div>
+                {(result.batchId || result.expiredDate) && (
+                  <div className="flex flex-wrap gap-2 mb-2 text-xs">
+                    {result.batchId && (
+                      <span className="px-2.5 py-1 rounded-full bg-purple-100 text-purple-800 font-medium">
+                        Batch ID: {result.batchId}
+                      </span>
+                    )}
+                    {result.expiredDate && (
+                      <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 font-medium">
+                        Expired Date: {result.expiredDate}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center gap-2 text-sm">
                   <CheckCircle className="w-4 h-4 text-green-600" />
                   <span className="text-green-700">Stock updated successfully ✓</span>
@@ -250,6 +273,29 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
             />
           </div>
 
+          {/* Expired Date Input (Only for Manual stock in) */}
+          {operation === 'add' && (
+            <div>
+              <label htmlFor="expiredDate" className="block text-sm font-medium text-gray-700 mb-2">
+                Expired Date <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="date"
+                id="expiredDate"
+                value={expiredDate}
+                onChange={(e) => setExpiredDate(e.target.value)}
+                className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                  !expiredDate ? 'border-red-300' : 'border-gray-300'
+                }`}
+                disabled={updating}
+                required
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Batch ID will be auto-generated when stock is saved.
+              </p>
+            </div>
+          )}
+
           {/* Notes Input */}
           <div>
             <label htmlFor="notes" className="block text-sm font-medium text-gray-700 mb-2">
@@ -272,7 +318,7 @@ export default function ProcurementUpdate({ onStockUpdated }: ProcurementUpdateP
           {/* Submit Button */}
           <button
             onClick={handleUpdate}
-            disabled={updating || !selectedSku || !quantity || (operation === 'set' && !notes.trim())}
+            disabled={updating || !selectedSku || !quantity || (operation === 'add' && !expiredDate) || (operation === 'set' && !notes.trim())}
             className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
           >
             {updating ? (

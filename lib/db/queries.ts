@@ -338,6 +338,8 @@ export async function createProcurementUpdate(data: {
     notes?: string;
     returnCondition?: 'lost' | 'damaged' | 'good';
     orderId?: number;
+    batchId?: string;
+    expiredDate?: string;
     createdBy: number;
 }) {
     // Validate operation value
@@ -382,6 +384,8 @@ export async function createProcurementUpdate(data: {
             notes: entry.notes,
             returnCondition: entry.return_condition || null,
             orderId: entry.order_id || null,
+            batchId: data.batchId || null,
+            expiredDate: data.expiredDate || null,
             createdBy: entry.created_by,
             createdAt: entry.created_at
         };
